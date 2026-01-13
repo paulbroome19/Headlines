@@ -1,0 +1,286 @@
+backend/
+  pyproject.toml                    # Poetry deps + tooling config for the backend.
+  poetry.lock                       # Locked dependency versions for repeatable builds.
+  README.md                         # How to run locally, deploy, and operate the service.
+  .env.example                      # Example env vars (never secrets).
+
+  src/
+    core/
+      __init__.py                   # Marks `core` as the top-level Python package.
+
+      # ============================
+      # API (HTTP ingress)
+      # ============================
+      api/
+        __init__.py                 # API package boundary.
+
+        main.py                     # FastAPI app factory/instance; mounts routes; middleware.
+        router.py                   # Single top-level router that includes all route modules.
+        di.py                       # Dependency wiring (db session, settings, clients, repos).
+
+        middleware/
+          __init__.py               # Middleware package.
+          request_context.py        # Request IDs/trace IDs, correlation, per-request context.
+          logging.py                # Structured HTTP logging setup.
+          error_handling.py         # Standard error responses, exception mapping.
+
+        routes/
+          __init__.py               # Routes package.
+          health.py                 # Liveness/readiness endpoints + build/version info.
+          data.py                   # Triggers/reads for data pipeline (ingest/normalize/summarize).
+          user_targets.py           # Pipeline-driving targets (categories, weights, blocks).
+          users.py                  # App-level user prefs (profile, locale, notifications).
+          bulletins.py              # Bulletin build/status retrieval + item inspection.
+          audio.py                  # Playback endpoints (plans, URLs, status).
+          payments.py               # Billing endpoints (customer portal links, plans) if needed.
+          webhooks.py               # External webhooks (payments provider, etc.).
+
+        schemas/
+          __init__.py               # Pydantic request/response models.
+          common.py                 # Pagination, IDs, error envelopes, timestamps.
+          data.py                   # Data route schemas.
+          user_targets.py           # User targeting schemas.
+          users.py                  # User profile/preferences schemas.
+          bulletins.py              # Bulletin build + snapshot schemas.
+          audio.py                  # Playback plan schemas.
+          payments.py               # Billing schemas.
+          webhooks.py               # Webhook payload schemas.
+
+      # ============================
+      # Pipeline (data-flow)
+      # ============================
+      pipeline/
+        __init__.py                 # Pipeline root; shared pipeline conventions.
+
+        data/
+          __init__.py               # Shared content production (provider -> canonical -> summary).
+
+          ingest/
+            __init__.py
+            models.py               # Raw provider payload types + ingestion artifacts.
+            events.py               # Event definitions (fetch requested, raw ingested).
+            service.py              # Entry points (manual trigger, schedule trigger).
+            handlers/               # Event handlers (queue consumers) for ingestion events.
+            steps/                  # Fetch, validate, dedupe, store raw payload steps.
+            repos/                  # DB access for raw/provider tables.
+
+          normalize/
+            __init__.py
+            models.py               # Canonical article model + mapping metadata.
+            events.py               # Normalization events (normalize requested, article normalized).
+            service.py              # Normalize orchestration (batch runs, re-run strategy).
+            handlers/
+            steps/                  # Transform provider payload -> canonical article.
+            repos/                  # DB access for article + taxonomy tables.
+
+          summarize/
+            __init__.py
+            models.py               # Summary models (short/medium/long + version metadata).
+            events.py               # Summarization events (summarize requested, summarized).
+            service.py              # Summary orchestration (enqueue, regenerate, partial).
+            handlers/
+            steps/                  # LLM call + post-processing + validation.
+            repos/                  # DB access for summaries + status tracking.
+
+          common/
+            __init__.py
+            models.py               # Shared refs (ArticleRef, SummaryRef, DedupeKey).
+            constants.py            # Enums + versions + summary types.
+
+        user_targets/
+          __init__.py               # Pipeline-driving intent (what content to pick).
+          models.py                 # Targets: categories/weights/blocks/source prefs (v1 simple).
+          events.py                 # Optional: events when targets change (rebuild triggers).
+          service.py                # Read/write targets; emits events if needed.
+          handlers/                 # Optional: handle target-change -> rebuild.
+          steps/                    # Validation + normalization of target rules.
+          repos/                    # DB access for user_target tables.
+
+        bulletins (now split into feeds & scripts)/
+          __init__.py               # Per-user snapshot generation.
+
+          selection/
+            __init__.py
+            models.py               # Candidate sets, scoring outputs, reasons.
+            events.py               # Build/selection lifecycle events.
+            service.py              # Build orchestration (daily build, on-demand build).
+            handlers/
+            steps/                  # Rank, diversify, cap length, dedupe within bulletin.
+            repos/                  # DB access for bulletin + bulletin_items.
+
+          interludes/
+            __init__.py
+            models.py               # Interlude content types (intro/outro/transitions).
+            events.py               # Optional: interlude update events.
+            service.py              # CRUD/use-cases for interludes.
+            handlers/
+            steps/
+            repos/
+
+          composition/
+            __init__.py
+            models.py               # Immutable bulletin structure (ordered plan).
+            events.py               # Composition lifecycle events.
+            service.py              # Compose selection + interludes into final plan.
+            handlers/
+            steps/                  # Place interludes, finalize structure, compute metadata.
+            repos/
+
+          script/
+            __init__.py
+            models.py               # Script / SSML models (bulletin-specific narrative).
+            events.py               # Script generation events.
+            service.py              # Script orchestration and versioning.
+            handlers/
+            steps/                  # Script templating, SSML normalization.
+            repos/
+
+        audio/
+          __init__.py               # Sound generation + playback assembly.
+
+          synthesis/
+            __init__.py
+            models.py               # Audio segment models (voice, format, duration, storage key).
+            events.py               # TTS lifecycle events (synthesis requested/completed/failed).
+            service.py              # Orchestrates segment generation; enforces idempotency.
+            handlers/
+            steps/                  # TTS calls, retries, upload to storage, duration extraction.
+            repos/
+
+          playback/
+            __init__.py
+            models.py               # Playback plans (playlist, offsets, URLs, resume metadata).
+            events.py               # Playback plan lifecycle events (ready, updated).
+            service.py              # Assemble client-facing playback plan from segments + script.
+            handlers/
+            steps/
+            repos/
+
+      # ============================
+      # Users (non-pipeline, app-level)
+      # ============================
+      users/
+        __init__.py                # App-level user concerns not tied to bulletins.
+        models.py                  # Profile, locale, notification prefs, onboarding state.
+        service.py                 # Update/read user preferences; integrates with security/payments.
+        repos/                     # DB access for user tables.
+
+      # ============================
+      # Platform (cross-cutting; “go to market at scale” lives here)
+      # ============================
+      platform/
+        __init__.py
+
+        config/
+          __init__.py
+          settings.py              # Typed config: env vars, toggles, provider keys, limits.
+
+        db/
+          __init__.py
+          session.py               # DB engine/session factory; transaction helpers.
+          migrations/              # Alembic env + versions (or keep at backend/alembic).
+          models/
+            __init__.py
+            outbox_event.py        # Transactional outbox table model.
+            processed_event.py     # Idempotency ledger for at-least-once processing.
+            audit_log.py           # Optional: compliance/audit events (user actions, admin ops).
+
+        queue/
+          __init__.py
+          event.py                 # Canonical event envelope (type, idempotency_key, payload).
+          outbox.py                # Outbox writer/reader + dispatcher to queue transport.
+          consumer.py              # Generic consumer router (event.type -> handler).
+          processed.py
+          registry.py              # Central registration of handlers across pipeline modules.
+          registry_wiring.py
+          retry.py                 # Retry/backoff policies + dead-letter strategy.
+          routing.py               # Queue names, priorities, concurrency caps.
+          transport/
+             base.py               # Abstract publisher interface
+             redis.py              # Redis Streams implementation
+
+        security/
+          __init__.py
+          auth.py                  # Authentication (JWT/OAuth/session verification).
+          permissions.py           # Authorization rules (roles/scopes).
+          rate_limit.py            # Rate limiting primitives (API abuse protection).
+          hashing.py               # Password hashing helpers if needed.
+          tokens.py                # Token helpers (sign/verify), key rotation patterns.
+
+        integrations/
+          __init__.py
+
+          llm/
+            __init__.py
+            client.py              # LLM provider adapter (OpenAI etc) with timeouts/retries.
+            prompts/               # Prompt templates + versioned prompt files.
+            caching.py             # Hash-based caching rules to avoid repeat cost.
+            policies.py            # Guardrails: length, tone, unsafe content rules.
+
+          tts/
+            __init__.py
+            client.py              # TTS provider adapter with retries and fallbacks.
+            voices.py              # Voice catalog/config.
+            caching.py             # Segment cache keys and reuse policy.
+
+          news_providers/
+            __init__.py
+            gnews.py               # Provider adapter.
+            newscatcher.py         # Provider adapter (future).
+            mapper.py              # Shared mapping helpers provider -> canonical.
+
+          payments/
+            __init__.py
+            provider.py            # Payments adapter (Stripe etc).
+            service.py             # Billing use-cases (plans, entitlements).
+            webhooks.py            # Signature verification + webhook processing.
+            models.py              # Subscription/customer models for internal use.
+
+          notifications/
+            __init__.py
+            service.py             # Push/email notification orchestration.
+            providers/             # APNS/FCM/email providers adapters.
+
+          analytics/
+            __init__.py
+            client.py              # Analytics adapter (PostHog/Segment/Amplitude) (optional).
+
+        observability/
+          __init__.py
+          logging.py               # Structured logging config.
+          metrics.py               # Metrics primitives (timers/counters).
+          tracing.py               # Distributed tracing hooks (OpenTelemetry) (later-ready).
+
+        storage/
+          __init__.py
+          blob_store.py            # Storage abstraction (S3/GCS/local) for audio & large blobs.
+          keys.py                  # Storage key conventions (stable URLs, versioned assets).
+
+        ops/
+          __init__.py
+          healthchecks.py          # Internal checks (db, queue, providers) for readiness.
+          limits.py                # Centralized concurrency + budget caps (LLM/TTS).
+          feature_flags.py         # Feature gating for safe rollout.
+          maintenance.py           # Admin-only utilities (backfills, replays) (optional).
+
+        utils/
+          __init__.py
+          time.py                  # Time helpers (UTC handling, windows).
+          hashing.py               # Content hashing (dedupe keys).
+          ids.py                   # ID generation helpers (ULIDs/UUIDs).
+
+      # ============================
+      # Workers (runtime processes)
+      # ============================
+      workers/
+        __init__.py
+        run_consumer.py            # Runs queue consumer(s) (routes events -> handlers).
+        run_dispatcher.py          # Runs outbox dispatcher (db outbox -> queue publisher).
+        run_scheduler.py           # Periodic triggers (ingest cadence, daily bulletin builds).
+        queues.py                  # Queue constants + concurrency settings.
+
+  tests/                           # Unit/integration tests.
+  alembic/                         # DB migration tooling (if not under platform/db/migrations).
+  docker/                          # Local infra: postgres, redis, api, worker containers.
+  scripts/                         # Dev scripts: seed data, backfills, manual triggers.
+  .github/                         # CI workflows (tests, lint, build/publish) for go-to-market.
