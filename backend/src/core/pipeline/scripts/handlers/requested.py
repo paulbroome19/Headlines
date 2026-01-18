@@ -4,6 +4,7 @@ from core.platform.db.session import SessionLocal
 from core.platform.queue.event import Event
 from core.platform.queue.outbox import OutboxRepo
 
+from core.pipeline.audio.events import AUDIO_REQUESTED
 from core.pipeline.scripts.events import SCRIPTS_BUILT
 from core.pipeline.scripts.repos.output_repo import ScriptOutputRepo
 
@@ -17,6 +18,7 @@ def handle_scripts_requested(event: dict) -> None:
     - Assemble a single script text blob
     - Write scripts.outputs
     - Emit scripts.built
+    - Emit audio.requested
     """
     payload = event.get("payload") or {}
     trace_id = event.get("trace_id")
@@ -59,11 +61,22 @@ def handle_scripts_requested(event: dict) -> None:
 
         out = outputs.create(feed_id=int(feed_id), content=content, variant="default")
 
+        # 1) scripts.built
         outbox.add_event(
             Event(
                 type=SCRIPTS_BUILT,
                 idempotency_key=f"scripts:built:{feed_id}",
                 payload={"feed_id": int(feed_id), "script_output_id": out.id},
+                trace_id=trace_id,
+            )
+        )
+
+        # 2) audio.requested (next pipeline step)
+        outbox.add_event(
+            Event(
+                type=AUDIO_REQUESTED,
+                idempotency_key=f"audio:{out.id}",
+                payload={"feed_id": int(feed_id), "scripts_output_id": out.id},
                 trace_id=trace_id,
             )
         )

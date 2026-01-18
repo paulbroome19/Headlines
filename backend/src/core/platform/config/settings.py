@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     redis_stream_events: str = "events"
     redis_consumer_group: str = "headlines"
     redis_consumer_name: str = "consumer-1"
+    audio_local_dir: str = ".local/audio"
 
 
 settings = Settings()

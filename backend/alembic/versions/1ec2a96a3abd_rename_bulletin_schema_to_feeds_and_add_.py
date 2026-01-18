@@ -19,14 +19,39 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # 1) rename schema bulletin -> feeds
-    op.execute("ALTER SCHEMA bulletins RENAME TO feeds")
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            -- If bulletins exists, rename to feeds
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.schemata
+                WHERE schema_name = 'bulletins'
+            ) THEN
+                EXECUTE 'ALTER SCHEMA bulletins RENAME TO feeds';
+            END IF;
 
-    # 2) create scripts schema
-    op.execute("CREATE SCHEMA IF NOT EXISTS scripts")
+            -- If feeds doesn't exist yet, create it
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.schemata
+                WHERE schema_name = 'feeds'
+            ) THEN
+                EXECUTE 'CREATE SCHEMA feeds';
+            END IF;
+
+            -- Ensure scripts schema exists
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.schemata
+                WHERE schema_name = 'scripts'
+            ) THEN
+                EXECUTE 'CREATE SCHEMA scripts';
+            END IF;
+        END $$;
+        """)
 
 
 def downgrade() -> None:
-    # reverse order
-    op.execute("DROP SCHEMA IF EXISTS scripts CASCADE")
-    op.execute("ALTER SCHEMA feeds RENAME TO bulletins")
+    pass

@@ -15,6 +15,9 @@ from core.pipeline.feeds.handlers.requested import handle_feeds_requested
 from core.pipeline.scripts.events import SCRIPTS_REQUESTED
 from core.pipeline.scripts.handlers.requested import handle_scripts_requested
 
+from core.pipeline.audio.events import AUDIO_REQUESTED
+from core.pipeline.audio.handlers.requested import handle_audio_requested
+
 
 def build_registry() -> HandlerRegistry:
     r = HandlerRegistry()
@@ -23,5 +26,6 @@ def build_registry() -> HandlerRegistry:
     r.register(DATA_SUMMARISE_REQUESTED, handle_summarise_requested)
     r.register(FEEDS_REQUESTED, handle_feeds_requested)
     r.register(SCRIPTS_REQUESTED, handle_scripts_requested)
+    r.register(AUDIO_REQUESTED, handle_audio_requested)
     return r
 
