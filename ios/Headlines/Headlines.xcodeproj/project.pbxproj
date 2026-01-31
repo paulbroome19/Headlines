@@ -18,8 +18,10 @@
 		9777CC212F2E6EEC00F52583 /* MockFeedsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC202F2E6EEC00F52583 /* MockFeedsService.swift */; };
 		9777CC232F2E700C00F52583 /* Feed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC222F2E700C00F52583 /* Feed.swift */; };
 		9777CC252F2E7BEB00F52583 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC242F2E7BEB00F52583 /* APIClient.swift */; };
-		9777CC282F2E7F3600F52583 /* FeedsLatestDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC272F2E7F3600F52583 /* FeedsLatestDTO.swift */; };
+		9777CC282F2E7F3600F52583 /* FeedsLatestResponseDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC272F2E7F3600F52583 /* FeedsLatestResponseDTO.swift */; };
 		9777CC2A2F2E80B700F52583 /* FeedsServicing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC292F2E80B700F52583 /* FeedsServicing.swift */; };
+		9777CC2D2F2E8D4100F52583 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC2C2F2E8D4100F52583 /* AppConfig.swift */; };
+		9777CC302F2E8E5500F52583 /* FeedItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC2F2F2E8E5500F52583 /* FeedItem.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -54,8 +56,10 @@
 		9777CC202F2E6EEC00F52583 /* MockFeedsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockFeedsService.swift; sourceTree = "<group>"; };
 		9777CC222F2E700C00F52583 /* Feed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Feed.swift; sourceTree = "<group>"; };
 		9777CC242F2E7BEB00F52583 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
-		9777CC272F2E7F3600F52583 /* FeedsLatestDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedsLatestDTO.swift; sourceTree = "<group>"; };
+		9777CC272F2E7F3600F52583 /* FeedsLatestResponseDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedsLatestResponseDTO.swift; sourceTree = "<group>"; };
 		9777CC292F2E80B700F52583 /* FeedsServicing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedsServicing.swift; sourceTree = "<group>"; };
+		9777CC2C2F2E8D4100F52583 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		9777CC2F2F2E8E5500F52583 /* FeedItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedItem.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -87,8 +91,8 @@
 			isa = PBXGroup;
 			children = (
 				9777CBF02F2E6A9600F52583 /* Headlines */,
-				9777CC012F2E6A9900F52583 /* HeadlinesTests */,
-				9777CC0B2F2E6A9900F52583 /* HeadlinesUITests */,
+				9777CC3C2F2EA57700F52583 /* Resources */,
+				9777CC3D2F2EA5B000F52583 /* Tests */,
 				9777CBEF2F2E6A9600F52583 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -106,13 +110,10 @@
 		9777CBF02F2E6A9600F52583 /* Headlines */ = {
 			isa = PBXGroup;
 			children = (
-				9777CC262F2E7F1C00F52583 /* Networking */,
-				9777CC1D2F2E6DF100F52583 /* Services */,
-				9777CBF12F2E6A9600F52583 /* HeadlinesApp.swift */,
-				9777CBF52F2E6A9800F52583 /* Assets.xcassets */,
-				9777CBF72F2E6A9800F52583 /* Preview Content */,
-				9777CC1B2F2E6C6900F52583 /* MainView.swift */,
-				9777CC222F2E700C00F52583 /* Feed.swift */,
+				9777CC312F2EA0DB00F52583 /* App */,
+				9777CC332F2EA17000F52583 /* Domain */,
+				9777CC342F2EA1A800F52583 /* Features */,
+				9777CC382F2EA33C00F52583 /* Infrastructure */,
 			);
 			path = Headlines;
 			sourceTree = "<group>";
@@ -145,20 +146,121 @@
 		9777CC1D2F2E6DF100F52583 /* Services */ = {
 			isa = PBXGroup;
 			children = (
-				9777CC1E2F2E6E1A00F52583 /* FeedsService.swift */,
-				9777CC202F2E6EEC00F52583 /* MockFeedsService.swift */,
-				9777CC242F2E7BEB00F52583 /* APIClient.swift */,
 				9777CC292F2E80B700F52583 /* FeedsServicing.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
 		};
-		9777CC262F2E7F1C00F52583 /* Networking */ = {
+		9777CC2B2F2E8D1D00F52583 /* Config */ = {
 			isa = PBXGroup;
 			children = (
-				9777CC272F2E7F3600F52583 /* FeedsLatestDTO.swift */,
+				9777CC2C2F2E8D4100F52583 /* AppConfig.swift */,
 			);
-			path = Networking;
+			path = Config;
+			sourceTree = "<group>";
+		};
+		9777CC2E2F2E8E4000F52583 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC222F2E700C00F52583 /* Feed.swift */,
+				9777CC2F2F2E8E5500F52583 /* FeedItem.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		9777CC312F2EA0DB00F52583 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				9777CBF12F2E6A9600F52583 /* HeadlinesApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		9777CC332F2EA17000F52583 /* Domain */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC2E2F2E8E4000F52583 /* Models */,
+				9777CC1D2F2E6DF100F52583 /* Services */,
+			);
+			path = Domain;
+			sourceTree = "<group>";
+		};
+		9777CC342F2EA1A800F52583 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC352F2EA1CC00F52583 /* Feeds */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		9777CC352F2EA1CC00F52583 /* Feeds */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC3B2F2EA4CE00F52583 /* Services */,
+				9777CC362F2EA1D900F52583 /* DTOs */,
+				9777CC372F2EA20900F52583 /* Views */,
+			);
+			path = Feeds;
+			sourceTree = "<group>";
+		};
+		9777CC362F2EA1D900F52583 /* DTOs */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC272F2E7F3600F52583 /* FeedsLatestResponseDTO.swift */,
+			);
+			path = DTOs;
+			sourceTree = "<group>";
+		};
+		9777CC372F2EA20900F52583 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC1B2F2E6C6900F52583 /* MainView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		9777CC382F2EA33C00F52583 /* Infrastructure */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC2B2F2E8D1D00F52583 /* Config */,
+				9777CC392F2EA37A00F52583 /* Network */,
+			);
+			path = Infrastructure;
+			sourceTree = "<group>";
+		};
+		9777CC392F2EA37A00F52583 /* Network */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC242F2E7BEB00F52583 /* APIClient.swift */,
+			);
+			path = Network;
+			sourceTree = "<group>";
+		};
+		9777CC3B2F2EA4CE00F52583 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC1E2F2E6E1A00F52583 /* FeedsService.swift */,
+				9777CC202F2E6EEC00F52583 /* MockFeedsService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		9777CC3C2F2EA57700F52583 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				9777CBF52F2E6A9800F52583 /* Assets.xcassets */,
+				9777CBF72F2E6A9800F52583 /* Preview Content */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		9777CC3D2F2EA5B000F52583 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC0B2F2E6A9900F52583 /* HeadlinesUITests */,
+				9777CC012F2E6A9900F52583 /* HeadlinesTests */,
+			);
+			path = Tests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -291,13 +393,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9777CC2D2F2E8D4100F52583 /* AppConfig.swift in Sources */,
 				9777CC2A2F2E80B700F52583 /* FeedsServicing.swift in Sources */,
 				9777CC232F2E700C00F52583 /* Feed.swift in Sources */,
 				9777CC1F2F2E6E1A00F52583 /* FeedsService.swift in Sources */,
 				9777CC1C2F2E6C6900F52583 /* MainView.swift in Sources */,
-				9777CC282F2E7F3600F52583 /* FeedsLatestDTO.swift in Sources */,
+				9777CC282F2E7F3600F52583 /* FeedsLatestResponseDTO.swift in Sources */,
 				9777CC212F2E6EEC00F52583 /* MockFeedsService.swift in Sources */,
 				9777CBF22F2E6A9600F52583 /* HeadlinesApp.swift in Sources */,
+				9777CC302F2E8E5500F52583 /* FeedItem.swift in Sources */,
 				9777CC252F2E7BEB00F52583 /* APIClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -461,7 +565,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_ASSET_PATHS = "\"Headlines/Preview Content\"";
+				DEVELOPMENT_ASSET_PATHS = "\"Resources/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -489,7 +593,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_ASSET_PATHS = "\"Headlines/Preview Content\"";
+				DEVELOPMENT_ASSET_PATHS = "\"Resources/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

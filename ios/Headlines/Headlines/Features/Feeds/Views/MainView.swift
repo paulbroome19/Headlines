@@ -3,14 +3,14 @@ import SwiftUI
 struct MainView: View {
     let feedsService: FeedsServicing
 
-    @State private var isLoading: Bool = false
-    @State private var errorMessage: String? = nil
-    @State private var feed: Feed? = nil
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var feed: Feed?
 
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Headlines")
+                .navigationTitle("Headlines ✅ MainView v2")
         }
         .task {
             await load()
@@ -22,6 +22,7 @@ struct MainView: View {
         if isLoading {
             ProgressView("Loading…")
                 .padding()
+
         } else if let errorMessage {
             VStack(spacing: 12) {
                 Text("Something went wrong")
@@ -39,17 +40,24 @@ struct MainView: View {
                 .buttonStyle(.borderedProminent)
             }
             .padding()
+
         } else if let feed {
             List {
-                Section {
-                    ForEach(Array(feed.items.enumerated()), id: \.offset) { _, item in
-                        Text(item)
-                            .padding(.vertical, 6)
+                Section(header: Text(feed.title)) {
+                    ForEach(feed.items) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(item.text)
+                                .font(.body)
+
+                            Text("Summary \(item.summariseOutputID) • Position \(item.position)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 6)
                     }
-                } header: {
-                    Text(feed.title)
                 }
             }
+
         } else {
             VStack(spacing: 12) {
                 Text("No feed yet")
@@ -69,8 +77,7 @@ struct MainView: View {
         errorMessage = nil
 
         do {
-            let latest = try await feedsService.fetchLatestFeed()
-            feed = latest
+            feed = try await feedsService.fetchLatestFeed()
         } catch {
             feed = nil
             errorMessage = String(describing: error)
