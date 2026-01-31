@@ -1,61 +1,78 @@
 import SwiftUI
 
 struct MainView: View {
-    let feedsService: FeedsServicing
 
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var feed: Feed?
+    // MARK: - State
+
+    @StateObject private var vm: FeedsViewModel
+
+    // MARK: - Init
+
+    init(feedsService: FeedsServicing) {
+        _vm = StateObject(
+            wrappedValue: FeedsViewModel(feedsService: feedsService)
+        )
+    }
+
+    // MARK: - View
 
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Headlines ✅ MainView v2")
+                .navigationTitle("Headlines")
         }
         .task {
-            await load()
+            await vm.loadLatestFeed()
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        if isLoading {
+        if vm.isLoading {
             ProgressView("Loading…")
                 .padding()
 
-        } else if let errorMessage {
+        } else if let error = vm.errorMessage {
             VStack(spacing: 12) {
                 Text("Something went wrong")
                     .font(.headline)
 
-                Text(errorMessage)
+                Text(error)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
 
                 Button("Try again") {
-                    Task { await load() }
+                    Task { await vm.loadLatestFeed() }
                 }
                 .buttonStyle(.borderedProminent)
             }
             .padding()
 
-        } else if let feed {
+        } else if let feed = vm.feed {
             List {
-                Section(header: Text(feed.title)) {
+                Section {
                     ForEach(feed.items) { item in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(item.text)
-                                .font(.body)
+                        Text(item.text)
+                            .padding(.vertical, 6)
+                    }
+                } header: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(feed.title)
+                            .font(.headline)
 
-                            Text("Summary \(item.summariseOutputID) • Position \(item.position)")
+                        if let updated = vm.lastUpdatedText {
+                            Text("Updated \(updated)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        .padding(.vertical, 6)
                     }
+                    .textCase(nil)
                 }
+            }
+            .refreshable {
+                await vm.loadLatestFeed()
             }
 
         } else {
@@ -64,25 +81,11 @@ struct MainView: View {
                     .font(.headline)
 
                 Button("Load feed") {
-                    Task { await load() }
+                    Task { await vm.loadLatestFeed() }
                 }
                 .buttonStyle(.bordered)
             }
             .padding()
         }
-    }
-
-    private func load() async {
-        isLoading = true
-        errorMessage = nil
-
-        do {
-            feed = try await feedsService.fetchLatestFeed()
-        } catch {
-            feed = nil
-            errorMessage = String(describing: error)
-        }
-
-        isLoading = false
     }
 }

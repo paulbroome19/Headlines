@@ -22,6 +22,7 @@
 		9777CC2A2F2E80B700F52583 /* FeedsServicing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC292F2E80B700F52583 /* FeedsServicing.swift */; };
 		9777CC2D2F2E8D4100F52583 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC2C2F2E8D4100F52583 /* AppConfig.swift */; };
 		9777CC302F2E8E5500F52583 /* FeedItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC2F2F2E8E5500F52583 /* FeedItem.swift */; };
+		9777CC3F2F2EC18900F52583 /* FeedsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC3E2F2EC18900F52583 /* FeedsViewModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -60,6 +61,7 @@
 		9777CC292F2E80B700F52583 /* FeedsServicing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedsServicing.swift; sourceTree = "<group>"; };
 		9777CC2C2F2E8D4100F52583 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		9777CC2F2F2E8E5500F52583 /* FeedItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedItem.swift; sourceTree = "<group>"; };
+		9777CC3E2F2EC18900F52583 /* FeedsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedsViewModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -215,6 +217,7 @@
 			isa = PBXGroup;
 			children = (
 				9777CC1B2F2E6C6900F52583 /* MainView.swift */,
+				9777CC3E2F2EC18900F52583 /* FeedsViewModel.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -399,6 +402,7 @@
 				9777CC1F2F2E6E1A00F52583 /* FeedsService.swift in Sources */,
 				9777CC1C2F2E6C6900F52583 /* MainView.swift in Sources */,
 				9777CC282F2E7F3600F52583 /* FeedsLatestResponseDTO.swift in Sources */,
+				9777CC3F2F2EC18900F52583 /* FeedsViewModel.swift in Sources */,
 				9777CC212F2E6EEC00F52583 /* MockFeedsService.swift in Sources */,
 				9777CBF22F2E6A9600F52583 /* HeadlinesApp.swift in Sources */,
 				9777CC302F2E8E5500F52583 /* FeedItem.swift in Sources */,
