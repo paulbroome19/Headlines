@@ -1,5 +1,7 @@
 import Foundation
 
+// MARK: - Errors
+
 enum APIError: Error, LocalizedError {
     case invalidURL
     case badStatus(Int)
@@ -20,6 +22,8 @@ enum APIError: Error, LocalizedError {
     }
 }
 
+// MARK: - Client
+
 struct APIClient {
     let baseURL: URL
     private let decoder: JSONDecoder
@@ -33,11 +37,25 @@ struct APIClient {
         _ path: String,
         queryItems: [URLQueryItem] = []
     ) async throws -> T {
-        guard var components = URLComponents(
-            url: baseURL.appendingPathComponent(path),
-            resolvingAgainstBaseURL: false
-        ) else {
+
+        // IMPORTANT:
+        // Don't do baseURL.appendingPathComponent("feeds/latest")
+        // because it turns into "/feeds%2Flatest" (slash encoded) => 404.
+        // Instead, construct the URL via URLComponents and set a real path.
+
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw APIError.invalidURL
+        }
+
+        // Normalize path: allow "feeds/latest" or "/feeds/latest"
+        let cleaned = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        // If baseURL already has a path, append to it safely
+        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if basePath.isEmpty {
+            components.path = "/\(cleaned)"
+        } else {
+            components.path = "/\(basePath)/\(cleaned)"
         }
 
         if !queryItems.isEmpty {
@@ -68,6 +86,7 @@ struct APIClient {
             } catch {
                 throw APIError.decodingFailed(error)
             }
+
         } catch {
             // Don’t double-wrap our own errors
             if let apiError = error as? APIError {

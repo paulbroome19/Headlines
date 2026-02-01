@@ -4,7 +4,11 @@ import SwiftUI
 struct HeadlinesApp: App {
     var body: some Scene {
         WindowGroup {
-            MainView(feedsService: FeedsService())
+            PlaybackView(
+                viewModel: PlaybackViewModel(
+                    feedsService: FeedsService()
+                )
+            )
         }
     }
 }

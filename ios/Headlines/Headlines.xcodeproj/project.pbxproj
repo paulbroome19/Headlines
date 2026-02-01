@@ -13,7 +13,6 @@
 		9777CC032F2E6A9900F52583 /* HeadlinesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC022F2E6A9900F52583 /* HeadlinesTests.swift */; };
 		9777CC0D2F2E6A9900F52583 /* HeadlinesUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC0C2F2E6A9900F52583 /* HeadlinesUITests.swift */; };
 		9777CC0F2F2E6A9900F52583 /* HeadlinesUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC0E2F2E6A9900F52583 /* HeadlinesUITestsLaunchTests.swift */; };
-		9777CC1C2F2E6C6900F52583 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC1B2F2E6C6900F52583 /* MainView.swift */; };
 		9777CC1F2F2E6E1A00F52583 /* FeedsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC1E2F2E6E1A00F52583 /* FeedsService.swift */; };
 		9777CC212F2E6EEC00F52583 /* MockFeedsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC202F2E6EEC00F52583 /* MockFeedsService.swift */; };
 		9777CC232F2E700C00F52583 /* Feed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC222F2E700C00F52583 /* Feed.swift */; };
@@ -23,6 +22,9 @@
 		9777CC2D2F2E8D4100F52583 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC2C2F2E8D4100F52583 /* AppConfig.swift */; };
 		9777CC302F2E8E5500F52583 /* FeedItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC2F2F2E8E5500F52583 /* FeedItem.swift */; };
 		9777CC3F2F2EC18900F52583 /* FeedsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC3E2F2EC18900F52583 /* FeedsViewModel.swift */; };
+		9777CC442F2F7AB400F52583 /* PlaybackViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC432F2F7AB400F52583 /* PlaybackViewModel.swift */; };
+		9777CC482F2F7C3200F52583 /* PlaybackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC472F2F7C3200F52583 /* PlaybackView.swift */; };
+		9777CC4D2F2F8E0400F52583 /* AudioOutputsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC4C2F2F8E0400F52583 /* AudioOutputsService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -52,7 +54,6 @@
 		9777CC082F2E6A9900F52583 /* HeadlinesUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HeadlinesUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9777CC0C2F2E6A9900F52583 /* HeadlinesUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadlinesUITests.swift; sourceTree = "<group>"; };
 		9777CC0E2F2E6A9900F52583 /* HeadlinesUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadlinesUITestsLaunchTests.swift; sourceTree = "<group>"; };
-		9777CC1B2F2E6C6900F52583 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
 		9777CC1E2F2E6E1A00F52583 /* FeedsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedsService.swift; sourceTree = "<group>"; };
 		9777CC202F2E6EEC00F52583 /* MockFeedsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockFeedsService.swift; sourceTree = "<group>"; };
 		9777CC222F2E700C00F52583 /* Feed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Feed.swift; sourceTree = "<group>"; };
@@ -62,6 +63,9 @@
 		9777CC2C2F2E8D4100F52583 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		9777CC2F2F2E8E5500F52583 /* FeedItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedItem.swift; sourceTree = "<group>"; };
 		9777CC3E2F2EC18900F52583 /* FeedsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedsViewModel.swift; sourceTree = "<group>"; };
+		9777CC432F2F7AB400F52583 /* PlaybackViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackViewModel.swift; sourceTree = "<group>"; };
+		9777CC472F2F7C3200F52583 /* PlaybackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackView.swift; sourceTree = "<group>"; };
+		9777CC4C2F2F8E0400F52583 /* AudioOutputsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOutputsService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -113,9 +117,10 @@
 			isa = PBXGroup;
 			children = (
 				9777CC312F2EA0DB00F52583 /* App */,
-				9777CC332F2EA17000F52583 /* Domain */,
+				9777CC382F2EA33C00F52583 /* Core */,
 				9777CC342F2EA1A800F52583 /* Features */,
-				9777CC382F2EA33C00F52583 /* Infrastructure */,
+				9777CC2E2F2E8E4000F52583 /* Models */,
+				9777CC492F2F879600F52583 /* Services */,
 			);
 			path = Headlines;
 			sourceTree = "<group>";
@@ -145,22 +150,6 @@
 			path = HeadlinesUITests;
 			sourceTree = "<group>";
 		};
-		9777CC1D2F2E6DF100F52583 /* Services */ = {
-			isa = PBXGroup;
-			children = (
-				9777CC292F2E80B700F52583 /* FeedsServicing.swift */,
-			);
-			path = Services;
-			sourceTree = "<group>";
-		};
-		9777CC2B2F2E8D1D00F52583 /* Config */ = {
-			isa = PBXGroup;
-			children = (
-				9777CC2C2F2E8D4100F52583 /* AppConfig.swift */,
-			);
-			path = Config;
-			sourceTree = "<group>";
-		};
 		9777CC2E2F2E8E4000F52583 /* Models */ = {
 			isa = PBXGroup;
 			children = (
@@ -178,18 +167,10 @@
 			path = App;
 			sourceTree = "<group>";
 		};
-		9777CC332F2EA17000F52583 /* Domain */ = {
-			isa = PBXGroup;
-			children = (
-				9777CC2E2F2E8E4000F52583 /* Models */,
-				9777CC1D2F2E6DF100F52583 /* Services */,
-			);
-			path = Domain;
-			sourceTree = "<group>";
-		};
 		9777CC342F2EA1A800F52583 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				9777CC402F2F7A7F00F52583 /* Playback */,
 				9777CC352F2EA1CC00F52583 /* Feeds */,
 			);
 			path = Features;
@@ -198,54 +179,18 @@
 		9777CC352F2EA1CC00F52583 /* Feeds */ = {
 			isa = PBXGroup;
 			children = (
-				9777CC3B2F2EA4CE00F52583 /* Services */,
-				9777CC362F2EA1D900F52583 /* DTOs */,
-				9777CC372F2EA20900F52583 /* Views */,
+				9777CC3E2F2EC18900F52583 /* FeedsViewModel.swift */,
 			);
 			path = Feeds;
 			sourceTree = "<group>";
 		};
-		9777CC362F2EA1D900F52583 /* DTOs */ = {
+		9777CC382F2EA33C00F52583 /* Core */ = {
 			isa = PBXGroup;
 			children = (
-				9777CC272F2E7F3600F52583 /* FeedsLatestResponseDTO.swift */,
-			);
-			path = DTOs;
-			sourceTree = "<group>";
-		};
-		9777CC372F2EA20900F52583 /* Views */ = {
-			isa = PBXGroup;
-			children = (
-				9777CC1B2F2E6C6900F52583 /* MainView.swift */,
-				9777CC3E2F2EC18900F52583 /* FeedsViewModel.swift */,
-			);
-			path = Views;
-			sourceTree = "<group>";
-		};
-		9777CC382F2EA33C00F52583 /* Infrastructure */ = {
-			isa = PBXGroup;
-			children = (
-				9777CC2B2F2E8D1D00F52583 /* Config */,
-				9777CC392F2EA37A00F52583 /* Network */,
-			);
-			path = Infrastructure;
-			sourceTree = "<group>";
-		};
-		9777CC392F2EA37A00F52583 /* Network */ = {
-			isa = PBXGroup;
-			children = (
+				9777CC2C2F2E8D4100F52583 /* AppConfig.swift */,
 				9777CC242F2E7BEB00F52583 /* APIClient.swift */,
 			);
-			path = Network;
-			sourceTree = "<group>";
-		};
-		9777CC3B2F2EA4CE00F52583 /* Services */ = {
-			isa = PBXGroup;
-			children = (
-				9777CC1E2F2E6E1A00F52583 /* FeedsService.swift */,
-				9777CC202F2E6EEC00F52583 /* MockFeedsService.swift */,
-			);
-			path = Services;
+			path = Core;
 			sourceTree = "<group>";
 		};
 		9777CC3C2F2EA57700F52583 /* Resources */ = {
@@ -264,6 +209,43 @@
 				9777CC012F2E6A9900F52583 /* HeadlinesTests */,
 			);
 			path = Tests;
+			sourceTree = "<group>";
+		};
+		9777CC402F2F7A7F00F52583 /* Playback */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC432F2F7AB400F52583 /* PlaybackViewModel.swift */,
+				9777CC472F2F7C3200F52583 /* PlaybackView.swift */,
+			);
+			path = Playback;
+			sourceTree = "<group>";
+		};
+		9777CC492F2F879600F52583 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC4B2F2F8DE700F52583 /* Audio */,
+				9777CC4A2F2F87A100F52583 /* Feeds */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		9777CC4A2F2F87A100F52583 /* Feeds */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC1E2F2E6E1A00F52583 /* FeedsService.swift */,
+				9777CC292F2E80B700F52583 /* FeedsServicing.swift */,
+				9777CC202F2E6EEC00F52583 /* MockFeedsService.swift */,
+				9777CC272F2E7F3600F52583 /* FeedsLatestResponseDTO.swift */,
+			);
+			path = Feeds;
+			sourceTree = "<group>";
+		};
+		9777CC4B2F2F8DE700F52583 /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				9777CC4C2F2F8E0400F52583 /* AudioOutputsService.swift */,
+			);
+			path = Audio;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -397,16 +379,18 @@
 			buildActionMask = 2147483647;
 			files = (
 				9777CC2D2F2E8D4100F52583 /* AppConfig.swift in Sources */,
+				9777CC442F2F7AB400F52583 /* PlaybackViewModel.swift in Sources */,
 				9777CC2A2F2E80B700F52583 /* FeedsServicing.swift in Sources */,
 				9777CC232F2E700C00F52583 /* Feed.swift in Sources */,
 				9777CC1F2F2E6E1A00F52583 /* FeedsService.swift in Sources */,
-				9777CC1C2F2E6C6900F52583 /* MainView.swift in Sources */,
 				9777CC282F2E7F3600F52583 /* FeedsLatestResponseDTO.swift in Sources */,
 				9777CC3F2F2EC18900F52583 /* FeedsViewModel.swift in Sources */,
+				9777CC4D2F2F8E0400F52583 /* AudioOutputsService.swift in Sources */,
 				9777CC212F2E6EEC00F52583 /* MockFeedsService.swift in Sources */,
 				9777CBF22F2E6A9600F52583 /* HeadlinesApp.swift in Sources */,
 				9777CC302F2E8E5500F52583 /* FeedItem.swift in Sources */,
 				9777CC252F2E7BEB00F52583 /* APIClient.swift in Sources */,
+				9777CC482F2F7C3200F52583 /* PlaybackView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
