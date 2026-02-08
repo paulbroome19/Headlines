@@ -1,3 +1,5 @@
+cd /Users/paulbroome/Desktop/Headlines/backend
+
 poetry run python -m uvicorn core.api.main:app --reload --port 8001 --app-dir src
 
 poetry run python -m core.workers.run_dispatcher

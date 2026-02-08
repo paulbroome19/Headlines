@@ -1,0 +1,15 @@
+INGESTION
+  ↓
+NORMALIZATION
+  ↓
+DEDUPLICATION
+  ↓
+RANKING (per category)
+  ↓
+SELECTION (bulletin logic)
+  ↓
+SUMMARISE (LLM)
+  ↓
+TTS
+  ↓
+PLAYBACK
