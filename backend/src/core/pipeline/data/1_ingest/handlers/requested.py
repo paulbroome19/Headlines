@@ -30,13 +30,13 @@ def _parse_published_at(published_at: Optional[str]) -> Optional[datetime]:
 
 def handle_ingest_requested(event: dict) -> None:
     """
-    Event: data.ingest.requested
+    Event: data.1_ingest.requested
 
     Responsibilities (v1):
     - create data.ingestion_runs row
     - fetch articles from provider (GNews)
     - insert into data.ingested_articles (raw + metadata + dedup_hash)
-    - enqueue data.normalise.requested into event.outbox
+    - enqueue data.2_normalise.requested into event.outbox
     """
     print(">>> INGEST HANDLER CALLED <<<", event)
 
@@ -102,11 +102,11 @@ def handle_ingest_requested(event: dict) -> None:
             if not already:
                 inserted_count += 1
 
-        # 4) Enqueue next pipeline step (normalise)
+        # 4) Enqueue next pipeline step (2_normalise)
         outbox.add_event(
             Event(
                 type=DATA_NORMALISE_REQUESTED,
-                idempotency_key=f"normalise:{run.id}",
+                idempotency_key=f"2_normalise:{run.id}",
                 payload={
                     "ingestion_run_id": run.id,
                     "source": source,
