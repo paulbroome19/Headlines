@@ -83,7 +83,7 @@ def upgrade() -> None:
         schema="data",
     )
 
-    # Fast lookup per run (2_normalise step)
+    # Fast lookup per run (normalise step)
     op.create_index(
         "ix_data_ingested_articles_ingestion_run_id",
         "ingested_articles",

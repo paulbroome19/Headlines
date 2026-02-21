@@ -5,16 +5,24 @@ from core.platform.queue.event import Event
 from core.platform.queue.outbox import OutboxRepo
 
 from core.pipeline.data.summarise.events import DATA_SUMMARISE_REQUESTED
+from core.pipeline.data.normalise.repos.normalisation_article_repo import (
+    NormalisationArticleRepo,
+)
+from core.pipeline.data.normalise.categorise.entity_service import (
+    categorise_article,
+)
 
 
 def handle_normalise_requested(event: dict) -> None:
     """
-    Event: data.2_normalise.requested
+    Event: data.normalise.requested
 
     Responsibilities:
     - read data.ingested_articles for this ingestion_run_id
-    - insert clean rows into data.normalisation_articles (expanded schema)
-    - enqueue data.summarise.requested (next stage for now)
+    - insert clean rows into data.normalisation_articles
+    - categorise entities (deterministic keyword engine)
+    - persist entity definitions + links
+    - enqueue data.summarise.requested
     """
 
     payload = event.get("payload") or {}
@@ -22,12 +30,12 @@ def handle_normalise_requested(event: dict) -> None:
     trace_id = event.get("trace_id")
 
     if not ingestion_run_id:
-        raise ValueError("ingestion_run_id missing in 2_normalise event payload")
+        raise ValueError("ingestion_run_id missing in normalise event payload")
 
     with SessionLocal() as db:
         outbox = OutboxRepo(db)
+        repo = NormalisationArticleRepo(db)
 
-        # 1) Fetch ingested rows for this run (including expanded metadata)
         rows = db.execute(
             text(
                 """
@@ -50,11 +58,10 @@ def handle_normalise_requested(event: dict) -> None:
         inserted_count = 0
 
         for r in rows:
-            # Skip malformed rows
             if not r["title"] or not r["url"]:
                 continue
 
-            # Prevent duplicates if event replays / retry happens
+            # 🔁 Idempotency guard
             exists = db.execute(
                 text(
                     """
@@ -66,21 +73,22 @@ def handle_normalise_requested(event: dict) -> None:
                 ),
                 {"ingested_article_id": r["id"]},
             ).first()
+
             if exists:
                 continue
 
             raw = r["raw"] or {}
-            # Keep this small + cheap for now. (We can improve later.)
             snippet = raw.get("description") or raw.get("content") or None
+
             if isinstance(snippet, str):
                 snippet = snippet.strip()
-                if snippet == "":
+                if not snippet:
                     snippet = None
-                # hard cap to keep rows tidy
                 if snippet and len(snippet) > 800:
                     snippet = snippet[:800]
 
-            db.execute(
+            # 1️⃣ Insert normalised article (with safe category defaults)
+            normalised_id = db.execute(
                 text(
                     """
                     INSERT INTO data.normalisation_articles (
@@ -92,7 +100,11 @@ def handle_normalise_requested(event: dict) -> None:
                         source,
                         published_at,
                         content_snippet,
-                        status
+                        status,
+                        category_slugs,
+                        category_primary,
+                        category_method,
+                        category_version
                     )
                     VALUES (
                         :ingestion_run_id,
@@ -103,8 +115,13 @@ def handle_normalise_requested(event: dict) -> None:
                         :source,
                         :published_at,
                         :content_snippet,
-                        'normalised'
+                        'normalised',
+                        :category_slugs,
+                        :category_primary,
+                        :category_method,
+                        :category_version
                     )
+                    RETURNING id
                     """
                 ),
                 {
@@ -113,15 +130,42 @@ def handle_normalise_requested(event: dict) -> None:
                     "provider": r["provider"] or "unknown",
                     "title": r["title"],
                     "url": r["url"],
-                    "source": r["publisher"] or "unknown",  # this is the BRAND the user sees
+                    "source": r["publisher"] or "unknown",
                     "published_at": r["published_at"],
                     "content_snippet": snippet,
+                    "category_slugs": [],
+                    "category_primary": None,
+                    "category_method": "unclassified",
+                    "category_version": 1,
                 },
+            ).scalar_one()
+
+            # 2️⃣ Entity categorisation
+            result = categorise_article(
+                title=r["title"],
+                content_snippet=snippet,
             )
+
+            for slug in result.entity_slugs:
+                entity_id = repo.get_entity_id_by_slug(slug)
+
+                if not entity_id:
+                    meta = repo.get_registry_metadata(slug)
+                    entity_id = repo.insert_entity(
+                        slug=slug,
+                        display_name=meta["display_name"],
+                        entity_type=meta["entity_type"],
+                    )
+
+                repo.link_entity_to_article(
+                    normalisation_article_id=normalised_id,
+                    entity_id=entity_id,
+                    is_primary=(slug == result.primary_entity),
+                    confidence_score=result.scores.get(slug, 1.0),
+                )
 
             inserted_count += 1
 
-        # 3) Enqueue next stage (temporary: summarise)
         next_event = Event(
             type=DATA_SUMMARISE_REQUESTED,
             idempotency_key=f"summarise:{ingestion_run_id}",

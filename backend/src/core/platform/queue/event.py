@@ -12,7 +12,7 @@ class Event:
     Canonical event envelope.
 
     - idempotency_key: stable key to ensure at-least-once processing doesn't duplicate work
-    - type: routing key (e.g. "data.1_ingest.requested")
+    - type: routing key (e.g. "data.ingest.requested")
     - payload: JSON-serializable dict
     """
     type: str

@@ -1,0 +1,136 @@
+version: 1
+
+entities:
+
+  # ============================================================
+  # PREMIER LEAGUE TEAMS
+  # ============================================================
+
+  man-utd:
+    display_name: "Manchester United"
+    entity_type: "team"
+    aliases:
+      - "manchester united"
+      - "man utd"
+      - "man u"
+
+  liverpool:
+    display_name: "Liverpool FC"
+    entity_type: "team"
+    aliases:
+      - "liverpool"
+      - "liverpool fc"
+      - "lfc"
+
+  arsenal:
+    display_name: "Arsenal"
+    entity_type: "team"
+    aliases:
+      - "arsenal"
+      - "arsenal fc"
+
+  chelsea:
+    display_name: "Chelsea"
+    entity_type: "team"
+    aliases:
+      - "chelsea"
+      - "chelsea fc"
+
+  # ============================================================
+  # FORMULA 1 DRIVERS
+  # ============================================================
+
+  lewis-hamilton:
+    display_name: "Lewis Hamilton"
+    entity_type: "person"
+    aliases:
+      - "lewis hamilton"
+      - "hamilton"
+
+  max-verstappen:
+    display_name: "Max Verstappen"
+    entity_type: "person"
+    aliases:
+      - "max verstappen"
+      - "verstappen"
+
+  charles-leclerc:
+    display_name: "Charles Leclerc"
+    entity_type: "person"
+    aliases:
+      - "charles leclerc"
+      - "leclerc"
+
+  oscar-piastri:
+    display_name: "Oscar Piastri"
+    entity_type: "person"
+    aliases:
+      - "oscar piastri"
+      - "piastri"
+
+  carlos-sainz:
+    display_name: "Carlos Sainz"
+    entity_type: "person"
+    aliases:
+      - "carlos sainz"
+      - "sainz"
+
+  # ============================================================
+  # FORMULA 1 TEAMS (important for clustering)
+  # ============================================================
+
+  ferrari:
+    display_name: "Ferrari"
+    entity_type: "team"
+    aliases:
+      - "ferrari"
+
+  mercedes-f1:
+    display_name: "Mercedes F1"
+    entity_type: "team"
+    aliases:
+      - "mercedes"
+      - "mercedes amg"
+
+  red-bull-racing:
+    display_name: "Red Bull Racing"
+    entity_type: "team"
+    aliases:
+      - "red bull"
+      - "red bull racing"
+
+  mclaren:
+    display_name: "McLaren"
+    entity_type: "team"
+    aliases:
+      - "mclaren"
+
+  # ============================================================
+  # UK POLITICS
+  # ============================================================
+
+  conservative-party:
+    display_name: "Conservative Party"
+    entity_type: "political_party"
+    aliases:
+      - "conservative party"
+      - "conservatives"
+      - "tories"
+
+  labour-party:
+    display_name: "Labour Party"
+    entity_type: "political_party"
+    aliases:
+      - "labour party"
+      - "labour"
+
+  # ============================================================
+  # UK GOVERNMENT & FINANCE
+  # ============================================================
+
+  hmrc:
+    display_name: "HMRC"
+    entity_type: "organisation"
+    aliases:
+      - "hmrc"
+      - "her majesty's revenue and customs"
