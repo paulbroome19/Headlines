@@ -3,7 +3,500 @@ version: 1
 entities:
 
   # ============================================================
-  # PREMIER LEAGUE TEAMS
+  # POLITICS
+  # ============================================================
+
+  labour-party:
+    display_name: "Labour Party"
+    entity_type: "political_party"
+    aliases:
+      - "labour"
+      - "labour party"
+    categories:
+      - "politics.uk"
+
+  conservative-party:
+    display_name: "Conservative Party"
+    entity_type: "political_party"
+    aliases:
+      - "conservative party"
+      - "conservatives"
+      - "tories"
+    categories:
+      - "politics.uk"
+
+  white-house:
+    display_name: "White House"
+    entity_type: "organisation"
+    aliases:
+      - "white house"
+    categories:
+      - "politics.us"
+
+  congress:
+    display_name: "US Congress"
+    entity_type: "organisation"
+    aliases:
+      - "congress"
+      - "us congress"
+    categories:
+      - "politics.us"
+
+  senate:
+    display_name: "US Senate"
+    entity_type: "organisation"
+    aliases:
+      - "senate"
+      - "us senate"
+    categories:
+      - "politics.us"
+
+  european-union:
+    display_name: "European Union"
+    entity_type: "organisation"
+    aliases:
+      - "european union"
+      - "eu"
+      - "eu commission"
+      - "european commission"
+    categories:
+      - "politics.europe"
+      - "world.europe"
+
+  nato:
+    display_name: "NATO"
+    entity_type: "organisation"
+    aliases:
+      - "nato"
+    categories:
+      - "politics.global"
+      - "world.europe"
+
+  united-nations:
+    display_name: "United Nations"
+    entity_type: "organisation"
+    aliases:
+      - "united nations"
+      - "u.n."
+      - "un"
+    categories:
+      - "politics.global"
+
+  # ============================================================
+  # WORLD
+  # ============================================================
+
+  united-states:
+    display_name: "United States"
+    entity_type: "country"
+    aliases:
+      - "united states"
+      - "u.s."
+      - "us"
+      - "america"
+    categories:
+      - "world.us"
+
+  france:
+    display_name: "France"
+    entity_type: "country"
+    aliases:
+      - "france"
+    categories:
+      - "world.europe"
+
+  germany:
+    display_name: "Germany"
+    entity_type: "country"
+    aliases:
+      - "germany"
+    categories:
+      - "world.europe"
+
+  italy:
+    display_name: "Italy"
+    entity_type: "country"
+    aliases:
+      - "italy"
+    categories:
+      - "world.europe"
+
+  spain:
+    display_name: "Spain"
+    entity_type: "country"
+    aliases:
+      - "spain"
+    categories:
+      - "world.europe"
+
+  china:
+    display_name: "China"
+    entity_type: "country"
+    aliases:
+      - "china"
+    categories:
+      - "world.asia"
+
+  india:
+    display_name: "India"
+    entity_type: "country"
+    aliases:
+      - "india"
+    categories:
+      - "world.asia"
+
+  japan:
+    display_name: "Japan"
+    entity_type: "country"
+    aliases:
+      - "japan"
+    categories:
+      - "world.asia"
+
+  taiwan:
+    display_name: "Taiwan"
+    entity_type: "country"
+    aliases:
+      - "taiwan"
+    categories:
+      - "world.asia"
+
+  israel:
+    display_name: "Israel"
+    entity_type: "country"
+    aliases:
+      - "israel"
+    categories:
+      - "world.middle-east"
+
+  iran:
+    display_name: "Iran"
+    entity_type: "country"
+    aliases:
+      - "iran"
+    categories:
+      - "world.middle-east"
+
+  saudi-arabia:
+    display_name: "Saudi Arabia"
+    entity_type: "country"
+    aliases:
+      - "saudi arabia"
+      - "saudi"
+    categories:
+      - "world.middle-east"
+
+  nigeria:
+    display_name: "Nigeria"
+    entity_type: "country"
+    aliases:
+      - "nigeria"
+    categories:
+      - "world.africa"
+
+  south-africa:
+    display_name: "South Africa"
+    entity_type: "country"
+    aliases:
+      - "south africa"
+    categories:
+      - "world.africa"
+
+  kenya:
+    display_name: "Kenya"
+    entity_type: "country"
+    aliases:
+      - "kenya"
+    categories:
+      - "world.africa"
+
+  # ============================================================
+  # BUSINESS
+  # ============================================================
+
+  hmrc:
+    display_name: "HMRC"
+    entity_type: "organisation"
+    aliases:
+      - "hmrc"
+      - "her majesty's revenue and customs"
+    categories:
+      - "business.personal-finance"
+      - "politics.uk"
+
+  bank-of-england:
+    display_name: "Bank of England"
+    entity_type: "organisation"
+    aliases:
+      - "bank of england"
+      - "boe"
+    categories:
+      - "business.economy"
+      - "business.markets"
+
+  federal-reserve:
+    display_name: "Federal Reserve"
+    entity_type: "organisation"
+    aliases:
+      - "federal reserve"
+      - "fed"
+    categories:
+      - "business.economy"
+      - "business.markets"
+
+  goldman-sachs:
+    display_name: "Goldman Sachs"
+    entity_type: "company"
+    aliases:
+      - "goldman sachs"
+    categories:
+      - "business.companies"
+      - "business.markets"
+
+  barclays:
+    display_name: "Barclays"
+    entity_type: "company"
+    aliases:
+      - "barclays"
+    categories:
+      - "business.companies"
+      - "business.personal-finance"
+
+  jpmorgan:
+    display_name: "JPMorgan"
+    entity_type: "company"
+    aliases:
+      - "jpmorgan"
+      - "jp morgan"
+    categories:
+      - "business.companies"
+      - "business.markets"
+
+  ftse-100:
+    display_name: "FTSE 100"
+    entity_type: "index"
+    aliases:
+      - "ftse"
+      - "ftse 100"
+    categories:
+      - "business.markets"
+
+  nasdaq:
+    display_name: "Nasdaq"
+    entity_type: "index"
+    aliases:
+      - "nasdaq"
+    categories:
+      - "business.markets"
+
+  s-and-p-500:
+    display_name: "S&P 500"
+    entity_type: "index"
+    aliases:
+      - "s&p 500"
+      - "sp 500"
+    categories:
+      - "business.markets"
+
+  # ============================================================
+  # TECHNOLOGY
+  # ============================================================
+
+  openai:
+    display_name: "OpenAI"
+    entity_type: "company"
+    aliases:
+      - "openai"
+      - "chatgpt"
+    categories:
+      - "technology.ai"
+      - "technology.companies"
+
+  google:
+    display_name: "Google"
+    entity_type: "company"
+    aliases:
+      - "google"
+      - "alphabet"
+    categories:
+      - "technology.companies"
+      - "technology.ai"
+
+  microsoft:
+    display_name: "Microsoft"
+    entity_type: "company"
+    aliases:
+      - "microsoft"
+    categories:
+      - "technology.companies"
+      - "technology.ai"
+
+  apple:
+    display_name: "Apple"
+    entity_type: "company"
+    aliases:
+      - "apple"
+    categories:
+      - "technology.companies"
+      - "technology.consumer"
+
+  nvidia:
+    display_name: "Nvidia"
+    entity_type: "company"
+    aliases:
+      - "nvidia"
+    categories:
+      - "technology.companies"
+      - "technology.ai"
+
+  meta:
+    display_name: "Meta"
+    entity_type: "company"
+    aliases:
+      - "meta"
+      - "facebook"
+    categories:
+      - "technology.companies"
+      - "technology.ai"
+
+  playstation:
+    display_name: "PlayStation"
+    entity_type: "franchise"
+    aliases:
+      - "playstation"
+      - "ps5"
+    categories:
+      - "technology.gaming"
+      - "technology.consumer"
+
+  xbox:
+    display_name: "Xbox"
+    entity_type: "franchise"
+    aliases:
+      - "xbox"
+    categories:
+      - "technology.gaming"
+      - "technology.consumer"
+
+  nintendo:
+    display_name: "Nintendo"
+    entity_type: "company"
+    aliases:
+      - "nintendo"
+      - "switch"
+      - "eshop"
+    categories:
+      - "technology.gaming"
+
+  pokemon:
+    display_name: "Pokemon"
+    entity_type: "franchise"
+    aliases:
+      - "pokemon"
+      - "fire red"
+      - "leafgreen"
+    categories:
+      - "technology.gaming"
+
+  # ============================================================
+  # SCIENCE / CLIMATE / HEALTH
+  # ============================================================
+
+  nasa:
+    display_name: "NASA"
+    entity_type: "organisation"
+    aliases:
+      - "nasa"
+    categories:
+      - "science"
+
+  esa:
+    display_name: "European Space Agency"
+    entity_type: "organisation"
+    aliases:
+      - "esa"
+      - "european space agency"
+    categories:
+      - "science"
+
+  world-health-organization:
+    display_name: "World Health Organization"
+    entity_type: "organisation"
+    aliases:
+      - "world health organization"
+      - "who"
+    categories:
+      - "health"
+
+  nhs:
+    display_name: "NHS"
+    entity_type: "organisation"
+    aliases:
+      - "nhs"
+      - "national health service"
+    categories:
+      - "health"
+
+  cop:
+    display_name: "COP Climate Summit"
+    entity_type: "organisation"
+    aliases:
+      - "cop"
+      - "cop summit"
+      - "climate summit"
+    categories:
+      - "climate"
+
+  ipcc:
+    display_name: "IPCC"
+    entity_type: "organisation"
+    aliases:
+      - "ipcc"
+    categories:
+      - "climate"
+
+  # ============================================================
+  # ENTERTAINMENT
+  # ============================================================
+
+  netflix:
+    display_name: "Netflix"
+    entity_type: "company"
+    aliases:
+      - "netflix"
+    categories:
+      - "entertainment.tv-film"
+
+  disney:
+    display_name: "Disney"
+    entity_type: "company"
+    aliases:
+      - "disney"
+      - "disney+"
+    categories:
+      - "entertainment.tv-film"
+
+  taylor-swift:
+    display_name: "Taylor Swift"
+    entity_type: "person"
+    aliases:
+      - "taylor swift"
+      - "swift"
+    categories:
+      - "entertainment.music"
+      - "entertainment.celebrity"
+
+  drake:
+    display_name: "Drake"
+    entity_type: "person"
+    aliases:
+      - "drake"
+    categories:
+      - "entertainment.music"
+      - "entertainment.celebrity"
+
+  # ============================================================
+  # SPORT - FOOTBALL
   # ============================================================
 
   man-utd:
@@ -13,6 +506,8 @@ entities:
       - "manchester united"
       - "man utd"
       - "man u"
+    categories:
+      - "sport.football.premier-league"
 
   liverpool:
     display_name: "Liverpool FC"
@@ -21,6 +516,8 @@ entities:
       - "liverpool"
       - "liverpool fc"
       - "lfc"
+    categories:
+      - "sport.football.premier-league"
 
   arsenal:
     display_name: "Arsenal"
@@ -28,6 +525,8 @@ entities:
     aliases:
       - "arsenal"
       - "arsenal fc"
+    categories:
+      - "sport.football.premier-league"
 
   chelsea:
     display_name: "Chelsea"
@@ -35,9 +534,65 @@ entities:
     aliases:
       - "chelsea"
       - "chelsea fc"
+    categories:
+      - "sport.football.premier-league"
+
+  man-city:
+    display_name: "Manchester City"
+    entity_type: "team"
+    aliases:
+      - "manchester city"
+      - "man city"
+    categories:
+      - "sport.football.premier-league"
+
+  tottenham:
+    display_name: "Tottenham Hotspur"
+    entity_type: "team"
+    aliases:
+      - "tottenham"
+      - "spurs"
+      - "tottenham hotspur"
+    categories:
+      - "sport.football.premier-league"
+
+  leeds-united:
+    display_name: "Leeds United"
+    entity_type: "team"
+    aliases:
+      - "leeds united"
+      - "leeds"
+    categories:
+      - "sport.football.championship"
+
+  leicester-city:
+    display_name: "Leicester City"
+    entity_type: "team"
+    aliases:
+      - "leicester city"
+      - "leicester"
+    categories:
+      - "sport.football.championship"
+
+  real-madrid:
+    display_name: "Real Madrid"
+    entity_type: "team"
+    aliases:
+      - "real madrid"
+    categories:
+      - "sport.football.champions-league"
+
+  england-football:
+    display_name: "England"
+    entity_type: "team"
+    aliases:
+      - "england football"
+      - "england"
+    categories:
+      - "sport.football.international"
 
   # ============================================================
-  # FORMULA 1 DRIVERS
+  # SPORT - FORMULA 1
   # ============================================================
 
   lewis-hamilton:
@@ -46,6 +601,8 @@ entities:
     aliases:
       - "lewis hamilton"
       - "hamilton"
+    categories:
+      - "sport.formula1"
 
   max-verstappen:
     display_name: "Max Verstappen"
@@ -53,6 +610,8 @@ entities:
     aliases:
       - "max verstappen"
       - "verstappen"
+    categories:
+      - "sport.formula1"
 
   charles-leclerc:
     display_name: "Charles Leclerc"
@@ -60,6 +619,8 @@ entities:
     aliases:
       - "charles leclerc"
       - "leclerc"
+    categories:
+      - "sport.formula1"
 
   oscar-piastri:
     display_name: "Oscar Piastri"
@@ -67,6 +628,8 @@ entities:
     aliases:
       - "oscar piastri"
       - "piastri"
+    categories:
+      - "sport.formula1"
 
   carlos-sainz:
     display_name: "Carlos Sainz"
@@ -74,16 +637,16 @@ entities:
     aliases:
       - "carlos sainz"
       - "sainz"
-
-  # ============================================================
-  # FORMULA 1 TEAMS (important for clustering)
-  # ============================================================
+    categories:
+      - "sport.formula1"
 
   ferrari:
     display_name: "Ferrari"
     entity_type: "team"
     aliases:
       - "ferrari"
+    categories:
+      - "sport.formula1"
 
   mercedes-f1:
     display_name: "Mercedes F1"
@@ -91,6 +654,8 @@ entities:
     aliases:
       - "mercedes"
       - "mercedes amg"
+    categories:
+      - "sport.formula1"
 
   red-bull-racing:
     display_name: "Red Bull Racing"
@@ -98,39 +663,125 @@ entities:
     aliases:
       - "red bull"
       - "red bull racing"
+    categories:
+      - "sport.formula1"
 
   mclaren:
     display_name: "McLaren"
     entity_type: "team"
     aliases:
       - "mclaren"
+    categories:
+      - "sport.formula1"
 
   # ============================================================
-  # UK POLITICS
+  # SPORT - CRICKET
   # ============================================================
 
-  conservative-party:
-    display_name: "Conservative Party"
-    entity_type: "political_party"
+  england-cricket:
+    display_name: "England Cricket"
+    entity_type: "team"
     aliases:
-      - "conservative party"
-      - "conservatives"
-      - "tories"
+      - "england cricket"
+    categories:
+      - "sport.cricket.international"
 
-  labour-party:
-    display_name: "Labour Party"
-    entity_type: "political_party"
-    aliases:
-      - "labour party"
-      - "labour"
-
-  # ============================================================
-  # UK GOVERNMENT & FINANCE
-  # ============================================================
-
-  hmrc:
-    display_name: "HMRC"
+  the-hundred:
+    display_name: "The Hundred"
     entity_type: "organisation"
     aliases:
-      - "hmrc"
-      - "her majesty's revenue and customs"
+      - "the hundred"
+    categories:
+      - "sport.cricket.uk"
+
+  ashes:
+    display_name: "The Ashes"
+    entity_type: "event"
+    aliases:
+      - "the ashes"
+      - "ashes"
+    categories:
+      - "sport.cricket.international"
+
+  # ============================================================
+  # SPORT - RUGBY
+  # ============================================================
+
+  six-nations:
+    display_name: "Six Nations"
+    entity_type: "organisation"
+    aliases:
+      - "six nations"
+    categories:
+      - "sport.rugby-union.international"
+
+  premiership-rugby:
+    display_name: "Premiership Rugby"
+    entity_type: "organisation"
+    aliases:
+      - "premiership rugby"
+    categories:
+      - "sport.rugby-union.uk"
+
+  super-league:
+    display_name: "Super League"
+    entity_type: "organisation"
+    aliases:
+      - "super league"
+    categories:
+      - "sport.rugby-league"
+
+  # ============================================================
+  # SPORT - GOLF / COMBAT / DARTS / US SPORTS
+  # ============================================================
+
+  pga-tour:
+    display_name: "PGA Tour"
+    entity_type: "organisation"
+    aliases:
+      - "pga tour"
+    categories:
+      - "sport.golf.pga"
+
+  liv-golf:
+    display_name: "LIV Golf"
+    entity_type: "organisation"
+    aliases:
+      - "liv golf"
+    categories:
+      - "sport.golf.liv"
+
+  ufc:
+    display_name: "UFC"
+    entity_type: "organisation"
+    aliases:
+      - "ufc"
+    categories:
+      - "sport.mma"
+
+  pdc:
+    display_name: "PDC"
+    entity_type: "organisation"
+    aliases:
+      - "pdc"
+      - "professional darts corporation"
+    categories:
+      - "sport.darts"
+
+  nfl:
+    display_name: "NFL"
+    entity_type: "organisation"
+    aliases:
+      - "nfl"
+      - "national football league"
+    categories:
+      - "sport.nfl"
+
+  nba:
+    display_name: "NBA"
+    entity_type: "organisation"
+    aliases:
+      - "nba"
+      - "national basketball association"
+    categories:
+      - "sport.nba"

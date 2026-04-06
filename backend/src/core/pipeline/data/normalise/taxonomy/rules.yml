@@ -1,0 +1,290 @@
+version: 1
+
+rules:
+
+  politics.uk:
+    keywords:
+      - "prime minister"
+      - "downing street"
+      - "westminster"
+      - "house of commons"
+      - "house of lords"
+      - "cabinet"
+      - "uk government"
+    entities:
+      - "labour-party"
+      - "conservative-party"
+      - "hmrc"
+
+  politics.us:
+    keywords:
+      - "white house"
+      - "congress"
+      - "senate"
+      - "president"
+      - "us government"
+
+  politics.europe:
+    keywords:
+      - "european union"
+      - "eu commission"
+      - "brussels"
+      - "european parliament"
+
+  politics.global:
+    keywords:
+      - "diplomatic"
+      - "sanctions"
+      - "foreign minister"
+      - "summit"
+
+  world.us:
+    keywords:
+      - "united states"
+      - "america"
+      - "u.s."
+
+  world.europe:
+    keywords:
+      - "france"
+      - "germany"
+      - "italy"
+      - "spain"
+
+  world.asia:
+    keywords:
+      - "china"
+      - "japan"
+      - "india"
+      - "taiwan"
+
+  world.middle-east:
+    keywords:
+      - "israel"
+      - "gaza"
+      - "iran"
+      - "saudi"
+
+  world.africa:
+    keywords:
+      - "nigeria"
+      - "south africa"
+      - "kenya"
+      - "sudan"
+
+  business.markets:
+    keywords:
+      - "stocks"
+      - "shares"
+      - "bond yields"
+      - "market selloff"
+      - "wall street"
+      - "ftse"
+      - "s&p 500"
+      - "nasdaq"
+
+  business.companies:
+    keywords:
+      - "earnings"
+      - "merger"
+      - "acquisition"
+      - "takeover"
+      - "ceo"
+
+  business.economy:
+    keywords:
+      - "inflation"
+      - "interest rates"
+      - "gdp"
+      - "recession"
+      - "unemployment"
+
+  business.personal-finance:
+    keywords:
+      - "mortgage"
+      - "savings"
+      - "pension"
+      - "tax return"
+      - "cost of living"
+    entities:
+      - "hmrc"
+
+  technology.ai:
+    keywords:
+      - "artificial intelligence"
+      - "ai model"
+      - "chatbot"
+      - "machine learning"
+
+  technology.companies:
+    keywords:
+      - "apple"
+      - "microsoft"
+      - "google"
+      - "meta"
+      - "nvidia"
+
+  technology.consumer:
+    keywords:
+      - "iphone"
+      - "smartphone"
+      - "laptop"
+      - "device"
+      - "app launch"
+
+  technology.cybersecurity:
+    keywords:
+      - "cyber attack"
+      - "cybersecurity"
+      - "data breach"
+      - "hack"
+      - "ransomware"
+
+  technology.gaming:
+    keywords:
+      - "nintendo"
+      - "playstation"
+      - "xbox"
+      - "game release"
+      - "eshop"
+    entities:
+      - "pokemon"
+
+  entertainment.tv-film:
+    keywords:
+      - "netflix"
+      - "film"
+      - "movie"
+      - "tv series"
+      - "cinema"
+
+  entertainment.music:
+    keywords:
+      - "album"
+      - "single"
+      - "tour"
+      - "music awards"
+      - "record label"
+
+  entertainment.celebrity:
+    keywords:
+      - "celebrity"
+      - "actor"
+      - "actress"
+      - "showbiz"
+
+  sport.football.premier-league:
+    keywords:
+      - "premier league"
+    entities:
+      - "man-utd"
+      - "liverpool"
+      - "arsenal"
+      - "chelsea"
+
+  sport.football.championship:
+    keywords:
+      - "championship"
+
+  sport.football.champions-league:
+    keywords:
+      - "champions league"
+
+  sport.football.international:
+    keywords:
+      - "world cup"
+      - "euros"
+      - "international break"
+
+  sport.formula1:
+    keywords:
+      - "formula 1"
+      - "f1"
+      - "grand prix"
+      - "pre-season testing"
+    entities:
+      - "lewis-hamilton"
+      - "max-verstappen"
+      - "charles-leclerc"
+      - "oscar-piastri"
+      - "carlos-sainz"
+      - "ferrari"
+      - "mercedes-f1"
+      - "red-bull-racing"
+      - "mclaren"
+
+  sport.cricket.uk:
+    keywords:
+      - "county championship"
+      - "the hundred"
+      - "t20 blast"
+
+  sport.cricket.international:
+    keywords:
+      - "ashes"
+      - "test match"
+      - "odi"
+      - "t20 international"
+      - "cricket world cup"
+
+  sport.rugby-union.uk:
+    keywords:
+      - "premiership rugby"
+
+  sport.rugby-union.international:
+    keywords:
+      - "six nations"
+      - "rugby world cup"
+      - "autumn nations"
+
+  sport.rugby-league:
+    keywords:
+      - "super league"
+      - "rugby league"
+
+  sport.tennis:
+    keywords:
+      - "wimbledon"
+      - "atp"
+      - "wta"
+      - "grand slam tennis"
+
+  sport.golf.pga:
+    keywords:
+      - "pga tour"
+      - "masters"
+      - "ryder cup"
+
+  sport.golf.liv:
+    keywords:
+      - "liv golf"
+
+  sport.boxing:
+    keywords:
+      - "boxing"
+      - "heavyweight bout"
+      - "title fight"
+
+  sport.mma:
+    keywords:
+      - "mma"
+      - "ufc"
+      - "octagon"
+
+  sport.darts:
+    keywords:
+      - "darts"
+      - "pdc"
+      - "world matchplay"
+
+  sport.nfl:
+    keywords:
+      - "nfl"
+      - "super bowl"
+      - "touchdown"
+
+  sport.nba:
+    keywords:
+      - "nba"
+      - "basketball"
+      - "playoffs"

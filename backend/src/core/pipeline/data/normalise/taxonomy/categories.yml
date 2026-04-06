@@ -1,0 +1,76 @@
+version: 1
+
+categories:
+
+  politics:
+    uk:
+    us:
+    europe:
+    global:
+
+  world:
+    us:
+    europe:
+    asia:
+    middle-east:
+    africa:
+
+  business:
+    markets:
+    companies:
+    economy:
+    personal-finance:
+
+  technology:
+    ai:
+    companies:
+    consumer:
+    cybersecurity:
+    gaming:
+
+  science:
+
+  climate:
+
+  health:
+
+  entertainment:
+    tv-film:
+    music:
+    celebrity:
+
+  sport:
+
+    football:
+      premier-league:
+      championship:
+      champions-league:
+      international:
+
+    formula1:
+
+    cricket:
+      uk:
+      international:
+
+    rugby-union:
+      uk:
+      international:
+
+    rugby-league:
+
+    tennis:
+
+    golf:
+      pga:
+      liv:
+
+    boxing:
+
+    mma:
+
+    darts:
+
+    nfl:
+
+    nba:
