@@ -4,7 +4,7 @@ from core.platform.db.session import SessionLocal
 from core.platform.queue.event import Event
 from core.platform.queue.outbox import OutboxRepo
 
-from core.pipeline.data.summarise.events import DATA_SUMMARISE_REQUESTED
+from core.pipeline.data.cluster.events import DATA_CLUSTER_REQUESTED
 from core.pipeline.data.normalise.repos.normalisation_article_repo import (
     NormalisationArticleRepo,
 )
@@ -188,11 +188,10 @@ def handle_normalise_requested(event: dict) -> None:
             inserted_count += 1
 
         next_event = Event(
-            type=DATA_SUMMARISE_REQUESTED,
-            idempotency_key=f"summarise:{ingestion_run_id}",
+            type=DATA_CLUSTER_REQUESTED,
+            idempotency_key=f"cluster:{ingestion_run_id}",
             payload={
                 "ingestion_run_id": ingestion_run_id,
-                "normalised_count": inserted_count,
             },
             trace_id=trace_id,
         )

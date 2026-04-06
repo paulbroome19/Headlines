@@ -18,11 +18,15 @@ from core.pipeline.scripts.handlers.requested import handle_scripts_requested
 from core.pipeline.audio.events import AUDIO_REQUESTED
 from core.pipeline.audio.handlers.requested import handle_audio_requested
 
+from core.pipeline.data.cluster.events import DATA_CLUSTER_REQUESTED
+from core.pipeline.data.cluster.handlers.requested import handle_cluster_requested
+
 
 def build_registry() -> HandlerRegistry:
     r = HandlerRegistry()
     r.register(DATA_INGEST_REQUESTED, handle_ingest_requested)
     r.register(DATA_NORMALISE_REQUESTED, handle_normalise_requested)
+    r.register(DATA_CLUSTER_REQUESTED, handle_cluster_requested)
     r.register(DATA_SUMMARISE_REQUESTED, handle_summarise_requested)
     r.register(FEEDS_REQUESTED, handle_feeds_requested)
     r.register(SCRIPTS_REQUESTED, handle_scripts_requested)
