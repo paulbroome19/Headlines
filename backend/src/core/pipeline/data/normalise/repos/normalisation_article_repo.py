@@ -1,54 +1,47 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
-import yaml
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from core.pipeline.data.normalise.categorise.entity_loader import load_entity_registry
 
-# -----------------------------
-# Load entity registry once
-# -----------------------------
 
-_REGISTRY_PATH = (
-    Path(__file__).resolve().parents[1] / "taxonomy" / "entities.yaml"
-)
+_ENTITY_REGISTRY = None
 
-if _REGISTRY_PATH.exists():
-    with open(_REGISTRY_PATH, "r") as f:
-        _ENTITY_REGISTRY = yaml.safe_load(f) or {}
-else:
-    _ENTITY_REGISTRY = {}
 
-_ENTITY_REGISTRY = _ENTITY_REGISTRY.get("entities", {})
+def _get_entity_registry():
+    global _ENTITY_REGISTRY
+    if _ENTITY_REGISTRY is None:
+        _ENTITY_REGISTRY = load_entity_registry()
+    return _ENTITY_REGISTRY
 
 
 class NormalisationArticleRepo:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    # -----------------------------
-    # Entity Registry Metadata
-    # -----------------------------
+    # --------------------------------------------------
+    # Entity registry metadata
+    # --------------------------------------------------
 
-    def get_registry_metadata(self, slug: str) -> Dict[str, Any]:
-        """
-        Fetch entity metadata from YAML registry.
-        Raises if slug not defined.
-        """
-        if slug not in _ENTITY_REGISTRY:
+    def get_registry_metadata(self, slug: str) -> dict[str, Any]:
+        registry = _get_entity_registry()
+        entity = registry.slug_map.get(slug)
+
+        if entity is None:
             raise ValueError(f"Entity slug '{slug}' not found in registry")
 
         return {
-            "display_name": _ENTITY_REGISTRY[slug]["display_name"],
-            "entity_type": _ENTITY_REGISTRY[slug]["entity_type"],
+            "display_name": entity.display_name,
+            "entity_type": entity.entity_type,
+            "categories": entity.categories,
         }
 
-    # -----------------------------
-    # Entity DB Operations
-    # -----------------------------
+    # --------------------------------------------------
+    # Entities
+    # --------------------------------------------------
 
     def get_entity_id_by_slug(self, slug: str) -> int | None:
         row = self.db.execute(
@@ -63,7 +56,7 @@ class NormalisationArticleRepo:
             {"slug": slug},
         ).scalar_one_or_none()
 
-        return int(row) if row else None
+        return int(row) if row is not None else None
 
     def insert_entity(self, slug: str, display_name: str, entity_type: str) -> int:
         new_id = self.db.execute(

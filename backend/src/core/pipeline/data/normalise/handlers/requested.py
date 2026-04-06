@@ -11,6 +11,9 @@ from core.pipeline.data.normalise.repos.normalisation_article_repo import (
 from core.pipeline.data.normalise.categorise.entity_service import (
     categorise_article,
 )
+from core.pipeline.data.normalise.categorise.category_service import (
+    categorise_categories,
+)
 
 
 def handle_normalise_requested(event: dict) -> None:
@@ -19,10 +22,12 @@ def handle_normalise_requested(event: dict) -> None:
 
     Responsibilities:
     - read data.ingested_articles for this ingestion_run_id
+    - extract snippet
+    - categorise entities
+    - categorise article into taxonomy categories
     - insert clean rows into data.normalisation_articles
-    - categorise entities (deterministic keyword engine)
-    - persist entity definitions + links
-    - enqueue data.summarise.requested
+    - persist entity definitions + article/entity links
+    - enqueue data.summarise.requested (temporary next step)
     """
 
     payload = event.get("payload") or {}
@@ -61,7 +66,7 @@ def handle_normalise_requested(event: dict) -> None:
             if not r["title"] or not r["url"]:
                 continue
 
-            # 🔁 Idempotency guard
+            # Idempotency guard
             exists = db.execute(
                 text(
                     """
@@ -84,10 +89,29 @@ def handle_normalise_requested(event: dict) -> None:
                 snippet = snippet.strip()
                 if not snippet:
                     snippet = None
-                if snippet and len(snippet) > 800:
+                if len(snippet) > 800:
                     snippet = snippet[:800]
 
-            # 1️⃣ Insert normalised article (with safe category defaults)
+            # --------------------------------------------------
+            # 1) Entity categorisation
+            # --------------------------------------------------
+            entity_result = categorise_article(
+                title=r["title"],
+                content_snippet=snippet,
+            )
+
+            # --------------------------------------------------
+            # 2) Category categorisation
+            # --------------------------------------------------
+            category_result = categorise_categories(
+                title=r["title"],
+                content_snippet=snippet,
+                entity_slugs=entity_result.entity_slugs,
+            )
+
+            # --------------------------------------------------
+            # 3) Insert normalised article
+            # --------------------------------------------------
             normalised_id = db.execute(
                 text(
                     """
@@ -133,23 +157,20 @@ def handle_normalise_requested(event: dict) -> None:
                     "source": r["publisher"] or "unknown",
                     "published_at": r["published_at"],
                     "content_snippet": snippet,
-                    "category_slugs": [],
-                    "category_primary": None,
-                    "category_method": "unclassified",
-                    "category_version": 1,
+                    "category_slugs": category_result.category_slugs,
+                    "category_primary": category_result.primary_category,
+                    "category_method": category_result.method,
+                    "category_version": category_result.version,
                 },
             ).scalar_one()
 
-            # 2️⃣ Entity categorisation
-            result = categorise_article(
-                title=r["title"],
-                content_snippet=snippet,
-            )
-
-            for slug in result.entity_slugs:
+            # --------------------------------------------------
+            # 4) Persist entities + links
+            # --------------------------------------------------
+            for slug in entity_result.entity_slugs:
                 entity_id = repo.get_entity_id_by_slug(slug)
 
-                if not entity_id:
+                if entity_id is None:
                     meta = repo.get_registry_metadata(slug)
                     entity_id = repo.insert_entity(
                         slug=slug,
@@ -160,8 +181,8 @@ def handle_normalise_requested(event: dict) -> None:
                 repo.link_entity_to_article(
                     normalisation_article_id=normalised_id,
                     entity_id=entity_id,
-                    is_primary=(slug == result.primary_entity),
-                    confidence_score=result.scores.get(slug, 1.0),
+                    is_primary=(slug == entity_result.primary_entity),
+                    confidence_score=float(entity_result.scores.get(slug, 1.0)),
                 )
 
             inserted_count += 1
