@@ -38,7 +38,9 @@ def handle_cluster_requested(event: dict) -> None:
             category = r["category_primary"]
             published_at = r["published_at"]
 
+            # --------------------------------------------------
             # Get primary entity
+            # --------------------------------------------------
             entity = db.execute(
                 text(
                     """
@@ -55,25 +57,34 @@ def handle_cluster_requested(event: dict) -> None:
 
             normalized_title = _normalize_title(title)
 
-            # Try find existing story
-            story = db.execute(
-                text(
-                    """
-                    SELECT id
-                    FROM data.stories
-                    WHERE primary_entity_slug = :entity
-                      AND last_published_at > NOW() - INTERVAL '24 hours'
-                    ORDER BY last_published_at DESC
-                    LIMIT 1
-                    """
-                ),
-                {"entity": entity},
-            ).scalar_one_or_none()
+            # --------------------------------------------------
+            # Try find existing story (ONLY if entity exists)
+            # --------------------------------------------------
+            story_id = None
 
-            if story:
-                story_id = story
+            if entity:
+                story = db.execute(
+                    text(
+                        """
+                        SELECT id
+                        FROM data.stories
+                        WHERE primary_entity_slug = :entity
+                          AND last_published_at > NOW() - INTERVAL '24 hours'
+                        ORDER BY last_published_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"entity": entity},
+                ).scalar_one_or_none()
 
-                # update story
+                if story:
+                    story_id = story
+
+            # --------------------------------------------------
+            # Update or create story
+            # --------------------------------------------------
+            if story_id:
+                # update existing story
                 db.execute(
                     text(
                         """
@@ -88,7 +99,7 @@ def handle_cluster_requested(event: dict) -> None:
                 )
 
             else:
-                # create new story
+                # create new story (entity OR no entity)
                 story_id = db.execute(
                     text(
                         """
@@ -114,7 +125,8 @@ def handle_cluster_requested(event: dict) -> None:
                         """
                     ),
                     {
-                        "story_key": f"{entity}|{normalized_title}",
+                        # IMPORTANT: avoid null collapse
+                        "story_key": f"{entity or 'none'}|{normalized_title}",
                         "entity": entity,
                         "category": category,
                         "title": title,
@@ -122,7 +134,9 @@ def handle_cluster_requested(event: dict) -> None:
                     },
                 ).scalar_one()
 
-            # link article → story
+            # --------------------------------------------------
+            # Link article → story
+            # --------------------------------------------------
             db.execute(
                 text(
                     """
@@ -145,7 +159,9 @@ def handle_cluster_requested(event: dict) -> None:
                 },
             )
 
-            # update article
+            # --------------------------------------------------
+            # Update article
+            # --------------------------------------------------
             db.execute(
                 text(
                     """
