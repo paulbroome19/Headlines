@@ -25,5 +25,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     fallback_model: str = "claude-haiku-4-5-20251001"
 
+    # TTS
+    tts_provider: str = "elevenlabs"
+    tts_voice: str = "JBFqnCBsd6RMkjVDRZzb"   # ElevenLabs "George" — British male
+    tts_model: str = "eleven_turbo_v2_5"
+    tts_audio_format: str = "mp3_44100_128"
+    elevenlabs_api_key: str | None = None
+    openai_api_key: str | None = None
+
 
 settings = Settings()

@@ -76,6 +76,17 @@ class RankingRunRepo:
 
         return int(run_id)
 
+    def get_by_id(self, run_id: int) -> dict[str, Any] | None:
+        row = self.db.execute(
+            text("""
+                SELECT id, batch_id, candidate_count, top_stories, briefing, created_at
+                FROM data.ranking_runs
+                WHERE id = :run_id
+            """),
+            {"run_id": run_id},
+        ).mappings().first()
+        return dict(row) if row else None
+
     def get_latest(self) -> dict[str, Any] | None:
         row = self.db.execute(
             text(
