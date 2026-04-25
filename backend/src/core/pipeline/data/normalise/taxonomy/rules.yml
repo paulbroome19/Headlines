@@ -11,6 +11,8 @@ rules:
       - "house of lords"
       - "cabinet"
       - "uk government"
+      - "home secretary"
+      - "whitehall"
     entities:
       - "labour-party"
       - "conservative-party"
@@ -37,6 +39,18 @@ rules:
       - "sanctions"
       - "foreign minister"
       - "summit"
+
+  world.uk:
+    keywords:
+      - "metropolitan police"
+      - "met police"
+      - "scotland yard"
+      - "crown court"
+      - "old bailey"
+      - "abuse inquiry"
+      - "murder inquiry"
+      - "manslaughter"
+      - "inquest"
 
   world.us:
     keywords:
@@ -118,10 +132,8 @@ rules:
 
   technology.companies:
     keywords:
-      - "apple"
       - "microsoft"
       - "google"
-      - "meta"
       - "nvidia"
 
   technology.consumer:
@@ -129,7 +141,6 @@ rules:
       - "iphone"
       - "smartphone"
       - "laptop"
-      - "device"
       - "app launch"
 
   technology.cybersecurity:
@@ -157,12 +168,17 @@ rules:
       - "movie"
       - "tv series"
       - "cinema"
+      - "soap opera"
+      - "itv soap"
+      - "bbc drama"
+      - "coronation street"
+      - "eastenders"
+      - "emmerdale"
+      - "monty python"
 
   entertainment.music:
     keywords:
       - "album"
-      - "single"
-      - "tour"
       - "music awards"
       - "record label"
 
@@ -173,9 +189,31 @@ rules:
       - "actress"
       - "showbiz"
 
+  climate:
+    keywords:
+      - "climate change"
+      - "carbon emissions"
+      - "net zero"
+      - "global warming"
+      - "fossil fuels"
+    entities:
+      - "cop"
+      - "ipcc"
+
+  health:
+    keywords:
+      - "mental health"
+      - "clinical trial"
+      - "cancer diagnosis"
+      - "vaccine"
+    entities:
+      - "nhs"
+      - "world-health-organization"
+
   sport.football.premier-league:
     keywords:
       - "premier league"
+      - "nottingham forest"
     entities:
       - "man-utd"
       - "liverpool"
@@ -184,7 +222,7 @@ rules:
 
   sport.football.championship:
     keywords:
-      - "championship"
+      - "efl championship"
 
   sport.football.champions-league:
     keywords:
@@ -203,11 +241,6 @@ rules:
       - "grand prix"
       - "pre-season testing"
     entities:
-      - "lewis-hamilton"
-      - "max-verstappen"
-      - "charles-leclerc"
-      - "oscar-piastri"
-      - "carlos-sainz"
       - "ferrari"
       - "mercedes-f1"
       - "red-bull-racing"
@@ -221,7 +254,7 @@ rules:
 
   sport.cricket.international:
     keywords:
-      - "ashes"
+      - "the ashes"
       - "test match"
       - "odi"
       - "t20 international"
@@ -248,11 +281,16 @@ rules:
       - "atp"
       - "wta"
       - "grand slam tennis"
+      - "roland garros"
+      - "french open"
+      - "us open tennis"
+      - "australian open"
+      - "tennis"
 
   sport.golf.pga:
     keywords:
       - "pga tour"
-      - "masters"
+      - "augusta"
       - "ryder cup"
 
   sport.golf.liv:

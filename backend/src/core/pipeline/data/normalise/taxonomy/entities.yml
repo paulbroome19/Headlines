@@ -1,5 +1,16 @@
 version: 1
 
+# ENTRY TEST — add an entity here only if ALL of the following are true:
+#   1. It is an institution, organisation, company, country, team, competition, or index
+#      (NOT a person — persons are transient news subjects, not durable taxonomy anchors)
+#   2. Its aliases are multi-word or an unambiguous acronym in news context (NHS, NATO, HMRC)
+#      Single-word surname aliases are banned — they cause false matches (see: "who", "hamilton", "swift")
+#   3. It appears frequently across many different articles over months, not just a current story
+#   4. Its category routing cannot be achieved by context keywords in rules.yml alone
+#
+# For person-led stories: classify via contextual keywords in rules.yml (e.g. "alleged victims",
+# "roland garros", "formula 1") — not via adding the person to this file.
+
 entities:
 
   # ============================================================
@@ -10,7 +21,6 @@ entities:
     display_name: "Labour Party"
     entity_type: "political_party"
     aliases:
-      - "labour"
       - "labour party"
     categories:
       - "politics.uk"
@@ -78,7 +88,6 @@ entities:
     aliases:
       - "united nations"
       - "u.n."
-      - "un"
     categories:
       - "politics.global"
 
@@ -92,7 +101,6 @@ entities:
     aliases:
       - "united states"
       - "u.s."
-      - "us"
       - "america"
     categories:
       - "world.us"
@@ -239,7 +247,7 @@ entities:
     entity_type: "organisation"
     aliases:
       - "federal reserve"
-      - "fed"
+      - "the fed"
     categories:
       - "business.economy"
       - "business.markets"
@@ -335,7 +343,7 @@ entities:
     display_name: "Apple"
     entity_type: "company"
     aliases:
-      - "apple"
+      - "apple inc"
     categories:
       - "technology.companies"
       - "technology.consumer"
@@ -353,7 +361,6 @@ entities:
     display_name: "Meta"
     entity_type: "company"
     aliases:
-      - "meta"
       - "facebook"
     categories:
       - "technology.companies"
@@ -383,7 +390,6 @@ entities:
     entity_type: "company"
     aliases:
       - "nintendo"
-      - "switch"
       - "eshop"
     categories:
       - "technology.gaming"
@@ -393,8 +399,6 @@ entities:
     entity_type: "franchise"
     aliases:
       - "pokemon"
-      - "fire red"
-      - "leafgreen"
     categories:
       - "technology.gaming"
 
@@ -424,7 +428,7 @@ entities:
     entity_type: "organisation"
     aliases:
       - "world health organization"
-      - "who"
+      - "w.h.o."
     categories:
       - "health"
 
@@ -441,7 +445,6 @@ entities:
     display_name: "COP Climate Summit"
     entity_type: "organisation"
     aliases:
-      - "cop"
       - "cop summit"
       - "climate summit"
     categories:
@@ -475,25 +478,6 @@ entities:
       - "disney+"
     categories:
       - "entertainment.tv-film"
-
-  taylor-swift:
-    display_name: "Taylor Swift"
-    entity_type: "person"
-    aliases:
-      - "taylor swift"
-      - "swift"
-    categories:
-      - "entertainment.music"
-      - "entertainment.celebrity"
-
-  drake:
-    display_name: "Drake"
-    entity_type: "person"
-    aliases:
-      - "drake"
-    categories:
-      - "entertainment.music"
-      - "entertainment.celebrity"
 
   # ============================================================
   # SPORT - FOOTBALL
@@ -587,58 +571,12 @@ entities:
     entity_type: "team"
     aliases:
       - "england football"
-      - "england"
     categories:
       - "sport.football.international"
 
   # ============================================================
   # SPORT - FORMULA 1
   # ============================================================
-
-  lewis-hamilton:
-    display_name: "Lewis Hamilton"
-    entity_type: "person"
-    aliases:
-      - "lewis hamilton"
-      - "hamilton"
-    categories:
-      - "sport.formula1"
-
-  max-verstappen:
-    display_name: "Max Verstappen"
-    entity_type: "person"
-    aliases:
-      - "max verstappen"
-      - "verstappen"
-    categories:
-      - "sport.formula1"
-
-  charles-leclerc:
-    display_name: "Charles Leclerc"
-    entity_type: "person"
-    aliases:
-      - "charles leclerc"
-      - "leclerc"
-    categories:
-      - "sport.formula1"
-
-  oscar-piastri:
-    display_name: "Oscar Piastri"
-    entity_type: "person"
-    aliases:
-      - "oscar piastri"
-      - "piastri"
-    categories:
-      - "sport.formula1"
-
-  carlos-sainz:
-    display_name: "Carlos Sainz"
-    entity_type: "person"
-    aliases:
-      - "carlos sainz"
-      - "sainz"
-    categories:
-      - "sport.formula1"
 
   ferrari:
     display_name: "Ferrari"
@@ -699,7 +637,6 @@ entities:
     entity_type: "event"
     aliases:
       - "the ashes"
-      - "ashes"
     categories:
       - "sport.cricket.international"
 

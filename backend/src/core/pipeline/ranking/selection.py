@@ -11,69 +11,84 @@ from .config import (
     REPEATED_PRIMARY_ENTITY_PENALTY,
     REPEATED_TOPIC_PENALTY,
 )
-from .models import RankedStory
+from .models import RankedStory, ScoredStory
 
 
-def get_repeated_entity_penalty(
-    selected_entity_ids: set[str],
-    primary_entity_id: str | None,
-) -> float:
-    if not primary_entity_id:
-        return 1.0
-
-    if primary_entity_id in selected_entity_ids:
-        return REPEATED_PRIMARY_ENTITY_PENALTY
-
-    return 1.0
-
-
-def get_repeated_topic_penalty(
-    selected_topic_keys: set[str],
-    primary_topic_key: str | None,
-) -> float:
-    if not primary_topic_key:
-        return 1.0
-
-    if primary_topic_key in selected_topic_keys:
-        return REPEATED_TOPIC_PENALTY
-
-    return 1.0
+def _to_ranked(scored: ScoredStory, *, adjusted_score: float) -> RankedStory:
+    c = scored.candidate
+    return RankedStory(
+        story_id=c.story_id,
+        title=c.title,
+        full_score=scored.full_score,
+        adjusted_score=adjusted_score,
+        within_category_score=scored.within_category_score,
+        last_seen_at=c.last_seen_at,
+        article_count=c.article_count,
+        source_count=c.source_count,
+        primary_category=c.primary_category,
+        primary_entity_id=c.primary_entity_id,
+        primary_entity_name=c.primary_entity_name,
+        primary_topic_key=c.primary_topic_key,
+        recency_score=scored.recency_score,
+        category_weight=scored.category_weight,
+        entity_weight=scored.entity_weight,
+        source_weight=scored.source_weight,
+        cluster_weight=scored.cluster_weight,
+    )
 
 
-def get_bucket_cap(bucket: str | None) -> int:
-    if not bucket:
-        return DEFAULT_BUCKET_MAX_STORIES
-    return BUCKET_MAX_STORIES.get(bucket, DEFAULT_BUCKET_MAX_STORIES)
+def _in_user_categories(primary_category: str | None, user_categories: list[str] | None) -> bool:
+    if user_categories is None:
+        return True
+    if not primary_category:
+        return False
+    for uc in user_categories:
+        if primary_category == uc or primary_category.startswith(uc + "."):
+            return True
+    return False
 
 
-def get_bucket_penalty(
-    selected_bucket_counts: dict[str | None, int],
-    bucket: str | None,
-) -> float:
-    count = selected_bucket_counts[bucket]
-    if count <= 0:
-        return 1.0
-    return BUCKET_REPEAT_PENALTY ** count
-
-
-def apply_selection(
-    ranked_stories: list[RankedStory],
+def select_top_stories(
+    scored_stories: list[ScoredStory],
     *,
-    limit: int | None = None,
+    limit: int,
 ) -> list[RankedStory]:
     """
-    Hybrid selector:
-    - stories compete globally
-    - each bucket can contribute multiple stories up to a cap
-    - repeated entities and repeated topic families are penalised
-    - repeated buckets are softly penalised
-    - within each bucket, choose the best adjusted candidate, not just the next one
-    """
-    bucketed: dict[str | None, list[RankedStory]] = defaultdict(list)
+    Pure score ranking with no diversity penalties.
 
-    for story in ranked_stories:
-        bucket = get_category_bucket(story.primary_category)
-        bucketed[bucket].append(story)
+    Returns the globally highest-scoring stories regardless of category.
+    Intended as a "breaking news" shelf — no user filtering, no diminishing returns.
+    """
+    sorted_stories = sorted(scored_stories, key=lambda s: s.full_score, reverse=True)
+    return [_to_ranked(s, adjusted_score=s.full_score) for s in sorted_stories[:limit]]
+
+
+def select_briefing(
+    scored_stories: list[ScoredStory],
+    *,
+    user_categories: list[str] | None,
+    exclude_story_ids: set[str],
+    limit: int,
+) -> list[RankedStory]:
+    """
+    Diversity-aware selection for the personalised briefing.
+
+    - Filters to user_categories (prefix-matched) when specified.
+    - Excludes story IDs already present in top_stories.
+    - Applies bucket caps, entity dedup, and topic family dedup penalties.
+
+    Selection is greedy: each iteration finds the highest adjusted-score
+    candidate across all eligible buckets, then updates penalty state.
+    """
+    pool = [
+        s for s in scored_stories
+        if s.candidate.story_id not in exclude_story_ids
+        and _in_user_categories(s.candidate.primary_category, user_categories)
+    ]
+
+    bucketed: dict[str | None, list[ScoredStory]] = defaultdict(list)
+    for s in pool:
+        bucketed[get_category_bucket(s.candidate.primary_category)].append(s)
 
     selected: list[RankedStory] = []
     selected_story_ids: set[str] = set()
@@ -81,89 +96,57 @@ def apply_selection(
     selected_topic_keys: set[str] = set()
     selected_bucket_counts: dict[str | None, int] = defaultdict(int)
 
-    while True:
-        if limit is not None and len(selected) >= limit:
-            break
-
-        best_story: RankedStory | None = None
-        best_adjusted_score = -1.0
+    while len(selected) < limit:
+        best_scored: ScoredStory | None = None
+        best_adjusted = -1.0
         best_bucket: str | None = None
 
         for bucket, stories in bucketed.items():
-            if selected_bucket_counts[bucket] >= get_bucket_cap(bucket):
+            cap = BUCKET_MAX_STORIES.get(bucket, DEFAULT_BUCKET_MAX_STORIES) if bucket else DEFAULT_BUCKET_MAX_STORIES
+            if selected_bucket_counts[bucket] >= cap:
                 continue
 
-            bucket_best_story: RankedStory | None = None
-            bucket_best_adjusted_score = -1.0
+            bucket_best: ScoredStory | None = None
+            bucket_best_adjusted = -1.0
 
-            for story in stories:
-                if story.story_id in selected_story_ids:
+            for s in stories:
+                if s.candidate.story_id in selected_story_ids:
                     continue
 
-                entity_penalty = get_repeated_entity_penalty(
-                    selected_entity_ids=selected_entity_ids,
-                    primary_entity_id=story.primary_entity_id,
-                )
-                topic_penalty = get_repeated_topic_penalty(
-                    selected_topic_keys=selected_topic_keys,
-                    primary_topic_key=story.primary_topic_key,
-                )
-                bucket_penalty = get_bucket_penalty(
-                    selected_bucket_counts=selected_bucket_counts,
-                    bucket=bucket,
-                )
+                entity_id = s.candidate.primary_entity_id
+                topic_key = s.candidate.primary_topic_key
 
-                adjusted_score = (
-                    story.base_score
-                    * entity_penalty
-                    * topic_penalty
-                    * bucket_penalty
-                )
+                entity_penalty = REPEATED_PRIMARY_ENTITY_PENALTY if (entity_id and entity_id in selected_entity_ids) else 1.0
+                topic_penalty = REPEATED_TOPIC_PENALTY if (topic_key and topic_key in selected_topic_keys) else 1.0
+                bucket_penalty = BUCKET_REPEAT_PENALTY ** selected_bucket_counts[bucket]
 
-                if adjusted_score < MIN_ADJUSTED_SCORE:
+                adjusted = s.full_score * entity_penalty * topic_penalty * bucket_penalty
+
+                if adjusted < MIN_ADJUSTED_SCORE:
                     continue
 
-                if adjusted_score > bucket_best_adjusted_score:
-                    bucket_best_story = story
-                    bucket_best_adjusted_score = adjusted_score
+                if adjusted > bucket_best_adjusted:
+                    bucket_best = s
+                    bucket_best_adjusted = adjusted
 
-            if bucket_best_story is None:
+            if bucket_best is None:
                 continue
 
-            if bucket_best_adjusted_score > best_adjusted_score:
-                best_story = bucket_best_story
-                best_adjusted_score = bucket_best_adjusted_score
+            if bucket_best_adjusted > best_adjusted:
+                best_scored = bucket_best
+                best_adjusted = bucket_best_adjusted
                 best_bucket = bucket
 
-        if best_story is None:
+        if best_scored is None:
             break
 
-        selected_story = RankedStory(
-            story_id=best_story.story_id,
-            title=best_story.title,
-            base_score=best_story.base_score,
-            adjusted_score=best_adjusted_score,
-            last_seen_at=best_story.last_seen_at,
-            article_count=best_story.article_count,
-            source_count=best_story.source_count,
-            primary_category=best_story.primary_category,
-            primary_entity_id=best_story.primary_entity_id,
-            primary_entity_name=best_story.primary_entity_name,
-            primary_topic_key=best_story.primary_topic_key,
-            recency_score=best_story.recency_score,
-            category_weight=best_story.category_weight,
-            entity_weight=best_story.entity_weight,
-            source_weight=best_story.source_weight,
-            cluster_weight=best_story.cluster_weight,
-        )
-        selected.append(selected_story)
-        selected_story_ids.add(best_story.story_id)
+        selected.append(_to_ranked(best_scored, adjusted_score=best_adjusted))
+        selected_story_ids.add(best_scored.candidate.story_id)
         selected_bucket_counts[best_bucket] += 1
 
-        if best_story.primary_entity_id:
-            selected_entity_ids.add(best_story.primary_entity_id)
-
-        if best_story.primary_topic_key:
-            selected_topic_keys.add(best_story.primary_topic_key)
+        if best_scored.candidate.primary_entity_id:
+            selected_entity_ids.add(best_scored.candidate.primary_entity_id)
+        if best_scored.candidate.primary_topic_key:
+            selected_topic_keys.add(best_scored.candidate.primary_topic_key)
 
     return selected

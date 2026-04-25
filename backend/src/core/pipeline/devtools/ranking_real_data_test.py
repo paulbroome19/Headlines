@@ -7,6 +7,21 @@ from core.pipeline.ranking.ranker import StoryRanker
 from core.platform.db.session import SessionLocal
 
 
+def _print_story(index: int, story) -> None:
+    print(
+        f"{index:>2}. {story.title}\n"
+        f"    story_id={story.story_id}\n"
+        f"    full_score={story.full_score:.4f}  adjusted_score={story.adjusted_score:.4f}\n"
+        f"    within_category={story.within_category_score:.4f}  category={story.primary_category}\n"
+        f"    entity={story.primary_entity_name}  topic={story.primary_topic_key}\n"
+        f"    recency={story.recency_score:.4f} "
+        f"category_w={story.category_weight:.2f} "
+        f"entity_w={story.entity_weight:.2f} "
+        f"source_w={story.source_weight:.2f} "
+        f"cluster_w={story.cluster_weight:.2f}\n"
+    )
+
+
 def main() -> None:
     now = datetime.now(timezone.utc)
 
@@ -15,44 +30,33 @@ def main() -> None:
 
     print(f"\nLoaded {len(candidates)} candidates\n")
 
+    if not candidates:
+        print("No candidates found. Is the pipeline running?\n")
+        return
+
     ranker = StoryRanker()
-    ranked = ranker.rank(candidates, now=now, limit=20)
+    result = ranker.rank(candidates, now=now, top_stories_limit=5, briefing_limit=15)
 
-    print(f"Ranked {len(ranked)} stories\n")
-    print("Top ranked real stories:\n")
+    print(f"Top stories ({len(result.top_stories)}):\n")
+    for i, story in enumerate(result.top_stories, start=1):
+        _print_story(i, story)
 
-    for index, story in enumerate(ranked, start=1):
+    print(f"Briefing ({len(result.briefing)}):\n")
+    for i, story in enumerate(result.briefing, start=1):
+        _print_story(i, story)
+
+    if not result.top_stories and not result.briefing:
         print(
-            f"{index:>2}. {story.title}\n"
-            f"    story_id={story.story_id}\n"
-            f"    base_score={story.base_score:.4f}\n"
-            f"    adjusted_score={story.adjusted_score:.4f}\n"
-            f"    category={story.primary_category}\n"
-            f"    entity={story.primary_entity_name}\n"
-            f"    topic={story.primary_topic_key}\n"
-            f"    recency={story.recency_score:.4f} "
-            f"category_w={story.category_weight:.2f} "
-            f"entity_w={story.entity_weight:.2f} "
-            f"source_w={story.source_weight:.2f} "
-            f"cluster_w={story.cluster_weight:.2f}\n"
+            "No stories passed selection. Candidates may be too old for the current "
+            "recency/threshold settings.\n"
         )
-
-    if not ranked and candidates:
-        print(
-            "No stories passed selection. Most likely all candidates are too old "
-            "for the current recency/threshold settings.\n"
-        )
-        print("First 10 loaded candidates before selection:\n")
-
-        for index, candidate in enumerate(candidates[:10], start=1):
+        print("First 10 candidates before ranking:\n")
+        for i, c in enumerate(candidates[:10], start=1):
             print(
-                f"{index:>2}. {candidate.title}\n"
-                f"    story_id={candidate.story_id}\n"
-                f"    category={candidate.primary_category}\n"
-                f"    topic={candidate.primary_topic_key}\n"
-                f"    last_seen_at={candidate.last_seen_at.isoformat()}\n"
-                f"    article_count={candidate.article_count} "
-                f"source_count={candidate.source_count}\n"
+                f"{i:>2}. {c.title}\n"
+                f"    story_id={c.story_id}  category={c.primary_category}\n"
+                f"    topic={c.primary_topic_key}  last_seen_at={c.last_seen_at.isoformat()}\n"
+                f"    article_count={c.article_count}  source_count={c.source_count}\n"
             )
 
 

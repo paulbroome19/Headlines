@@ -23,6 +23,13 @@ class EntityRegistry:
         self.version = version
 
 
+_ALIAS_STOPWORDS = {
+    "a", "an", "the", "and", "or", "of", "in", "on", "at", "to",
+    "is", "it", "be", "by", "as", "up", "do", "go", "if", "my",
+    "we", "he", "she", "who", "us", "un", "fed", "cop",
+}
+
+
 def load_entity_registry() -> EntityRegistry:
     base_path = Path(__file__).parent.parent / "taxonomy" / "entities.yml"
 
@@ -60,6 +67,11 @@ def load_entity_registry() -> EntityRegistry:
 
         for alias in aliases:
             normalized = alias.lower()
+            if normalized in _ALIAS_STOPWORDS:
+                raise ValueError(
+                    f"Entity '{slug}' has alias '{alias}' which is a common English word "
+                    f"and will produce false entity matches."
+                )
             if normalized in alias_map:
                 raise ValueError(
                     f"Alias collision detected: '{normalized}' "

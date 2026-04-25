@@ -21,5 +21,9 @@ class Settings(BaseSettings):
     gnews_api_key: str | None = None
     gnews_enabled: bool = True
 
+    # LLM fallback categoriser
+    anthropic_api_key: str | None = None
+    fallback_model: str = "claude-haiku-4-5-20251001"
+
 
 settings = Settings()

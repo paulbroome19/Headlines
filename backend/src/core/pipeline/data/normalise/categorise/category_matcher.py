@@ -69,7 +69,11 @@ def match_categories(
                 continue
 
             if slug in entity_meta.categories:
-                score += 5.0
+                # Countries are mentioned in many unrelated articles; a lower boost
+                # prevents a country name in a snippet from overriding the primary
+                # topic signal (e.g. "I'm A Celebrity filmed in South Africa").
+                boost = 1.5 if entity_meta.entity_type == "country" else 5.0
+                score += boost
 
         if score > 0:
             scores[slug] = score

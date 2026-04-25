@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from .category_loader import load_category_registry
+from .category_loader import load_category_registry, load_valid_category_slugs
 from .category_matcher import match_categories
 from .entity_loader import load_entity_registry
+from .llm_fallback import classify_fallback, FALLBACK_CONFIDENCE_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,10 @@ class CategoryCategorisationResult:
     scores: dict[str, float]
     method: str
     version: int
+    # Populated only when method == "llm-fallback"; not persisted to DB but
+    # available in-process for logging and devtool inspection.
+    fallback_confidence: float | None = field(default=None, compare=False)
+    fallback_reason: str | None = field(default=None, compare=False)
 
 
 _category_registry = None
@@ -52,6 +57,18 @@ def categorise_categories(
     )
 
     if not ranked:
+        valid_slugs = list(load_valid_category_slugs())
+        fb = classify_fallback(title, content_snippet, valid_slugs)
+        if fb is not None and fb.accepted:
+            return CategoryCategorisationResult(
+                category_slugs=[fb.slug],
+                primary_category=fb.slug,
+                scores={fb.slug: fb.confidence},
+                method="llm-fallback",
+                version=category_registry.version,
+                fallback_confidence=fb.confidence,
+                fallback_reason=fb.reason,
+            )
         return CategoryCategorisationResult(
             category_slugs=[],
             primary_category=None,
