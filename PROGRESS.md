@@ -260,6 +260,45 @@ TTS_AUDIO_FORMAT=mp3_44100_128    # optional override
 2. `POST /data/bulletins/2/audio` → generates MP3, stores to `.local/audio/bulletins/`
 3. Repeat → returns `cached=true`
 
+## Changes Made This Session (2026-04-25, session 11 — local dev dashboard)
+
+**Architecture:**
+Read-only dev dashboard served by the existing FastAPI app at `/dev`. Zero changes to any pipeline logic. New router mounts at `/dev`; all `/dev/api/*` endpoints are inspection-only (no side effects). Dashboard HTML calls both inspection endpoints and the real product APIs.
+
+**New files:**
+- `api/routes/dev.py` — inspection router (all read-only)
+  - `GET /dev` — serves HTML dashboard
+  - `GET /dev/api/pipeline` — ranking runs (with summary/bulletin/audio counts), bulletins, audio, event outbox summary
+  - `GET /dev/api/stories` — stories in ranking order with articles, categories, entity links
+  - `GET /dev/api/summaries` — summaries with full fields + word count + tier
+  - `GET /dev/api/categories` — 43 valid category slugs from YAML taxonomy (for filter UI)
+  - `GET /dev/api/audio/{bulletin_id}/file` — serves MP3 from `data.bulletin_audio.storage_path` (local dev only)
+- `api/routes/dev_dashboard.html` — single-file HTML/CSS/JS dashboard (~470 lines, no dependencies)
+
+**Modified files:**
+- `api/router.py` — added `dev_router` include (only change to existing files)
+
+**Dashboard tabs:**
+1. **Pipeline** — Ranking runs table (id, candidates, summaries, avg confidence, bulletins, audio); Bulletins table; Audio files table; Event outbox summary by type/status
+2. **Stories** — Stories in ranking order (TOP/BRIEFING badge, category, title, article count, expandable article list with per-article category method/entity)
+3. **Summaries** — Summary cards in ranking order (expandable: summary_text, why_it_matters, audio_script, confidence, model, content_hash)
+4. **Bulletin Builder** — Category multi-select (43 cats from taxonomy), max_stories, [Assemble] [Assemble+Audio] [Get Latest] buttons, inline script preview, inline `<audio>` player
+5. **Audio** — Audio file list (click to play), embedded `<audio>` element, file size + estimated duration
+
+**Local URL:** `http://localhost:8001/dev`
+
+**Validation (10/10):**
+1. `/dev` loads ✓ — HTML returned correctly
+2. Pipeline timeline ✓ — 10 runs, 7 bulletins, 2 audio files, outbox by type
+3. Stories ✓ — 11 stories, ranking order, articles with categories + entities
+4. Summaries ✓ — 11 summaries, confidence, word count, all fields
+5. Assemble filtered bulletin ✓ — politics filter → 4 stories, new hash
+6. Generate/fetch audio ✓ — bulletin 8 cached, audio_id=3
+7. Audio player ✓ — `GET /dev/api/audio/8/file` returns `200 audio/mpeg` (2.8MB)
+8. Cached repeat ✓ — `bulletin_cached=True  audio_cached=True`
+9. Real backend APIs ✓ — JS calls `/data/*` and `/dev/api/*` (no mock data)
+10. No core logic changed ✓ — only `router.py` + 2 new files added
+
 ## Changes Made This Session (2026-04-25, session 9 — user-specific bulletin assembly)
 
 **Architecture:**
@@ -441,15 +480,143 @@ data.story_summaries (
 2. Trigger a fresh ingest: `POST /data/ingest/test`
 3. View summaries: `GET /data/summaries/latest`
 
+## Changes Made This Session (2026-04-26 — physical device readiness)
+
+**Problem 1 — `APIClient.swift` compilation bug:**
+`post`, `put`, and `request` methods were defined outside the struct closing brace. Code would not compile. Fixed by rewriting the file: extracted `buildURL()` and `send()` as private helpers; all methods now inside the struct.
+
+**Problem 2 — ATS blocks HTTP to LAN IPs on device:**
+`NSAllowsLocalNetworking` only covers `127.0.0.1`/`.local`. Physical device hitting `http://192.168.x.x:8000` is blocked by default ATS. The project uses `GENERATE_INFOPLIST_FILE = YES` (no Info.plist exists), so ATS can't be configured without creating one.
+
+**Problem 3 — URL hardcoded to 127.0.0.1:**
+Simulator-only default. Device needs Mac LAN IP.
+
+**Files changed:**
+- `Core/APIClient.swift` — rewrote to fix struct closure bug; extracted `buildURL()` + `send()` helpers; all methods now inside struct
+- `Core/AppConfig.swift` — `#if targetEnvironment(simulator)` auto-selects `127.0.0.1` for simulator, `deviceLANIP` constant for device; one-time edit: set `deviceLANIP = "192.168.1.111"` (current Mac LAN IP)
+- `Headlines/Info.plist` — **new file** replacing auto-generated plist:
+  - Replicates all `INFOPLIST_KEY_*` build settings (UIApplicationSceneManifest, UILaunchScreen, UISupportedInterfaceOrientations, etc.)
+  - Adds `NSAppTransportSecurity`: `NSAllowsLocalNetworking = true`, `NSAllowsArbitraryLoadsInDebug = true` (debug builds only — no ATS impact on release)
+  - Adds `API_BASE_URL = $(API_BASE_URL)` build variable hook for per-scheme URL override
+
+**Required Xcode steps (one-time, manual):**
+1. In Xcode project navigator: right-click `Headlines` group → Add Files → select `Info.plist`
+2. Build Settings → search "Generate Info.plist" → set to **No** for Debug and Release
+3. Build Settings → search "Info.plist File" → set to `Headlines/Info.plist`
+4. In `AppConfig.swift` line `static let deviceLANIP = "YOUR_MAC_LAN_IP"` → replace with `"192.168.1.111"` (or your current LAN IP — run `ipconfig getifaddr en0` to check)
+
+**Audio URL handling (all cases covered):**
+| Scenario | `audioUrl` in response | How iOS downloads |
+|---|---|---|
+| Local dev (simulator) | `null` | `service.audioFileURL()` → `http://127.0.0.1:8000/dev/api/audio/{id}/file` |
+| Local dev (device) | `null` | `service.audioFileURL()` → `http://192.168.1.111:8000/dev/api/audio/{id}/file` |
+| S3 production | `https://bucket.s3.region.amazonaws.com/...` | URL used directly, no Mac involved |
+
+**Validation:**
+- `GET http://192.168.1.111:8000/data/profiles` → `200 {"profiles":[...]}` ✓
+- `GET http://192.168.1.111:8000/dev/api/audio/13/file` → `200 1,587,453 bytes` ✓
+- Backend bound to `0.0.0.0:8000` (uvicorn `--host 0.0.0.0`) ✓
+- No hardcoded `127.0.0.1` outside `AppConfig.swift` ✓
+
+## Changes Made This Session (2026-04-26 — audio storage abstraction)
+
+**Architecture:**
+Replaced direct local-disk writes in `_generate_audio()` with a pluggable storage provider. Provider is selected at startup from `AUDIO_STORAGE_PROVIDER` env var. `local` mode is unchanged (writes `.local/audio/bulletins/`). `s3` mode uploads to any S3-compatible bucket and derives a public URL. `audio_url` is now persisted in DB and returned in all audio API responses. iOS uses `audio_url` directly when non-null; falls back to local dev path otherwise.
+
+**New files:**
+- `platform/storage/__init__.py`
+- `platform/storage/audio_storage.py`
+  - `AudioStorageResult(storage_path, audio_url)` — dataclass
+  - `AudioStorageProvider` — ABC with `store(bytes, filename) → AudioStorageResult`
+  - `LocalAudioStorage(base_dir)` — writes to local disk; `audio_url=None`
+  - `S3AudioStorage(bucket, region, access_key_id, secret_access_key, endpoint_url?, public_base_url?)` — uploads with boto3
+    - URL derivation: `public_base_url/{key}` → `endpoint_url/{bucket}/{key}` → `https://{bucket}.s3.{region}.amazonaws.com/{key}`
+  - `get_audio_storage_provider()` — lazy singleton; validates required S3 config at startup
+
+**Migration `b3c4d5e6f7a8`:**
+- `ALTER TABLE data.bulletin_audio ADD COLUMN audio_url TEXT` (nullable)
+- Existing local rows get `audio_url = NULL` (correct — local mode never stores a URL)
+
+**Modified files:**
+- `platform/config/settings.py` — added 7 new settings:
+  ```
+  audio_storage_provider: str = "local"
+  s3_bucket, s3_region, s3_access_key_id, s3_secret_access_key
+  s3_endpoint_url, s3_public_base_url (all str | None)
+  ```
+- `pipeline/data/bulletin/audio/repos/bulletin_audio_repo.py`
+  - `get_cached()` SELECT now includes `audio_url`
+  - `insert()` accepts `audio_url: str | None = None`, includes in INSERT
+- `api/routes/data.py`
+  - Removed direct `os.makedirs` / `open()` writes
+  - Added `get_audio_storage_provider()` call; passes `stored.audio_url` to DB insert
+  - `_do_assemble_and_audio()` response and `generate_bulletin_audio` endpoint both now include `"audio_url"` key
+- `.env` — added `AUDIO_STORAGE_PROVIDER=local` and commented S3 stubs
+- `pyproject.toml` — added `boto3 = {version = "^1.35.0", optional = true}` + `[tool.poetry.extras] s3 = ["boto3"]`
+
+**iOS files:**
+- `Models/BulletinResult.swift` — added `audioUrl: String?`
+- `Services/Profiles/ProfileDTO.swift` — added `audioUrl: String?` to `BulletinResultDTO` (CodingKey: `audio_url`)
+- `Services/Profiles/ProfileService.swift` — `BulletinResult.init(dto:)` maps `audioUrl`
+- `Features/Briefing/BriefingViewModel.swift` — uses `result.audioUrl` directly if non-nil; falls back to `service.audioFileURL(forBulletinID:)` for local dev
+
+**Env vars:**
+```
+AUDIO_STORAGE_PROVIDER=local     # local (default) | s3
+
+# S3 mode — required when AUDIO_STORAGE_PROVIDER=s3:
+S3_BUCKET=my-headlines-audio
+S3_REGION=us-east-1
+S3_ACCESS_KEY_ID=AKIA...
+S3_SECRET_ACCESS_KEY=...
+
+# Optional:
+S3_ENDPOINT_URL=https://<acct>.r2.cloudflarestorage.com   # R2, Spaces, MinIO
+S3_PUBLIC_BASE_URL=https://cdn.example.com                 # CDN domain override
+```
+
+**To install boto3 (S3 mode only):**
+```bash
+cd backend && poetry install -E s3
+```
+
+**Example API response (local mode, audio_url=null):**
+```json
+{
+  "profile_id": 1, "profile_name": "Paul",
+  "bulletin_id": 13, "story_count": 5,
+  "bulletin_cached": true,
+  "audio_id": 7, "voice": "JBFqnCBsd6RMkjVDRZzb",
+  "audio_url": null,
+  "audio_cached": true
+}
+```
+
+**Example API response (S3 mode):**
+```json
+{
+  "audio_url": "https://my-headlines.s3.us-east-1.amazonaws.com/bulletins/13_b23b5858afd5c157.mp3",
+  "audio_cached": false
+}
+```
+
+**Validation (all 5 checks passing):**
+1. `get_audio_storage_provider()` in local mode → `LocalAudioStorage` ✓
+2. Missing S3 config → `RuntimeError: required env vars missing: S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY` ✓
+3. `LocalAudioStorage.store()` → `audio_url=None`, file written correctly ✓
+4. URL derivation for all 3 S3 modes (AWS / endpoint / CDN) ✓
+5. `POST /data/bulletins/13/audio` (cache hit) → `"audio_url": null, "cached": true` ✓
+6. `GET /dev/api/audio/13/file` → `200 audio/mpeg 1.5MB` (local file serving unchanged) ✓
+7. `get_cached()` includes `audio_url` column in result ✓
+
 ## What Is Incomplete
 
 - **Summaries require API key** — set `ANTHROPIC_API_KEY` in `.env` to activate
-- **Audio stored locally** — should be remote
+- **S3 boto3 not installed** — run `poetry install -E s3` before switching to S3 mode
 - **No automated tests** — pipeline health check devtool covers ingest→cluster; no unit/integration tests
 
 ## Next Steps
 
-- Move audio storage to remote (S3 or equivalent)
+- Install boto3 and test S3 upload against a real bucket (R2 recommended — free tier)
 - Wire summaries/bulletins into feeds/scripts/audio pipeline stages (TTS stage)
-- Personalisation: user profiles storing preferred filter sets (serve personalised bulletins automatically)
-- `GET /data/bulletins/latest` returns most recently *created* bulletin — may want `GET /data/bulletins/assemble?cached_only=true` variant that checks a specific filter combination
+- `GET /data/bulletins/latest` returns most recently *created* bulletin — may want `GET /data/bulletins/assemble?cached_only=true` variant

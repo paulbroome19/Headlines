@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3F6FEC2E65217568C2ECDC80 /* BulletinResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE95946FB918EF84D276AE81 /* BulletinResult.swift */; };
+		5EAEE6754276C21B893A9EE2 /* BriefingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 631EADA0A119F1F8898B6F1E /* BriefingView.swift */; };
+		64065BC422C7069155D1A006 /* ProfileFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A87A10F41FD0052AA5499DA /* ProfileFormView.swift */; };
+		94A454325C62D028C3C91D54 /* Profile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D22606DB2EA11E67736F16 /* Profile.swift */; };
 		9777CBF22F2E6A9600F52583 /* HeadlinesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CBF12F2E6A9600F52583 /* HeadlinesApp.swift */; };
 		9777CBF62F2E6A9800F52583 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9777CBF52F2E6A9800F52583 /* Assets.xcassets */; };
 		9777CBF92F2E6A9800F52583 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9777CBF82F2E6A9800F52583 /* Preview Assets.xcassets */; };
@@ -25,6 +29,10 @@
 		9777CC442F2F7AB400F52583 /* PlaybackViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC432F2F7AB400F52583 /* PlaybackViewModel.swift */; };
 		9777CC482F2F7C3200F52583 /* PlaybackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC472F2F7C3200F52583 /* PlaybackView.swift */; };
 		9777CC4D2F2F8E0400F52583 /* AudioOutputsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9777CC4C2F2F8E0400F52583 /* AudioOutputsService.swift */; };
+		AE2E715F48E42C369922C648 /* BriefingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0672F13BA0CE4B03CFAB1D8 /* BriefingViewModel.swift */; };
+		C172F315C8977BF73140FB76 /* ProfileServicing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AB2E6C5C74C07EEAA7C9B12 /* ProfileServicing.swift */; };
+		E1C42EFE90926D5825C92781 /* ProfileDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = E957CB9B0BAB68D573BFB67E /* ProfileDTO.swift */; };
+		EFAC78563EFA8F41048D98E3 /* ProfileService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05FCB9DFB0DA60BDAF6493CE /* ProfileService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +53,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		05FCB9DFB0DA60BDAF6493CE /* ProfileService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProfileService.swift; path = Profiles/ProfileService.swift; sourceTree = "<group>"; };
+		4AB2E6C5C74C07EEAA7C9B12 /* ProfileServicing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProfileServicing.swift; path = Profiles/ProfileServicing.swift; sourceTree = "<group>"; };
+		631EADA0A119F1F8898B6F1E /* BriefingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BriefingView.swift; path = Briefing/BriefingView.swift; sourceTree = "<group>"; };
+		6A87A10F41FD0052AA5499DA /* ProfileFormView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProfileFormView.swift; path = Profiles/ProfileFormView.swift; sourceTree = "<group>"; };
 		9777CBEE2F2E6A9600F52583 /* Headlines.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Headlines.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9777CBF12F2E6A9600F52583 /* HeadlinesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadlinesApp.swift; sourceTree = "<group>"; };
 		9777CBF52F2E6A9800F52583 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -66,6 +78,10 @@
 		9777CC432F2F7AB400F52583 /* PlaybackViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackViewModel.swift; sourceTree = "<group>"; };
 		9777CC472F2F7C3200F52583 /* PlaybackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackView.swift; sourceTree = "<group>"; };
 		9777CC4C2F2F8E0400F52583 /* AudioOutputsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOutputsService.swift; sourceTree = "<group>"; };
+		A0672F13BA0CE4B03CFAB1D8 /* BriefingViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BriefingViewModel.swift; path = Briefing/BriefingViewModel.swift; sourceTree = "<group>"; };
+		B9D22606DB2EA11E67736F16 /* Profile.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Profile.swift; sourceTree = "<group>"; };
+		CE95946FB918EF84D276AE81 /* BulletinResult.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BulletinResult.swift; sourceTree = "<group>"; };
+		E957CB9B0BAB68D573BFB67E /* ProfileDTO.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProfileDTO.swift; path = Profiles/ProfileDTO.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,6 +109,24 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		44AEE92B22B407F22112386B /* Profiles */ = {
+			isa = PBXGroup;
+			children = (
+				E957CB9B0BAB68D573BFB67E /* ProfileDTO.swift */,
+				4AB2E6C5C74C07EEAA7C9B12 /* ProfileServicing.swift */,
+				05FCB9DFB0DA60BDAF6493CE /* ProfileService.swift */,
+			);
+			name = Profiles;
+			sourceTree = "<group>";
+		};
+		903B241D3144E84CB2F51574 /* Profiles */ = {
+			isa = PBXGroup;
+			children = (
+				6A87A10F41FD0052AA5499DA /* ProfileFormView.swift */,
+			);
+			name = Profiles;
+			sourceTree = "<group>";
+		};
 		9777CBE52F2E6A9600F52583 = {
 			isa = PBXGroup;
 			children = (
@@ -155,6 +189,8 @@
 			children = (
 				9777CC222F2E700C00F52583 /* Feed.swift */,
 				9777CC2F2F2E8E5500F52583 /* FeedItem.swift */,
+				B9D22606DB2EA11E67736F16 /* Profile.swift */,
+				CE95946FB918EF84D276AE81 /* BulletinResult.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -172,6 +208,8 @@
 			children = (
 				9777CC402F2F7A7F00F52583 /* Playback */,
 				9777CC352F2EA1CC00F52583 /* Feeds */,
+				C48394EBD678A3520890B968 /* Briefing */,
+				903B241D3144E84CB2F51574 /* Profiles */,
 			);
 			path = Features;
 			sourceTree = "<group>";
@@ -225,6 +263,7 @@
 			children = (
 				9777CC4B2F2F8DE700F52583 /* Audio */,
 				9777CC4A2F2F87A100F52583 /* Feeds */,
+				44AEE92B22B407F22112386B /* Profiles */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -246,6 +285,15 @@
 				9777CC4C2F2F8E0400F52583 /* AudioOutputsService.swift */,
 			);
 			path = Audio;
+			sourceTree = "<group>";
+		};
+		C48394EBD678A3520890B968 /* Briefing */ = {
+			isa = PBXGroup;
+			children = (
+				A0672F13BA0CE4B03CFAB1D8 /* BriefingViewModel.swift */,
+				631EADA0A119F1F8898B6F1E /* BriefingView.swift */,
+			);
+			name = Briefing;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -391,6 +439,14 @@
 				9777CC302F2E8E5500F52583 /* FeedItem.swift in Sources */,
 				9777CC252F2E7BEB00F52583 /* APIClient.swift in Sources */,
 				9777CC482F2F7C3200F52583 /* PlaybackView.swift in Sources */,
+				94A454325C62D028C3C91D54 /* Profile.swift in Sources */,
+				3F6FEC2E65217568C2ECDC80 /* BulletinResult.swift in Sources */,
+				E1C42EFE90926D5825C92781 /* ProfileDTO.swift in Sources */,
+				C172F315C8977BF73140FB76 /* ProfileServicing.swift in Sources */,
+				EFAC78563EFA8F41048D98E3 /* ProfileService.swift in Sources */,
+				AE2E715F48E42C369922C648 /* BriefingViewModel.swift in Sources */,
+				5EAEE6754276C21B893A9EE2 /* BriefingView.swift in Sources */,
+				64065BC422C7069155D1A006 /* ProfileFormView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -554,6 +610,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Resources/Preview Content\"";
+				DEVELOPMENT_TEAM = U8BQ2J7J67;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -566,7 +623,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.headlines.Headlines;
+				PRODUCT_BUNDLE_IDENTIFIER = com.paulbroome.headlines;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -582,6 +639,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Resources/Preview Content\"";
+				DEVELOPMENT_TEAM = U8BQ2J7J67;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -594,7 +652,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.headlines.Headlines;
+				PRODUCT_BUNDLE_IDENTIFIER = com.paulbroome.headlines;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;

@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Launch the Headlines dev environment.
+# Starts: Docker services (Postgres + Redis), API server, dispatcher, consumer.
+# Usage: ./dev [--no-docker]
+
+set -euo pipefail
+
+BACKEND="$(cd "$(dirname "$0")/backend" && pwd)"
+PYTHON="$BACKEND/.venv/bin/python"
+LOG_DIR="/tmp/headlines-dev"
+
+if [[ ! -x "$PYTHON" ]]; then
+  echo "ERROR: venv not found at $BACKEND/.venv — run 'poetry install' first" >&2
+  exit 1
+fi
+
+mkdir -p "$LOG_DIR"
+
+# Source .env so ENABLE_SCHEDULED_INGEST etc. are visible to this script
+if [[ -f "$BACKEND/.env" ]]; then
+  set -o allexport
+  # shellcheck disable=SC1090
+  source "$BACKEND/.env"
+  set +o allexport
+fi
+
+cleanup() {
+  echo ""
+  echo "Shutting down…"
+  kill -- -$$ 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# ── Docker services ────────────────────────────────────────────────────────────
+if [[ "${1:-}" != "--no-docker" ]]; then
+  echo "▶ Starting Docker services (Postgres + Redis)…"
+  docker compose -f "$BACKEND/docker/docker-compose.yml" up -d
+  echo "  Waiting for Postgres…"
+  until docker compose -f "$BACKEND/docker/docker-compose.yml" exec -T postgres \
+    pg_isready -U postgres -q 2>/dev/null; do sleep 1; done
+  echo "  Postgres ready."
+fi
+
+# ── API server ─────────────────────────────────────────────────────────────────
+echo "▶ Starting API server  →  http://localhost:8000"
+echo "  Dashboard            →  http://localhost:8000/dev"
+PYTHONPATH="$BACKEND/src" "$PYTHON" -m uvicorn core.api.main:app \
+  --host 0.0.0.0 --port 8000 --reload \
+  --app-dir "$BACKEND/src" \
+  >"$LOG_DIR/api.log" 2>&1 &
+API_PID=$!
+
+# ── Dispatcher ─────────────────────────────────────────────────────────────────
+echo "▶ Starting dispatcher"
+PYTHONPATH="$BACKEND/src" "$PYTHON" -m core.workers.run_dispatcher \
+  >"$LOG_DIR/dispatcher.log" 2>&1 &
+DISP_PID=$!
+
+# ── Consumer ──────────────────────────────────────────────────────────────────
+echo "▶ Starting consumer"
+PYTHONPATH="$BACKEND/src" "$PYTHON" -m core.workers.run_consumer \
+  >"$LOG_DIR/consumer.log" 2>&1 &
+CONS_PID=$!
+
+# ── Scheduler (opt-in) ────────────────────────────────────────────────────────
+SCHED_PID=""
+if [[ "${ENABLE_SCHEDULED_INGEST:-false}" == "true" ]]; then
+  echo "▶ Starting scheduler  interval=${INGEST_INTERVAL_MINUTES:-30} min"
+  PYTHONPATH="$BACKEND/src" "$PYTHON" -m core.workers.run_scheduler \
+    >"$LOG_DIR/scheduler.log" 2>&1 &
+  SCHED_PID=$!
+fi
+
+echo ""
+echo "Dev environment running. Logs in $LOG_DIR/"
+if [[ -n "$SCHED_PID" ]]; then
+  echo "  api.log · dispatcher.log · consumer.log · scheduler.log"
+else
+  echo "  api.log · dispatcher.log · consumer.log"
+  echo "  (scheduler disabled — set ENABLE_SCHEDULED_INGEST=true in .env to enable)"
+fi
+echo ""
+echo "Press Ctrl-C to stop everything."
+
+# Tail logs — include scheduler.log if running
+TAIL_LOGS="$LOG_DIR/api.log $LOG_DIR/dispatcher.log $LOG_DIR/consumer.log"
+[[ -n "$SCHED_PID" ]] && TAIL_LOGS="$TAIL_LOGS $LOG_DIR/scheduler.log"
+# shellcheck disable=SC2086
+tail -F $TAIL_LOGS &
+
+wait

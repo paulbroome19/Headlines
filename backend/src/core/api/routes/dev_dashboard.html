@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Headlines Dev Dashboard</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;font-size:13px;line-height:1.5}
+a{color:#58a6ff;text-decoration:none}
+
+/* Layout */
+header{background:#161b22;border-bottom:1px solid #30363d;padding:12px 20px;display:flex;align-items:center;gap:16px}
+header h1{font-size:15px;font-weight:600;color:#e6edf3;letter-spacing:.02em}
+header .badge{background:#21262d;border:1px solid #30363d;border-radius:4px;padding:2px 8px;font-size:11px;color:#8b949e}
+nav{background:#161b22;border-bottom:1px solid #30363d;display:flex;padding:0 20px;gap:0}
+nav button{background:none;border:none;border-bottom:2px solid transparent;color:#8b949e;cursor:pointer;font-size:12px;font-weight:500;padding:10px 14px;transition:color .15s}
+nav button:hover{color:#c9d1d9}
+nav button.active{border-bottom-color:#58a6ff;color:#e6edf3}
+main{padding:20px;max-width:1400px}
+
+/* Tabs */
+.tab{display:none}.tab.active{display:block}
+
+/* Sections */
+.section{background:#161b22;border:1px solid #30363d;border-radius:6px;margin-bottom:16px;overflow:hidden}
+.section-header{padding:10px 14px;border-bottom:1px solid #30363d;display:flex;align-items:center;justify-content:space-between}
+.section-title{font-size:12px;font-weight:600;color:#e6edf3;text-transform:uppercase;letter-spacing:.06em}
+.section-body{padding:0}
+
+/* Tables */
+table{width:100%;border-collapse:collapse}
+th{background:#0d1117;color:#8b949e;font-size:11px;font-weight:600;letter-spacing:.04em;padding:7px 14px;text-align:left;text-transform:uppercase;border-bottom:1px solid #30363d}
+td{padding:7px 14px;border-bottom:1px solid #21262d;vertical-align:top;font-size:12px}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#1c2128}
+.mono{font-family:monospace;font-size:11px}
+
+/* Badges / pills */
+.tier-top{background:#1f4228;color:#3fb950;border:1px solid #238636;border-radius:3px;font-size:10px;font-weight:600;padding:1px 6px;white-space:nowrap}
+.tier-briefing{background:#1c2d3a;color:#79c0ff;border:1px solid #1f6feb;border-radius:3px;font-size:10px;font-weight:600;padding:1px 6px;white-space:nowrap}
+.cat{background:#21262d;color:#8b949e;border-radius:3px;font-size:10px;padding:1px 6px;font-family:monospace;white-space:nowrap}
+.cat-yaml{border-left:2px solid #3fb950}.cat-llm{border-left:2px solid #d29922}.cat-none{border-left:2px solid #6e7681}
+.conf-high{color:#3fb950}.conf-mid{color:#d29922}.conf-low{color:#f85149}
+.cached-yes{color:#3fb950;font-weight:600}.cached-no{color:#58a6ff;font-weight:600}
+
+/* Story cards */
+.story-card{border-bottom:1px solid #21262d;overflow:hidden}
+.story-card:last-child{border-bottom:none}
+.story-row{padding:10px 14px;display:flex;align-items:flex-start;gap:10px;cursor:pointer;user-select:none}
+.story-row:hover{background:#1c2128}
+.story-rank{color:#6e7681;font-size:11px;width:28px;text-align:right;padding-top:2px;flex-shrink:0}
+.story-info{flex:1;min-width:0}
+.story-title{color:#e6edf3;font-size:13px;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.story-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.story-toggle{color:#6e7681;font-size:11px;flex-shrink:0;padding-top:2px}
+.article-list{background:#0d1117;border-top:1px solid #21262d;padding:8px 14px 8px 52px;display:none}
+.article-list.open{display:block}
+.article-item{padding:4px 0;border-bottom:1px solid #21262d;display:flex;gap:8px;align-items:flex-start}
+.article-item:last-child{border-bottom:none}
+.article-title{color:#c9d1d9;flex:1;min-width:0}
+.article-source{color:#8b949e;font-size:11px;white-space:nowrap}
+
+/* Summary cards */
+.summary-card{border-bottom:1px solid #21262d}
+.summary-card:last-child{border-bottom:none}
+.summary-row{padding:10px 14px;display:flex;align-items:flex-start;gap:10px;cursor:pointer}
+.summary-row:hover{background:#1c2128}
+.summary-detail{background:#0d1117;border-top:1px solid #21262d;padding:12px 14px 12px 52px;display:none}
+.summary-detail.open{display:block}
+.summary-field{margin-bottom:10px}
+.summary-label{color:#8b949e;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
+.summary-value{color:#c9d1d9;line-height:1.6;white-space:pre-wrap}
+.summary-headline{color:#e6edf3;font-size:14px;font-weight:500;flex:1;min-width:0}
+
+/* Builder */
+.builder-grid{padding:16px;display:grid;grid-template-columns:1fr 1fr 140px;gap:12px;align-items:start}
+.field-label{font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+.tag-select{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:6px;max-height:160px;overflow-y:auto}
+.tag-item{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:3px;cursor:pointer;font-family:monospace;font-size:11px}
+.tag-item:hover{background:#21262d}
+.tag-item input{accent-color:#58a6ff;cursor:pointer;flex-shrink:0}
+.tag-item.selected{color:#58a6ff}
+.max-stories-wrap{display:flex;flex-direction:column}
+.max-stories-wrap input{background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e6edf3;font-size:13px;padding:6px 10px;width:80px}
+.builder-actions{padding:0 16px 16px;display:flex;gap:8px;flex-wrap:wrap}
+.btn{background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;cursor:pointer;font-size:12px;font-weight:500;padding:7px 14px;transition:background .15s,color .15s}
+.btn:hover{background:#30363d;color:#e6edf3}
+.btn-primary{background:#1f4228;border-color:#238636;color:#3fb950}
+.btn-primary:hover{background:#238636;color:#e6edf3}
+.btn-accent{background:#1c2d3a;border-color:#1f6feb;color:#58a6ff}
+.btn-accent:hover{background:#1f6feb;color:#e6edf3}
+.btn:disabled{opacity:.4;cursor:default}
+.result-box{padding:14px 16px;background:#0d1117;border-top:1px solid #30363d;display:none}
+.result-meta{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px}
+.result-kv{display:flex;flex-direction:column;gap:2px}
+.result-key{font-size:10px;color:#6e7681;text-transform:uppercase;letter-spacing:.04em}
+.result-val{font-size:12px;color:#e6edf3;font-family:monospace}
+.script-box{background:#161b22;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:11px;line-height:1.6;padding:10px;white-space:pre-wrap;max-height:320px;overflow-y:auto;margin-top:10px}
+
+/* Audio */
+.audio-list-row{padding:10px 14px;display:flex;align-items:center;gap:10px;cursor:pointer;border-bottom:1px solid #21262d}
+.audio-list-row:last-child{border-bottom:none}
+.audio-list-row:hover{background:#1c2128}
+.audio-list-row.selected{background:#1c2d3a}
+.audio-player-wrap{padding:16px;border-top:1px solid #30363d;display:none}
+.audio-player-wrap.visible{display:block}
+audio{width:100%;border-radius:4px;margin-bottom:12px}
+.audio-meta{display:flex;gap:16px;flex-wrap:wrap}
+
+/* States */
+.loading{color:#8b949e;padding:24px;text-align:center}
+.error{color:#f85149;padding:16px;font-family:monospace;font-size:11px}
+.empty{color:#6e7681;padding:20px;text-align:center;font-size:12px}
+
+/* Outbox summary */
+.outbox-row{display:flex;gap:8px;align-items:center;padding:4px 14px;border-bottom:1px solid #21262d}
+.outbox-row:last-child{border-bottom:none}
+.outbox-count{background:#21262d;border-radius:10px;color:#8b949e;font-size:10px;min-width:28px;padding:1px 6px;text-align:center}
+.status-published{color:#3fb950}.status-pending{color:#d29922}.status-failed{color:#f85149}
+
+/* Profiles */
+.profile-form-grid{padding:16px;display:grid;grid-template-columns:220px 1fr 1fr 120px;gap:16px;align-items:start}
+.pf-input{background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e6edf3;font-size:13px;padding:6px 10px;width:100%}
+.pf-input:focus{outline:none;border-color:#58a6ff}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Headlines Dev</h1>
+  <span class="badge" id="run-badge">Loading…</span>
+  <button class="btn" onclick="refreshAll()" style="margin-left:auto">↻ Refresh</button>
+</header>
+
+<nav>
+  <button class="active" onclick="switchTab('pipeline', this)">Pipeline</button>
+  <button onclick="switchTab('stories', this)">Stories</button>
+  <button onclick="switchTab('summaries', this)">Summaries</button>
+  <button onclick="switchTab('builder', this)">Bulletin Builder</button>
+  <button onclick="switchTab('audio', this)">Audio</button>
+  <button onclick="switchTab('profiles', this)">Profiles</button>
+</nav>
+
+<main>
+
+<!-- ── Tab: Pipeline ──────────────────────────────────────────────────────── -->
+<div id="tab-pipeline" class="tab active">
+  <div class="section">
+    <div class="section-header"><span class="section-title">Ranking Runs</span></div>
+    <div class="section-body" id="runs-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="section">
+    <div class="section-header"><span class="section-title">Bulletins</span></div>
+    <div class="section-body" id="bulletins-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="section">
+    <div class="section-header"><span class="section-title">Audio Files</span></div>
+    <div class="section-body" id="audio-table"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="section">
+    <div class="section-header"><span class="section-title">Event Outbox Summary</span></div>
+    <div class="section-body" id="outbox-table"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ── Tab: Stories ──────────────────────────────────────────────────────── -->
+<div id="tab-stories" class="tab">
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Stories — Latest Ranking Run</span>
+      <span id="stories-badge" style="font-size:11px;color:#8b949e"></span>
+    </div>
+    <div class="section-body" id="stories-list"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ── Tab: Summaries ─────────────────────────────────────────────────────── -->
+<div id="tab-summaries" class="tab">
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Summaries — Latest Ranking Run</span>
+      <span id="summaries-badge" style="font-size:11px;color:#8b949e"></span>
+    </div>
+    <div class="section-body" id="summaries-list"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ── Tab: Bulletin Builder ─────────────────────────────────────────────── -->
+<div id="tab-builder" class="tab">
+  <div class="section">
+    <div class="section-header"><span class="section-title">Filters</span></div>
+    <div class="builder-grid">
+      <div>
+        <div class="field-label">Include Categories</div>
+        <div class="tag-select" id="include-cats"></div>
+      </div>
+      <div>
+        <div class="field-label">Exclude Categories</div>
+        <div class="tag-select" id="exclude-cats"></div>
+      </div>
+      <div class="max-stories-wrap">
+        <div class="field-label">Max Stories</div>
+        <input type="number" id="max-stories" value="8" min="1" max="50">
+      </div>
+    </div>
+    <div class="builder-actions">
+      <button class="btn btn-primary" onclick="doAssemble()">Assemble Bulletin</button>
+      <button class="btn btn-accent" onclick="doAssembleAndAudio()">Assemble + Audio</button>
+      <button class="btn" onclick="doGetLatest()">Get Latest</button>
+      <button class="btn" onclick="clearBuilder()">Clear</button>
+    </div>
+    <div class="result-box" id="builder-result"></div>
+  </div>
+</div>
+
+<!-- ── Tab: Profiles ──────────────────────────────────────────────────────── -->
+<div id="tab-profiles" class="tab">
+
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Profiles</span>
+      <button class="btn btn-primary" onclick="showProfileForm('create')">+ New Profile</button>
+    </div>
+    <div class="section-body" id="profiles-list"><div class="loading">Loading…</div></div>
+  </div>
+
+  <div class="section" id="profile-form-section" style="display:none">
+    <div class="section-header">
+      <span class="section-title" id="profile-form-title">New Profile</span>
+      <button class="btn" onclick="hideProfileForm()">✕ Cancel</button>
+    </div>
+    <div class="profile-form-grid">
+      <div>
+        <div class="field-label">Name</div>
+        <input type="text" id="pf-name" class="pf-input" placeholder="e.g. Paul" style="margin-bottom:12px">
+        <div class="field-label">Max Stories</div>
+        <input type="number" id="pf-max-stories" class="pf-input" value="8" min="1" max="50" style="width:80px;margin-bottom:12px">
+        <div class="field-label">Voice (ElevenLabs ID)</div>
+        <input type="text" id="pf-voice" class="pf-input" list="pf-voice-options" placeholder="leave blank for default">
+        <datalist id="pf-voice-options">
+          <option value="JBFqnCBsd6RMkjVDRZzb">George (British male)</option>
+          <option value="N2lVS1w4EtoT3dr4eOWO">Callum (British male)</option>
+          <option value="XB0fDUnXU5powFXDhCwa">Charlotte (British female)</option>
+          <option value="EXAVITQu4vr4xnSDxMaL">Bella</option>
+        </datalist>
+        <div style="margin-top:6px;font-size:11px;color:#6e7681">Leave blank to use server default</div>
+      </div>
+      <div>
+        <div class="field-label">Include Categories</div>
+        <div class="tag-select" id="pf-include-cats" style="max-height:200px"></div>
+      </div>
+      <div>
+        <div class="field-label">Exclude Categories</div>
+        <div class="tag-select" id="pf-exclude-cats" style="max-height:200px"></div>
+      </div>
+      <div></div>
+    </div>
+    <div class="builder-actions">
+      <button class="btn btn-primary" id="pf-submit-btn" onclick="submitProfileForm()">Create Profile</button>
+    </div>
+  </div>
+
+  <div class="section" id="profile-bulletin-section" style="display:none">
+    <div class="section-header">
+      <span class="section-title" id="profile-bulletin-title">Bulletin</span>
+    </div>
+    <div class="result-box" id="profile-bulletin-result" style="display:block;padding:16px">
+      <div class="loading">Generating…</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Tab: Audio ─────────────────────────────────────────────────────────── -->
+<div id="tab-audio" class="tab">
+  <div class="section">
+    <div class="section-header"><span class="section-title">Available Audio</span></div>
+    <div class="section-body" id="audio-list"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="section" id="player-section" style="display:none">
+    <div class="section-header"><span class="section-title">Player</span></div>
+    <div class="audio-player-wrap visible" id="player-wrap"></div>
+  </div>
+</div>
+
+</main>
+
+<script>
+'use strict';
+
+// ── State ───────────────────────────────────────────────────────────────────
+const loaded = {};
+let categories = [];
+let pipelineData = null;
+
+// ── Tabs ────────────────────────────────────────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+  if (!loaded[name]) { loaded[name] = true; loadTab(name); }
+}
+
+function loadTab(name) {
+  if (name === 'pipeline') loadPipeline();
+  else if (name === 'stories') loadStories();
+  else if (name === 'summaries') loadSummaries();
+  else if (name === 'builder') loadCategories();
+  else if (name === 'audio') loadAudioList();
+  else if (name === 'profiles') loadProfiles();
+}
+
+function refreshAll() {
+  Object.keys(loaded).forEach(k => delete loaded[k]);
+  loadTab(currentTab());
+}
+function currentTab() {
+  const t = document.querySelector('.tab.active');
+  return t ? t.id.replace('tab-', '') : 'pipeline';
+}
+
+// ── Pipeline ────────────────────────────────────────────────────────────────
+async function loadPipeline() {
+  const data = await api('/dev/api/pipeline');
+  pipelineData = data;
+
+  const latest = data.ranking_runs[0];
+  if (latest) {
+    document.getElementById('run-badge').textContent =
+      `Run #${latest.id} · ${latest.summary_count} summaries · ${latest.bulletin_count} bulletins`;
+  }
+
+  // Ranking runs table
+  el('runs-table').innerHTML = table(
+    ['Run', 'Batch ID', 'Candidates', 'Summaries', 'Avg Conf', 'Bulletins', 'Audio', 'Created'],
+    data.ranking_runs,
+    r => [
+      `<strong>#${r.id}</strong>`,
+      `<span class="mono">${r.batch_id.slice(0, 24)}…</span>`,
+      r.candidate_count,
+      r.summary_count,
+      r.avg_confidence != null ? conf(r.avg_confidence) : '—',
+      r.bulletin_count,
+      r.audio_count,
+      fmtDate(r.created_at),
+    ]
+  );
+
+  // Bulletins table
+  el('bulletins-table').innerHTML = table(
+    ['ID', 'Run', 'Hash', 'Stories', 'Filters', 'Created'],
+    data.bulletins,
+    b => [
+      `<strong>#${b.id}</strong>`,
+      `#${b.ranking_run_id}`,
+      `<span class="mono">${b.request_hash}</span>`,
+      b.story_count,
+      fmtFilters(b.filters),
+      fmtDate(b.created_at),
+    ]
+  );
+
+  // Audio table
+  el('audio-table').innerHTML = table(
+    ['ID', 'Bulletin', 'Provider', 'Voice', 'Model', 'Format', 'Size', 'Created'],
+    data.audio_files,
+    a => [
+      `<strong>#${a.id}</strong>`,
+      `#${a.bulletin_id}`,
+      a.provider,
+      voiceLabel(a.voice),
+      a.model,
+      `<span class="mono">${a.audio_format}</span>`,
+      a.file_size_bytes ? fmtSize(a.file_size_bytes) : '—',
+      fmtDate(a.created_at),
+    ]
+  );
+
+  // Outbox summary
+  if (!data.outbox_summary.length) {
+    el('outbox-table').innerHTML = '<div class="empty">No outbox events</div>';
+  } else {
+    const grouped = {};
+    for (const r of data.outbox_summary) {
+      if (!grouped[r.event_type]) grouped[r.event_type] = {};
+      grouped[r.event_type][r.status] = r.cnt;
+    }
+    const rows = Object.entries(grouped).map(([type, statuses]) => {
+      const parts = Object.entries(statuses)
+        .map(([s, c]) => `<span class="status-${s} outbox-count">${c} ${s}</span>`)
+        .join(' ');
+      return `<div class="outbox-row"><span style="flex:1;font-family:monospace;font-size:11px">${type}</span>${parts}</div>`;
+    });
+    el('outbox-table').innerHTML = rows.join('');
+  }
+}
+
+// ── Stories ──────────────────────────────────────────────────────────────────
+async function loadStories() {
+  const data = await api('/dev/api/stories');
+  const badge = data.ranking_run_id ? `Run #${data.ranking_run_id} · ${data.stories.length} stories` : '';
+  el('stories-badge').textContent = badge;
+
+  if (!data.stories.length) {
+    el('stories-list').innerHTML = '<div class="empty">No stories found</div>';
+    return;
+  }
+
+  const cards = data.stories.map(s => {
+    const tierBadge = s.tier === 'top'
+      ? '<span class="tier-top">TOP</span>'
+      : '<span class="tier-briefing">BRIEFING</span>';
+    const catBadge = s.primary_category
+      ? `<span class="cat">${s.primary_category}</span>`
+      : '<span class="cat cat-none">uncategorised</span>';
+    const countTag = `<span style="color:#6e7681;font-size:11px">${s.article_count} article${s.article_count !== 1 ? 's' : ''}</span>`;
+
+    const articles = s.articles.map(a => {
+      const meth = a.category_method || 'none';
+      const methClass = meth === 'yaml' ? 'cat-yaml' : meth.includes('llm') ? 'cat-llm' : 'cat-none';
+      const catTag = a.category_primary
+        ? `<span class="cat ${methClass}">${a.category_primary}</span>`
+        : `<span class="cat cat-none">—</span>`;
+      const entity = a.entity_name ? ` · <span style="color:#8b949e">${a.entity_name}</span>` : '';
+      return `<div class="article-item">
+        <span class="article-title">${esc(a.title || '—')}</span>
+        <span class="article-source">${esc(a.source || '')}</span>
+        ${catTag}${entity}
+      </div>`;
+    }).join('');
+
+    return `<div class="story-card">
+      <div class="story-row" onclick="toggleArticles(this)">
+        <span class="story-rank">#${s.rank}</span>
+        <div class="story-info">
+          <div class="story-title">${esc(s.representative_title || s.story_id)}</div>
+          <div class="story-meta">${tierBadge}${catBadge}${countTag}<span style="color:#6e7681;font-size:11px">id:${s.story_id}</span></div>
+        </div>
+        <span class="story-toggle">▶</span>
+      </div>
+      <div class="article-list">${articles}</div>
+    </div>`;
+  }).join('');
+
+  el('stories-list').innerHTML = cards;
+}
+
+function toggleArticles(row) {
+  const list = row.nextElementSibling;
+  const arrow = row.querySelector('.story-toggle');
+  list.classList.toggle('open');
+  arrow.textContent = list.classList.contains('open') ? '▼' : '▶';
+}
+
+// ── Summaries ────────────────────────────────────────────────────────────────
+async function loadSummaries() {
+  const data = await api('/dev/api/summaries');
+  el('summaries-badge').textContent = data.ranking_run_id
+    ? `Run #${data.ranking_run_id} · ${data.summaries.length} summaries` : '';
+
+  if (!data.summaries.length) {
+    el('summaries-list').innerHTML = '<div class="empty">No summaries found</div>';
+    return;
+  }
+
+  const cards = data.summaries.map(s => {
+    const tierBadge = s.tier === 'top'
+      ? '<span class="tier-top">TOP</span>'
+      : '<span class="tier-briefing">BRIEFING</span>';
+    const catTag = s.category ? `<span class="cat">${s.category}</span>` : '';
+    const confVal = s.confidence != null ? s.confidence : null;
+    const confTag = confVal != null
+      ? `<span class="${confVal >= 0.8 ? 'conf-high' : confVal >= 0.6 ? 'conf-mid' : 'conf-low'}">${confVal.toFixed(2)}</span>`
+      : '—';
+    const wordTag = `<span style="color:#6e7681;font-size:11px">${s.word_count}w</span>`;
+
+    return `<div class="summary-card">
+      <div class="summary-row" onclick="toggleSummary(this)">
+        <span class="story-rank">#${s.rank}</span>
+        <div class="story-info">
+          <div class="summary-headline">${esc(s.headline || '—')}</div>
+          <div class="story-meta">${tierBadge}${catTag}${confTag}${wordTag}
+            <span style="color:#6e7681;font-size:11px;font-family:monospace">${s.model ? s.model.replace('claude-','') : ''}</span>
+          </div>
+        </div>
+        <span class="story-toggle">▶</span>
+      </div>
+      <div class="summary-detail">
+        <div class="summary-field"><div class="summary-label">Summary</div><div class="summary-value">${esc(s.summary_text || '—')}</div></div>
+        <div class="summary-field"><div class="summary-label">Why It Matters</div><div class="summary-value">${esc(s.why_it_matters || '—')}</div></div>
+        <div class="summary-field"><div class="summary-label">Audio Script</div><div class="summary-value">${esc(s.audio_script || '—')}</div></div>
+        <div class="summary-field" style="display:flex;gap:24px">
+          <div><div class="summary-label">Confidence</div><div class="summary-value">${confTag}</div></div>
+          <div><div class="summary-label">Model</div><div class="summary-value mono">${esc(s.model || '—')}</div></div>
+          <div><div class="summary-label">Version</div><div class="summary-value">${s.summary_version}</div></div>
+          <div><div class="summary-label">Content Hash</div><div class="summary-value mono">${s.content_hash || '—'}</div></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  el('summaries-list').innerHTML = cards;
+}
+
+function toggleSummary(row) {
+  const detail = row.nextElementSibling;
+  const arrow = row.querySelector('.story-toggle');
+  detail.classList.toggle('open');
+  arrow.textContent = detail.classList.contains('open') ? '▼' : '▶';
+}
+
+// ── Bulletin Builder ─────────────────────────────────────────────────────────
+async function loadCategories() {
+  if (categories.length) return;
+  categories = await api('/dev/api/categories');
+  renderCatSelect('include-cats', 'include');
+  renderCatSelect('exclude-cats', 'exclude');
+}
+
+function renderCatSelect(containerId, group) {
+  const html = categories.map(c =>
+    `<label class="tag-item">
+      <input type="checkbox" name="${group}" value="${c}"> ${c}
+    </label>`
+  ).join('');
+  el(containerId).innerHTML = html;
+}
+
+function getSelectedCats(name) {
+  return [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(i => i.value);
+}
+
+function buildFilters() {
+  return {
+    include_categories: getSelectedCats('include') || undefined,
+    exclude_categories: getSelectedCats('exclude') || undefined,
+    max_stories: parseInt(el('max-stories').value) || 8,
+  };
+}
+
+async function doAssemble() {
+  const filters = buildFilters();
+  disableBuilderBtns(true);
+  const data = await apiPost('/data/bulletins/assemble', filters);
+  disableBuilderBtns(false);
+  if (data) showBulletinResult(data, null);
+}
+
+async function doAssembleAndAudio() {
+  const filters = buildFilters();
+  disableBuilderBtns(true);
+  const data = await apiPost('/data/bulletins/assemble-and-audio', filters);
+  disableBuilderBtns(false);
+  if (data) showBulletinResult(data, data);
+}
+
+async function doGetLatest() {
+  disableBuilderBtns(true);
+  const data = await api('/data/bulletins/latest');
+  disableBuilderBtns(false);
+  if (data) showBulletinResult(data, null);
+}
+
+function showBulletinResult(bulletin, audio) {
+  const r = el('builder-result');
+  r.style.display = 'block';
+
+  const bulletinId = bulletin.bulletin_id || bulletin.id;
+  const bCached = bulletin.cached || bulletin.bulletin_cached;
+  const aCached = audio ? audio.audio_cached : null;
+
+  const meta = [
+    kv('Bulletin ID', bulletinId || '—'),
+    kv('Request Hash', `<span class="mono">${bulletin.request_hash || '—'}</span>`),
+    kv('Story Count', bulletin.story_count),
+    kv('Run', bulletin.ranking_run_id || '—'),
+    kv('Bulletin Cached', bCached != null
+      ? `<span class="${bCached ? 'cached-yes' : 'cached-no'}">${bCached ? 'YES' : 'NO'}</span>` : '—'),
+    audio ? kv('Audio ID', audio.audio_id || '—') : null,
+    audio ? kv('Script Hash', `<span class="mono">${audio.script_hash || '—'}</span>`) : null,
+    audio ? kv('Provider', audio.provider) : null,
+    audio ? kv('Voice', voiceLabel(audio.voice)) : null,
+    audio ? kv('Audio Cached', aCached != null
+      ? `<span class="${aCached ? 'cached-yes' : 'cached-no'}">${aCached ? 'YES' : 'NO'}</span>` : '—') : null,
+    audio && bulletinId ? kv('Play', `<a href="/dev/api/audio/${bulletinId}/file" target="_blank">Download MP3</a>`) : null,
+  ].filter(Boolean);
+
+  const wordCount = bulletin.script ? bulletin.script.split(/\s+/).filter(Boolean).length : 0;
+  const scriptPreview = bulletin.script || '';
+
+  r.innerHTML = `
+    <div class="result-meta">${meta.join('')}</div>
+    <div style="font-size:11px;color:#8b949e;margin-bottom:6px">${wordCount} words</div>
+    <div class="script-box">${esc(scriptPreview)}</div>
+    ${audio && bulletinId ? `
+    <div style="margin-top:12px">
+      <audio controls style="width:100%;border-radius:4px" src="/dev/api/audio/${bulletinId}/file"></audio>
+    </div>` : ''}
+  `;
+
+  // Also refresh audio tab state
+  delete loaded['audio'];
+}
+
+function clearBuilder() {
+  document.querySelectorAll('#include-cats input, #exclude-cats input').forEach(i => i.checked = false);
+  el('max-stories').value = '8';
+  el('builder-result').style.display = 'none';
+}
+
+function disableBuilderBtns(disabled) {
+  document.querySelectorAll('.builder-actions .btn').forEach(b => b.disabled = disabled);
+}
+
+// ── Audio ────────────────────────────────────────────────────────────────────
+async function loadAudioList() {
+  const data = await api('/dev/api/pipeline');
+
+  if (!data.audio_files.length) {
+    el('audio-list').innerHTML = '<div class="empty">No audio files yet. Generate one in Bulletin Builder.</div>';
+    return;
+  }
+
+  const rows = data.audio_files.map(a => `
+    <div class="audio-list-row" onclick="selectAudio(this, ${a.bulletin_id}, '${a.provider}', '${a.voice}', '${a.model}', '${a.audio_format}', ${a.file_size_bytes || 0})">
+      <strong>#${a.id}</strong>
+      <span>Bulletin #${a.bulletin_id}</span>
+      <span class="cat">${a.provider}</span>
+      <span style="color:#8b949e">${voiceLabel(a.voice)}</span>
+      <span class="mono" style="color:#8b949e">${a.model}</span>
+      <span style="color:#8b949e;margin-left:auto">${a.file_size_bytes ? fmtSize(a.file_size_bytes) : '—'}</span>
+      <span style="color:#6e7681">${fmtDate(a.created_at)}</span>
+    </div>
+  `).join('');
+
+  el('audio-list').innerHTML = rows;
+}
+
+function selectAudio(row, bulletinId, provider, voice, model, format, size) {
+  document.querySelectorAll('.audio-list-row').forEach(r => r.classList.remove('selected'));
+  row.classList.add('selected');
+
+  const section = el('player-section');
+  section.style.display = 'block';
+  const wrap = el('player-wrap');
+  const estDuration = size ? Math.round((size * 8) / (128 * 1000)) : null;
+
+  wrap.innerHTML = `
+    <audio controls autoplay style="width:100%;margin-bottom:14px" src="/dev/api/audio/${bulletinId}/file"></audio>
+    <div class="audio-meta">
+      ${kv('Bulletin', `#${bulletinId}`)}
+      ${kv('Provider', provider)}
+      ${kv('Voice', voiceLabel(voice))}
+      ${kv('Model', `<span class="mono">${model}</span>`)}
+      ${kv('Format', `<span class="mono">${format}</span>`)}
+      ${size ? kv('File Size', fmtSize(size)) : ''}
+      ${estDuration ? kv('Est. Duration', `~${Math.floor(estDuration/60)}m ${estDuration%60}s`) : ''}
+      ${kv('Audio URL', `<a href="/dev/api/audio/${bulletinId}/file" target="_blank">Download</a>`)}
+    </div>
+  `;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function el(id) { return document.getElementById(id); }
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function table(headers, rows, rowFn) {
+  if (!rows || !rows.length) return '<div class="empty">No data</div>';
+  const head = headers.map(h => `<th>${h}</th>`).join('');
+  const body = rows.map(r => `<tr>${rowFn(r).map(c => `<td>${c}</td>`).join('')}</tr>`).join('');
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function kv(k, v) {
+  return `<div class="result-kv"><span class="result-key">${k}</span><span class="result-val">${v}</span></div>`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('en-GB', {month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return '—';
+  if (bytes > 1048576) return (bytes/1048576).toFixed(1) + ' MB';
+  return (bytes/1024).toFixed(0) + ' KB';
+}
+
+function fmtFilters(f) {
+  if (!f || !Object.keys(f).length) return '<span style="color:#6e7681">—</span>';
+  return Object.entries(f).map(([k,v]) =>
+    `<span class="cat">${k}:${Array.isArray(v)?v.join(','):v}</span>`
+  ).join(' ');
+}
+
+function conf(v) {
+  const cls = v >= 0.8 ? 'conf-high' : v >= 0.6 ? 'conf-mid' : 'conf-low';
+  return `<span class="${cls}">${v}</span>`;
+}
+
+function voiceLabel(voice) {
+  const known = {
+    'JBFqnCBsd6RMkjVDRZzb': 'George (British)',
+    'N2lVS1w4EtoT3dr4eOWO': 'Callum (British)',
+    'XB0fDUnXU5powFXDhCwa': 'Charlotte (British)',
+    'onyx': 'Onyx', 'alloy': 'Alloy', 'nova': 'Nova',
+  };
+  return known[voice] || voice;
+}
+
+async function api(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: r.statusText}));
+      showError(err.detail || r.statusText);
+      return null;
+    }
+    return await r.json();
+  } catch(e) {
+    showError(String(e));
+    return null;
+  }
+}
+
+async function apiPost(url, body) {
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: r.statusText}));
+      const msg = Array.isArray(err.detail) ? err.detail.join(', ') : (err.detail || r.statusText);
+      showError(`${r.status}: ${msg}`);
+      return null;
+    }
+    return await r.json();
+  } catch(e) {
+    showError(String(e));
+    return null;
+  }
+}
+
+function showError(msg) {
+  const existing = document.getElementById('global-error');
+  if (existing) existing.remove();
+  const div = document.createElement('div');
+  div.id = 'global-error';
+  div.className = 'error';
+  div.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999;background:#1a0a0a;border-bottom:1px solid #f85149;padding:10px 20px;cursor:pointer';
+  div.textContent = '⚠ ' + msg;
+  div.onclick = () => div.remove();
+  document.body.prepend(div);
+  setTimeout(() => div.remove && div.remove(), 6000);
+}
+
+// ── Profiles ──────────────────────────────────────────────────────────────────
+let profiles = [];
+let editingProfileId = null;
+
+async function loadProfiles() {
+  await ensureCategories();
+  const data = await api('/data/profiles');
+  if (!data) return;
+  profiles = data.profiles;
+  renderProfileList();
+}
+
+async function ensureCategories() {
+  if (categories.length) return;
+  const cats = await api('/dev/api/categories');
+  if (cats) categories = cats;
+}
+
+function renderProfileList() {
+  const container = el('profiles-list');
+  if (!profiles.length) {
+    container.innerHTML = '<div class="empty">No profiles yet. Click <strong>+ New Profile</strong> to create one.</div>';
+    return;
+  }
+  container.innerHTML = table(
+    ['ID', 'Name', 'Max', 'Voice', 'Include', 'Exclude', 'Updated', ''],
+    profiles,
+    p => [
+      `<strong>#${p.id}</strong>`,
+      `<strong>${esc(p.name)}</strong>`,
+      p.max_stories,
+      p.voice ? `<span class="mono" style="font-size:10px">${voiceLabel(p.voice)}</span>` : '<span style="color:#6e7681">default</span>',
+      fmtCatList(p.include_categories),
+      fmtCatList(p.exclude_categories),
+      fmtDate(p.updated_at),
+      `<button class="btn" style="padding:3px 8px;font-size:11px" onclick="editProfile(${p.id})">Edit</button>
+       <button class="btn btn-accent" style="padding:3px 8px;font-size:11px;margin-left:4px" onclick="generateProfileBulletin(${p.id})">▶ Bulletin</button>`,
+    ]
+  );
+}
+
+function fmtCatList(cats) {
+  if (!cats || !cats.length) return '<span style="color:#6e7681">all</span>';
+  return cats.slice(0, 3).map(c => `<span class="cat">${c}</span>`).join(' ')
+    + (cats.length > 3 ? `<span style="color:#6e7681"> +${cats.length - 3}</span>` : '');
+}
+
+function showProfileForm(mode, profile = null) {
+  editingProfileId = mode === 'edit' ? profile.id : null;
+  el('profile-form-section').style.display = 'block';
+  el('profile-form-title').textContent = mode === 'edit' ? `Edit Profile — ${profile.name}` : 'New Profile';
+  el('pf-submit-btn').textContent = mode === 'edit' ? 'Save Changes' : 'Create Profile';
+
+  el('pf-name').value = profile ? profile.name : '';
+  el('pf-voice').value = profile ? (profile.voice || '') : '';
+  el('pf-max-stories').value = profile ? profile.max_stories : 8;
+
+  const selInc = new Set(profile && profile.include_categories ? profile.include_categories : []);
+  const selExc = new Set(profile && profile.exclude_categories ? profile.exclude_categories : []);
+  renderPfCatSelect('pf-include-cats', 'pf-include', selInc);
+  renderPfCatSelect('pf-exclude-cats', 'pf-exclude', selExc);
+
+  el('profile-form-section').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+function renderPfCatSelect(containerId, group, selectedSet) {
+  el(containerId).innerHTML = categories.map(c =>
+    `<label class="tag-item${selectedSet.has(c) ? ' selected' : ''}">
+      <input type="checkbox" name="${group}" value="${c}"${selectedSet.has(c) ? ' checked' : ''}> ${c}
+    </label>`
+  ).join('');
+}
+
+function hideProfileForm() {
+  el('profile-form-section').style.display = 'none';
+  editingProfileId = null;
+}
+
+function getPfCats(name) {
+  return [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(i => i.value);
+}
+
+async function submitProfileForm() {
+  const name = el('pf-name').value.trim();
+  if (!name) { showError('Name is required'); return; }
+
+  const inc = getPfCats('pf-include');
+  const exc = getPfCats('pf-exclude');
+  const body = {
+    name,
+    voice: el('pf-voice').value.trim() || null,
+    max_stories: parseInt(el('pf-max-stories').value) || 8,
+    include_categories: inc.length ? inc : null,
+    exclude_categories: exc.length ? exc : null,
+  };
+
+  el('pf-submit-btn').disabled = true;
+  const data = editingProfileId
+    ? await apiPut(`/data/profiles/${editingProfileId}`, body)
+    : await apiPost('/data/profiles', body);
+  el('pf-submit-btn').disabled = false;
+
+  if (!data) return;
+  hideProfileForm();
+  delete loaded['profiles'];
+  loadProfiles();
+}
+
+function editProfile(profileId) {
+  const p = profiles.find(p => p.id === profileId);
+  if (p) showProfileForm('edit', p);
+}
+
+async function generateProfileBulletin(profileId) {
+  const p = profiles.find(p => p.id === profileId);
+  const label = p ? p.name : `Profile #${profileId}`;
+
+  el('profile-bulletin-section').style.display = 'block';
+  el('profile-bulletin-title').textContent = `Bulletin — ${label}`;
+  el('profile-bulletin-result').innerHTML = '<div class="loading">Generating…</div>';
+  el('profile-bulletin-section').scrollIntoView({behavior:'smooth', block:'nearest'});
+
+  const data = await apiPost(`/data/profiles/${profileId}/bulletin`, {});
+  if (!data) { el('profile-bulletin-result').innerHTML = ''; return; }
+
+  const bId = data.bulletin_id;
+  const wc = data.script ? data.script.split(/\s+/).filter(Boolean).length : 0;
+
+  const meta = [
+    kv('Profile', `#${data.profile_id} <strong>${esc(data.profile_name)}</strong>`),
+    kv('Bulletin ID', bId || '—'),
+    kv('Run', data.ranking_run_id || '—'),
+    kv('Stories', data.story_count),
+    kv('Bulletin', `<span class="${data.bulletin_cached ? 'cached-yes' : 'cached-no'}">${data.bulletin_cached ? 'CACHED' : 'NEW'}</span>`),
+    kv('Audio ID', data.audio_id || '—'),
+    kv('Voice', voiceLabel(data.voice || '')),
+    kv('Audio', `<span class="${data.audio_cached ? 'cached-yes' : 'cached-no'}">${data.audio_cached ? 'CACHED' : 'NEW'}</span>`),
+  ].join('');
+
+  el('profile-bulletin-result').innerHTML = `
+    <div class="result-meta">${meta}</div>
+    <div style="font-size:11px;color:#8b949e;margin-bottom:8px">${wc} words</div>
+    <div class="script-box">${esc(data.script || '')}</div>
+    ${bId ? `<div style="margin-top:12px"><audio controls style="width:100%;border-radius:4px" src="/dev/api/audio/${bId}/file"></audio></div>` : ''}
+  `;
+  delete loaded['audio'];
+}
+
+async function apiPut(url, body) {
+  try {
+    const r = await fetch(url, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({detail: r.statusText}));
+      const msg = Array.isArray(err.detail) ? err.detail.join(', ') : (err.detail || r.statusText);
+      showError(`${r.status}: ${msg}`);
+      return null;
+    }
+    return await r.json();
+  } catch(e) { showError(String(e)); return null; }
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+loaded['pipeline'] = true;
+loadPipeline();
+</script>
+</body>
+</html>

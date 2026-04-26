@@ -23,7 +23,7 @@ class BulletinAudioRepo:
         row = self.db.execute(
             text("""
                 SELECT id, bulletin_id, script_hash, provider, voice, model,
-                       audio_format, storage_path, duration_seconds, created_at
+                       audio_format, storage_path, audio_url, duration_seconds, created_at
                 FROM data.bulletin_audio
                 WHERE bulletin_id  = :bulletin_id
                   AND script_hash  = :script_hash
@@ -54,16 +54,17 @@ class BulletinAudioRepo:
         model: str,
         audio_format: str,
         storage_path: str,
+        audio_url: str | None = None,
         duration_seconds: float | None = None,
     ) -> int:
         row_id = self.db.execute(
             text("""
                 INSERT INTO data.bulletin_audio
                     (bulletin_id, script_hash, provider, voice, model, audio_format,
-                     storage_path, duration_seconds)
+                     storage_path, audio_url, duration_seconds)
                 VALUES
                     (:bulletin_id, :script_hash, :provider, :voice, :model, :audio_format,
-                     :storage_path, :duration_seconds)
+                     :storage_path, :audio_url, :duration_seconds)
                 ON CONFLICT (bulletin_id, script_hash, provider, voice, model, audio_format)
                 DO NOTHING
                 RETURNING id
@@ -76,6 +77,7 @@ class BulletinAudioRepo:
                 "model": model,
                 "audio_format": audio_format,
                 "storage_path": storage_path,
+                "audio_url": audio_url,
                 "duration_seconds": duration_seconds,
             },
         ).scalar()

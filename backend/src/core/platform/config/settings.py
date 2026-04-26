@@ -16,6 +16,15 @@ class Settings(BaseSettings):
 
     # Storage
     audio_local_dir: str = ".local/audio"
+    audio_storage_provider: str = "local"   # local | s3
+
+    # S3 / S3-compatible storage (required when audio_storage_provider=s3)
+    s3_bucket: str | None = None
+    s3_region: str = "us-east-1"
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: str | None = None
+    s3_endpoint_url: str | None = None       # custom endpoint (R2, Spaces, MinIO)
+    s3_public_base_url: str | None = None    # CDN / R2 public domain override
 
     # Providers - GNews (testing first)
     gnews_api_key: str | None = None
@@ -24,6 +33,10 @@ class Settings(BaseSettings):
     # LLM fallback categoriser
     anthropic_api_key: str | None = None
     fallback_model: str = "claude-haiku-4-5-20251001"
+
+    # Scheduled ingest
+    enable_scheduled_ingest: bool = False
+    ingest_interval_minutes: int = 30
 
     # TTS
     tts_provider: str = "elevenlabs"
