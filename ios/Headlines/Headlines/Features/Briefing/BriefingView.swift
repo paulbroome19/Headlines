@@ -5,353 +5,350 @@ struct BriefingView: View {
     @StateObject private var vm = BriefingViewModel()
     @State private var showingProfilePicker = false
     @State private var showingCreateProfile = false
-    @State private var showingEditProfile = false
-    @State private var scriptExpanded = false
+    @State private var showingEditProfile   = false
+    @State private var transcriptExpanded   = false
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 0) {
-                    profileBar
-                    Divider()
-                    contentArea
-                        .padding()
-                }
-            }
-            .navigationTitle("Headlines")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Task { await vm.reloadProfiles() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .disabled(vm.state == .loadingProfiles)
-                }
-            }
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+                .padding(.bottom, 20)
+
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(Color(.systemBackground).ignoresSafeArea())
         .task {
-            if case .idle = vm.state {
-                await vm.loadProfiles()
-            }
+            if case .idle = vm.state { await vm.loadProfiles() }
         }
         .sheet(isPresented: $showingProfilePicker) {
-            ProfilePickerSheet(profiles: vm.profiles, selected: vm.selectedProfile) { profile in
-                vm.selectProfile(profile)
+            ProfileListView(profiles: vm.profiles, selected: vm.selectedProfile) {
+                vm.selectProfile($0)
             }
         }
         .sheet(isPresented: $showingCreateProfile) {
-            ProfileFormView(mode: .create, service: vm.service) {
+            ProfileFormView(mode: .create, service: vm.profileService) {
                 Task { await vm.reloadProfiles() }
             }
         }
         .sheet(isPresented: $showingEditProfile) {
             if let profile = vm.selectedProfile {
-                ProfileFormView(mode: .edit(profile), service: vm.service) {
+                ProfileFormView(mode: .edit(profile), service: vm.profileService) {
                     Task { await vm.reloadProfiles() }
                 }
             }
         }
     }
 
-    // MARK: - Profile bar
+    // MARK: - Header
 
-    private var profileBar: some View {
-        HStack(spacing: 10) {
-            Button {
-                showingProfilePicker = true
-            } label: {
-                HStack(spacing: 8) {
-                    if let profile = vm.selectedProfile {
-                        avatarCircle(profile.name)
-                        Text(profile.name)
-                            .font(.subheadline.weight(.semibold))
-                        Image(systemName: "chevron.down")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Select Profile")
-                            .font(.subheadline)
+    private var header: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(contextLabel.uppercased())
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.tertiary)
+                    .kerning(0.8)
+
+                Button {
+                    guard vm.profiles.count > 1 else { return }
+                    showingProfilePicker = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(vm.selectedProfile?.name ?? "Headlines")
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        if vm.profiles.count > 1 {
+                            Image(systemName: "chevron.down")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                 }
-                .foregroundStyle(.primary)
+                .buttonStyle(.plain)
             }
 
             Spacer()
 
-            if vm.selectedProfile != nil {
-                Button("Edit") { showingEditProfile = true }
-                    .font(.subheadline)
-            }
-
-            Button {
-                showingCreateProfile = true
+            Menu {
+                if vm.selectedProfile != nil {
+                    Button { showingEditProfile = true } label: {
+                        Label("Edit Profile", systemImage: "person.crop.circle")
+                    }
+                    Divider()
+                }
+                Button { showingCreateProfile = true } label: {
+                    Label("New Profile", systemImage: "plus")
+                }
+                Button { Task { await vm.reloadProfiles() } } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
             } label: {
-                Image(systemName: "plus.circle")
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
             }
         }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
     }
 
-    // MARK: - Content area
+    // MARK: - Content routing
 
     @ViewBuilder
-    private var contentArea: some View {
+    private var content: some View {
         switch vm.state {
         case .idle, .loadingProfiles:
             loadingView
         case .noProfiles:
-            noProfilesView
+            emptyView
         case .failed(let msg):
-            errorView(message: msg)
+            errorView(msg)
         default:
             mainContent
         }
     }
 
+    // MARK: - Loading
+
     private var loadingView: some View {
-        VStack(spacing: 12) {
+        VStack {
+            Spacer()
             ProgressView()
-            Text("Loading…")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            Spacer()
         }
-        .frame(maxWidth: .infinity)
-        .padding(48)
     }
 
-    private var noProfilesView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "person.crop.circle.badge.plus")
-                .font(.system(size: 52))
-                .foregroundStyle(.secondary)
-            Text("No profiles yet")
-                .font(.headline)
-            Text("Create a profile to generate your personalised news briefing.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+    // MARK: - Empty
+
+    private var emptyView: some View {
+        VStack(spacing: 28) {
+            Spacer()
+            VStack(spacing: 12) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 44, weight: .ultraLight))
+                    .foregroundStyle(Color(.tertiaryLabel))
+                VStack(spacing: 6) {
+                    Text("No profiles yet")
+                        .font(.headline)
+                    Text("Create a profile to receive\nyour personalised briefing.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
             Button("Create Profile") { showingCreateProfile = true }
                 .buttonStyle(.borderedProminent)
+            Spacer()
         }
+        .padding(.horizontal, 48)
         .frame(maxWidth: .infinity)
-        .padding(48)
     }
 
-    private func errorView(message: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 36))
-                .foregroundStyle(.secondary)
-            Text("Something went wrong")
-                .font(.headline)
-            Text(message)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-            Button("Try again") { Task { await vm.reloadProfiles() } }
-                .buttonStyle(.borderedProminent)
+    // MARK: - Error
+
+    private func errorView(_ message: String) -> some View {
+        VStack(spacing: 24) {
+            Spacer()
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: 32, weight: .light))
+                    .foregroundStyle(.secondary)
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            }
+            Button("Try Again") { Task { await vm.reloadProfiles() } }
+                .buttonStyle(.bordered)
+            Spacer()
         }
         .frame(maxWidth: .infinity)
-        .padding(48)
     }
 
     // MARK: - Main content
 
     private var mainContent: some View {
-        VStack(spacing: 16) {
-            generateButton
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 0) {
+                playerSection
+                    .padding(.horizontal, 32)
+                    .padding(.top, 48)
+                    .padding(.bottom, 36)
 
-            if vm.bulletin != nil {
-                playerCard
-                scriptCard
-            }
-        }
-    }
+                actionSection
+                    .padding(.horizontal, 28)
 
-    private var generateButton: some View {
-        Button {
-            Task { await vm.generateBulletin() }
-        } label: {
-            HStack(spacing: 8) {
-                if vm.state == .generating || vm.state == .downloadingAudio {
-                    ProgressView().tint(.white).scaleEffect(0.85)
-                } else {
-                    Image(systemName: "newspaper.fill")
-                }
-                Text(generateLabel)
-                    .font(.headline)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(!vm.canGenerate)
-    }
-
-    private var generateLabel: String {
-        switch vm.state {
-        case .generating: return "Generating Briefing…"
-        case .downloadingAudio: return "Downloading Audio…"
-        case .readyToPlay, .playing, .paused, .ended: return "Regenerate"
-        default: return "Generate Briefing"
-        }
-    }
-
-    private var playerCard: some View {
-        VStack(spacing: 12) {
-            ProgressView(value: vm.progress)
-                .animation(.linear(duration: 0.25), value: vm.progress)
-
-            HStack {
-                Text(formatTime(vm.progress * vm.audioDuration))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(formatTime(vm.audioDuration))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            Button {
-                vm.togglePlayPause()
-            } label: {
-                Image(systemName: playPauseIcon)
-                    .font(.system(size: 56))
-                    .symbolRenderingMode(.hierarchical)
-            }
-            .disabled(!vm.canTogglePlayPause)
-
-            if let bulletin = vm.bulletin {
-                HStack(spacing: 12) {
-                    cacheBadge("Bulletin", cached: bulletin.bulletinCached)
-                    cacheBadge("Audio", cached: bulletin.audioCached)
-                    Spacer()
-                    Text("\(bulletin.storyCount) stories")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                if let bulletin = vm.bulletin {
+                    storiesSection(bulletin)
+                        .padding(.horizontal, 28)
+                        .padding(.top, 44)
+                        .padding(.bottom, 52)
                 }
             }
         }
-        .padding()
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
+
+    // MARK: - Player section
 
     @ViewBuilder
-    private var scriptCard: some View {
-        if let bulletin = vm.bulletin {
-            VStack(alignment: .leading, spacing: 8) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { scriptExpanded.toggle() }
-                } label: {
-                    HStack {
-                        Text("Script")
-                            .font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Image(systemName: scriptExpanded ? "chevron.up" : "chevron.down")
-                            .font(.caption)
-                    }
-                    .foregroundStyle(.primary)
-                }
+    private var playerSection: some View {
+        switch vm.state {
+        case .generating:
+            statusView("Generating briefing…")
+        case .downloadingAudio:
+            statusView("Downloading audio…")
+        case .readyToPlay, .playing, .paused, .ended:
+            PlayerView(
+                progress: vm.progress,
+                duration: vm.audioDuration,
+                canTogglePlayPause: vm.canTogglePlayPause,
+                isPlaying: vm.state == .playing,
+                canNavigate: vm.hasStoryTimings,
+                onPrevious: vm.previousStory,
+                onTogglePlayPause: vm.togglePlayPause,
+                onNext: vm.nextStory
+            )
+        default:
+            idleView
+        }
+    }
 
-                if scriptExpanded, let script = bulletin.script {
-                    Text(script)
-                        .font(.footnote)
+    private func statusView(_ label: String) -> some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(0.9)
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 200)
+    }
+
+    private var idleView: some View {
+        Image(systemName: "waveform")
+            .font(.system(size: 52, weight: .ultraLight))
+            .foregroundStyle(Color(.quaternaryLabel))
+            .frame(maxWidth: .infinity)
+            .frame(height: 200)
+    }
+
+    // MARK: - Action section
+
+    @ViewBuilder
+    private var actionSection: some View {
+        switch vm.state {
+        case .generating, .downloadingAudio:
+            EmptyView()
+        case .readyToPlay, .playing, .paused, .ended:
+            Button { Task { await vm.generateBulletin() } } label: {
+                Text("Regenerate")
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+        default:
+            Button { Task { await vm.generateBulletin() } } label: {
+                Text("Generate Briefing")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!vm.canGenerate)
+        }
+    }
+
+    // MARK: - Stories section
+
+    @ViewBuilder
+    private func storiesSection(_ bulletin: BulletinResult) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle()
+                .fill(Color(.separator))
+                .frame(height: 0.5)
+                .padding(.bottom, 20)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(bulletin.storyCount) \(bulletin.storyCount == 1 ? "story" : "stories")".uppercased())
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.tertiary)
+                    .kerning(0.5)
+                Spacer()
+                if !bulletin.bulletinCached {
+                    Text("Fresh")
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 2)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .overlay(Capsule().strokeBorder(Color(.separator), lineWidth: 0.5))
                 }
             }
-            .padding()
-            .background(Color(.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.bottom, 18)
+
+            if !bulletin.stories.isEmpty {
+                storyRows(bulletin.stories)
+            }
         }
+    }
+
+    private func storyRows(_ stories: [BulletinStory]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(stories.enumerated()), id: \.element.id) { index, story in
+                let isCurrent = vm.currentStoryIndex == index
+                HStack(alignment: .top, spacing: 12) {
+                    Text("\(index + 1)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(isCurrent ? Color.accentColor : Color(.quaternaryLabel))
+                        .frame(width: 18, alignment: .trailing)
+                        .padding(.top, 2)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(story.headline)
+                            .font(.subheadline)
+                            .foregroundStyle(isCurrent ? .primary : Color(.label).opacity(0.7))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if let category = story.category {
+                            Text(categoryDisplay(category))
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.tertiary)
+                                .kerning(0.3)
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(.systemFill))
+                        .opacity(isCurrent ? 1 : 0)
+                )
+                .contentShape(Rectangle())
+                .onTapGesture { vm.seekToStory(at: index) }
+                .animation(.easeInOut(duration: 0.2), value: isCurrent)
+            }
+        }
+        .padding(.horizontal, -8)
+    }
+
+    private func categoryDisplay(_ slug: String) -> String {
+        slug.split(separator: ".").first.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? slug
     }
 
     // MARK: - Helpers
 
-    private var playPauseIcon: String {
-        vm.state == .playing ? "pause.circle.fill" : "play.circle.fill"
-    }
-
-    private func avatarCircle(_ name: String) -> some View {
-        Text(String(name.prefix(1)).uppercased())
-            .font(.caption.weight(.bold))
-            .frame(width: 24, height: 24)
-            .background(Color.accentColor.opacity(0.15))
-            .foregroundStyle(Color.accentColor)
-            .clipShape(Circle())
-    }
-
-    private func cacheBadge(_ label: String, cached: Bool) -> some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(cached ? Color.green : Color.blue)
-                .frame(width: 6, height: 6)
-            Text("\(label): \(cached ? "cached" : "new")")
+    private var contextLabel: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 5..<12:  return "Morning briefing"
+        case 12..<17: return "Afternoon briefing"
+        default:      return "Evening briefing"
         }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let s = max(0, seconds)
-        return String(format: "%d:%02d", Int(s) / 60, Int(s) % 60)
-    }
-}
-
-// MARK: - Profile picker sheet
-
-struct ProfilePickerSheet: View {
-    let profiles: [Profile]
-    let selected: Profile?
-    let onSelect: (Profile) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List(profiles) { profile in
-                Button {
-                    onSelect(profile)
-                    dismiss()
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(profile.name)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(.primary)
-                            Text("\(profile.maxStories) stories · \(categoryLabel(profile))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if profile.id == selected?.id {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(Color.accentColor)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Select Profile")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-    }
-
-    private func categoryLabel(_ profile: Profile) -> String {
-        if let inc = profile.includeCategories, !inc.isEmpty {
-            return inc.prefix(2).joined(separator: ", ")
-        }
-        return "all categories"
     }
 }

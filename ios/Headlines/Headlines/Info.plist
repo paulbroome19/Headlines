@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+    <!-- App identity (substituted from build settings) -->
+    <key>CFBundleDisplayName</key>
+    <string>Headlines</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+
+    <!-- UI (replaces INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES) -->
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <false/>
+    </dict>
+
+    <!-- Replaces INFOPLIST_KEY_UILaunchScreen_Generation = YES -->
+    <key>UILaunchScreen</key>
+    <dict/>
+
+    <!-- Replaces INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES -->
+    <key>UIApplicationSupportsIndirectInputEvents</key>
+    <true/>
+
+    <!-- Replaces INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone -->
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+
+    <!-- Replaces INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad -->
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+
+    <!--
+        App Transport Security
+        NSAllowsArbitraryLoadsInDebug = YES lets the DEBUG build reach plain-HTTP
+        LAN addresses (e.g. http://192.168.x.x:8000) without adding a release risk.
+        NSAllowsLocalNetworking covers 127.0.0.1 / localhost for the simulator.
+        RELEASE builds keep the default-deny ATS policy.
+    -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+        <key>NSAllowsArbitraryLoadsInDebug</key>
+        <true/>
+    </dict>
+
+    <!--
+        Optional build-setting override for the API base URL.
+        Set User-Defined build setting API_BASE_URL in Xcode to inject a value
+        without editing source code.  AppConfig.swift reads this key from the bundle.
+        Leave blank (or omit) to use the AppConfig.swift auto-detection logic.
+    -->
+    <key>API_BASE_URL</key>
+    <string>$(API_BASE_URL)</string>
+
+</dict>
+</plist>

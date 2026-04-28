@@ -12,7 +12,7 @@ enum AppConfig {
     //   or: open Terminal and run:  ipconfig getifaddr en0
     //
     // Set the IP once here.  Simulator always uses 127.0.0.1 automatically.
-    static let deviceLANIP = "YOUR_MAC_LAN_IP"   // e.g. "192.168.1.42"
+    static let deviceLANIP = "192.168.1.111"
 
     // MARK: - Internal
 

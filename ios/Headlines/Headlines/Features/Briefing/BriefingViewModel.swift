@@ -1,5 +1,4 @@
 import Foundation
-import AVFoundation
 
 @MainActor
 final class BriefingViewModel: ObservableObject {
@@ -28,20 +27,23 @@ final class BriefingViewModel: ObservableObject {
     @Published private(set) var bulletin: BulletinResult?
     @Published private(set) var progress: Double = 0
     @Published private(set) var audioDuration: TimeInterval = 0
+    @Published private(set) var currentStoryIndex: Int? = nil
 
     // MARK: - Dependencies
 
-    let service: ProfileServicing
-
-    // MARK: - Private
-
-    private var player: AVAudioPlayer?
+    let profileService: ProfileServicing
+    private let bulletinService: BulletinServicing
+    private let audioPlayer = AudioPlayer()
     private var progressTimer: Timer?
 
     // MARK: - Init
 
-    init(service: ProfileServicing = ProfileService()) {
-        self.service = service
+    init(
+        profileService: ProfileServicing  = ProfileService(),
+        bulletinService: BulletinServicing = BulletinService()
+    ) {
+        self.profileService  = profileService
+        self.bulletinService = bulletinService
     }
 
     deinit { progressTimer?.invalidate() }
@@ -63,6 +65,13 @@ final class BriefingViewModel: ObservableObject {
         }
     }
 
+    /// True when every story in the bulletin carries a start_time.
+    /// Controls are hidden until the backend provides this data.
+    var hasStoryTimings: Bool {
+        guard let stories = bulletin?.stories, !stories.isEmpty else { return false }
+        return stories.allSatisfy { $0.startTime != nil }
+    }
+
     // MARK: - Profile management
 
     func loadProfiles() async {
@@ -76,10 +85,11 @@ final class BriefingViewModel: ObservableObject {
 
     func selectProfile(_ profile: Profile) {
         selectedProfile = profile
-        stopPlayer()
-        bulletin = nil
-        progress = 0
-        audioDuration = 0
+        stopAudio()
+        bulletin          = nil
+        progress          = 0
+        audioDuration     = 0
+        currentStoryIndex = nil
         state = .profileSelected
     }
 
@@ -88,14 +98,15 @@ final class BriefingViewModel: ObservableObject {
     func generateBulletin() async {
         guard let profile = selectedProfile else { return }
 
-        stopPlayer()
-        bulletin = nil
-        progress = 0
-        audioDuration = 0
+        stopAudio()
+        bulletin          = nil
+        progress          = 0
+        audioDuration     = 0
+        currentStoryIndex = nil
         state = .generating
 
         do {
-            let result = try await service.generateBulletin(profileID: profile.id)
+            let result = try await bulletinService.generateBulletin(profileID: profile.id)
             bulletin = result
 
             guard let bulletinId = result.bulletinId else {
@@ -104,20 +115,16 @@ final class BriefingViewModel: ObservableObject {
             }
 
             state = .downloadingAudio
-            let remoteURL: URL
-            if let urlString = result.audioUrl, let url = URL(string: urlString) {
-                remoteURL = url
-            } else {
-                remoteURL = service.audioFileURL(forBulletinID: bulletinId)
-            }
-            let localURL = try await downloadAudio(from: remoteURL, bulletinId: bulletinId)
-
-            let p = try AVAudioPlayer(contentsOf: localURL)
-            p.prepareToPlay()
-            player = p
-            audioDuration = p.duration
-            progress = 0
-            state = .readyToPlay
+            let remoteURL = resolvedAudioURL(audioUrl: result.audioUrl, bulletinId: bulletinId)
+            #if DEBUG
+            print("🎵 bulletin audio URL: \(remoteURL)")
+            #endif
+            let localURL = try await AudioPlayer.download(from: remoteURL, id: bulletinId)
+            try audioPlayer.load(from: localURL)
+            audioDuration = audioPlayer.duration
+            progress      = 0
+            currentStoryIndex = resolveCurrentStoryIndex(at: 0)
+            state         = .readyToPlay
 
         } catch {
             state = .failed(error.localizedDescription)
@@ -127,17 +134,15 @@ final class BriefingViewModel: ObservableObject {
     // MARK: - Playback controls
 
     func play() {
-        guard let player else { return }
-        guard state == .readyToPlay || state == .paused else { return }
-        player.play()
+        guard canTogglePlayPause else { return }
+        audioPlayer.play()
         state = .playing
         startProgressTimer()
     }
 
     func pause() {
-        guard let player else { return }
         guard state == .playing else { return }
-        player.pause()
+        audioPlayer.pause()
         stopProgressTimer()
         state = .paused
     }
@@ -146,12 +151,43 @@ final class BriefingViewModel: ObservableObject {
         if state == .playing { pause() } else { play() }
     }
 
-    // MARK: - Private helpers
+    // MARK: - Story navigation
+
+    func seekToStory(at index: Int) {
+        guard let bulletin = bulletin,
+              bulletin.stories.indices.contains(index),
+              let startTime = bulletin.stories[index].startTime,
+              audioDuration > 0 else { return }
+        audioPlayer.seek(to: startTime)
+        progress          = startTime / audioDuration
+        currentStoryIndex = index
+    }
+
+    func previousStory() {
+        guard let current = currentStoryIndex,
+              let bulletin = bulletin,
+              let startTime = bulletin.stories[current].startTime else { return }
+        // If more than 3 s into the current story, restart it; otherwise go to previous.
+        let elapsed = audioPlayer.currentTime - startTime
+        if elapsed > 3.0 {
+            seekToStory(at: current)
+        } else {
+            seekToStory(at: max(0, current - 1))
+        }
+    }
+
+    func nextStory() {
+        guard let current = currentStoryIndex,
+              let bulletin = bulletin else { return }
+        seekToStory(at: min(bulletin.stories.count - 1, current + 1))
+    }
+
+    // MARK: - Private
 
     private func fetchProfiles() async {
         state = .loadingProfiles
         do {
-            profiles = try await service.fetchProfiles()
+            profiles = try await profileService.fetchProfiles()
             if profiles.isEmpty {
                 state = .noProfiles
             } else {
@@ -168,21 +204,9 @@ final class BriefingViewModel: ObservableObject {
         }
     }
 
-    private func downloadAudio(from remoteURL: URL, bulletinId: Int) async throws -> URL {
-        let (data, response) = try await URLSession.shared.data(from: remoteURL)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw APIError.badStatus(http.statusCode)
-        }
-        let localURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bulletin_\(bulletinId).mp3")
-        try data.write(to: localURL, options: .atomic)
-        return localURL
-    }
-
-    private func stopPlayer() {
+    private func stopAudio() {
         stopProgressTimer()
-        player?.stop()
-        player = nil
+        audioPlayer.stop()
     }
 
     private func startProgressTimer() {
@@ -198,13 +222,42 @@ final class BriefingViewModel: ObservableObject {
     }
 
     private func tick() {
-        guard state == .playing, let player else { return }
-        if player.currentTime >= player.duration {
+        guard state == .playing else { return }
+        if audioPlayer.isAtEnd {
             stopProgressTimer()
-            progress = 1
-            state = .ended
+            progress          = 1
+            currentStoryIndex = resolveCurrentStoryIndex(at: audioDuration)
+            state             = .ended
             return
         }
-        progress = player.duration > 0 ? player.currentTime / player.duration : 0
+        progress          = audioPlayer.progress
+        currentStoryIndex = resolveCurrentStoryIndex(at: audioPlayer.currentTime)
+    }
+
+    /// Returns the index of the story whose start_time is <= currentTime,
+    /// or nil if timing data is not available.
+    private func resolveCurrentStoryIndex(at currentTime: TimeInterval) -> Int? {
+        guard let stories = bulletin?.stories, !stories.isEmpty,
+              stories.first?.startTime != nil else { return nil }
+        var result: Int? = nil
+        for (i, story) in stories.enumerated() {
+            if let st = story.startTime, st <= currentTime {
+                result = i
+            }
+        }
+        return result
+    }
+
+    // Prefer a non-localhost audio_url from the server (S3/CDN).
+    // If the URL is localhost/127.0.0.1 (cached from a simulator run) or absent,
+    // fall back to the dev serving route resolved against AppConfig.apiBaseURL.
+    private func resolvedAudioURL(audioUrl: String?, bulletinId: Int) -> URL {
+        if let urlString = audioUrl,
+           let url = URL(string: urlString),
+           let host = url.host,
+           !["localhost", "127.0.0.1"].contains(host) {
+            return url
+        }
+        return bulletinService.audioFileURL(forBulletinID: bulletinId)
     }
 }

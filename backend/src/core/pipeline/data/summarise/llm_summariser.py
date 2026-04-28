@@ -3,29 +3,32 @@ LLM-based story summariser.
 
 Calls Anthropic Messages API via stdlib urllib — no SDK dependency.
 
-Configuration (environment variables):
+Configuration (via settings / environment variables):
   ANTHROPIC_API_KEY   Required. Absent → returns None (fail closed).
-  SUMMARISE_MODEL     Optional. Default: claude-haiku-4-5-20251001.
+  SUMMARISE_MODEL     Optional. Default: settings.fallback_model.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+
+from core.platform.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.anthropic.com/v1/messages"
 _API_VERSION = "2023-06-01"
-_MAX_TOKENS = 512
+_MAX_TOKENS = 600
 _TIMEOUT_SECONDS = 20
 
 
 def _model() -> str:
-    return os.environ.get("SUMMARISE_MODEL", "claude-haiku-4-5-20251001")
+    # Explicit env var overrides settings (allows per-run model swap without .env edit)
+    import os
+    return os.environ.get("SUMMARISE_MODEL") or settings.fallback_model
 
 
 @dataclass(frozen=True)
@@ -49,8 +52,9 @@ def summarise_story(
     articles: list of {"title": ..., "snippet": ...} dicts, most recent first.
     Returns None on API failure or parse error (fail closed).
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = settings.anthropic_api_key
     if not api_key:
+        logger.warning("llm_summariser: ANTHROPIC_API_KEY not set — skipping summarisation")
         return None
 
     prompt = _build_prompt(representative_title, articles)
@@ -120,23 +124,37 @@ def _build_prompt(representative_title: str, articles: list[dict]) -> str:
     articles_text = "\n\n".join(article_lines)
 
     return (
-        "You are a news editor preparing a spoken radio bulletin.\n\n"
+        "You are a senior producer at a national radio news station. "
+        "Your job is to write story segments for a spoken bulletin — the kind that holds attention during a commute.\n\n"
         f"Story topic: {representative_title}\n\n"
         f"Source articles (most recent first):\n{articles_text}\n\n"
-        "Return ONLY the following JSON object — no markdown fences, no explanation:\n"
+        "Return ONLY the following JSON — no markdown fences, no explanation:\n"
         '{"headline": "...", "summary_text": "...", "why_it_matters": "...", '
         '"audio_script": "...", "confidence": 0.0}\n\n'
-        "Rules:\n"
-        "- Summarise the story as a whole, not each article individually\n"
-        "- Base every fact only on the supplied article text above\n"
-        "- Do not add external knowledge or speculation\n"
-        "- If articles conflict or contradict, acknowledge the uncertainty neutrally "
-        "(e.g. 'reports vary on...')\n"
-        "- headline: max 12 words, present tense, no source names\n"
-        "- summary_text: 2-3 sentences, factual only\n"
-        "- why_it_matters: 1-2 sentences on wider significance, grounded in the articles\n"
-        "- audio_script: ~75 words, natural spoken language for broadcast radio — "
-        "no article-style prose, no 'according to', write as if spoken aloud\n"
-        "- confidence: 0.0-1.0 — how clearly the articles support one coherent story "
-        "(0.9+=clear, 0.7-0.9=mostly clear, below 0.7=conflicting or ambiguous)"
+        "FIELD RULES:\n\n"
+        "headline:\n"
+        "  Max 12 words. Active voice, present tense. No source attribution.\n\n"
+        "summary_text:\n"
+        "  2–3 sentences. Factual prose only.\n\n"
+        "why_it_matters:\n"
+        "  1–2 sentences. Be specific: name who is affected, what decision hangs on this, "
+        "or what concrete change it signals.\n"
+        "  Never use: 'ongoing concerns', 'raises questions about', 'highlights the importance of', "
+        "'amid concerns', 'underscores', or any phrase that could fit any story.\n\n"
+        "audio_script:\n"
+        "  70–85 words, written to be read aloud.\n\n"
+        "  Opening sentence: lead with what is striking, consequential, or unexpected — "
+        "not with who announced it. "
+        "Never open with 'Authorities', 'Officials say', 'A man has', 'A woman has', "
+        "'The government has', 'It has been', 'There has been', or a passive-voice subject.\n\n"
+        "  Sentence rhythm: vary the length. Short punchy sentences land harder next to longer ones. "
+        "Avoid the same sentence structure twice in a row.\n\n"
+        "  Tone: human and spoken. Contractions are fine — it's, they've, here's, there's. "
+        "No 'according to'. No 'it is worth noting'. No formal broadcast stiffness.\n\n"
+        "  Closing line: end on something concrete — the next development, the sharpest fact, "
+        "or what the listener should watch for. Not a vague implication or rhetorical question.\n\n"
+        "confidence:\n"
+        "  0.0–1.0. How clearly the articles support one coherent story "
+        "(0.9+ = clear, 0.7–0.9 = mostly clear, below 0.7 = conflicting or ambiguous).\n\n"
+        "Fact discipline: use only information from the supplied articles above. No speculation. No external knowledge."
     )

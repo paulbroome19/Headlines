@@ -192,7 +192,7 @@ final class PlaybackViewModel: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
 
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw APIError.badStatus(http.statusCode)
+            throw APIError.badStatus(http.statusCode, "")
         }
 
         let tmp = FileManager.default.temporaryDirectory

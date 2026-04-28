@@ -4,7 +4,7 @@ import Foundation
 
 enum APIError: Error, LocalizedError {
     case invalidURL
-    case badStatus(Int)
+    case badStatus(Int, String)   // code + response body snippet
     case decodingFailed(Error)
     case transport(Error)
 
@@ -12,8 +12,9 @@ enum APIError: Error, LocalizedError {
         switch self {
         case .invalidURL:
             return "Invalid URL"
-        case .badStatus(let code):
-            return "Server returned status \(code)"
+        case .badStatus(let code, let body):
+            let snippet = body.isEmpty ? "" : " — \(body)"
+            return "Server returned \(code)\(snippet)"
         case .decodingFailed(let err):
             return "Failed to decode response: \(err.localizedDescription)"
         case .transport(let err):
@@ -84,11 +85,38 @@ struct APIClient {
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else { throw APIError.badStatus(-1) }
-            guard (200...299).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.badStatus(-1, "")
+            }
+            guard (200...299).contains(http.statusCode) else {
+                let body = String(data: data, encoding: .utf8) ?? "(binary \(data.count) bytes)"
+                let snippet = String(body.prefix(300))
+                #if DEBUG
+                print("⚠️ API \(request.httpMethod ?? "?") \(request.url?.absoluteString ?? "?") → \(http.statusCode): \(snippet)")
+                #endif
+                throw APIError.badStatus(http.statusCode, snippet)
+            }
             do {
                 return try decoder.decode(T.self, from: data)
             } catch {
+                #if DEBUG
+                let url = request.url?.absoluteString ?? "(unknown)"
+                let body = String(data: data, encoding: .utf8) ?? "(binary \(data.count) bytes)"
+                print("❌ Decode failed  type=\(T.self)  url=\(url)")
+                print("   body: \(body.prefix(600))")
+                switch error {
+                case DecodingError.keyNotFound(let key, let ctx):
+                    print("   keyNotFound: \"\(key.stringValue)\" at \(ctx.codingPath.map(\.stringValue))")
+                case DecodingError.valueNotFound(let type, let ctx):
+                    print("   valueNotFound: \(type) at \(ctx.codingPath.map(\.stringValue))")
+                case DecodingError.typeMismatch(let type, let ctx):
+                    print("   typeMismatch: expected \(type) at \(ctx.codingPath.map(\.stringValue))")
+                case DecodingError.dataCorrupted(let ctx):
+                    print("   dataCorrupted: \(ctx.debugDescription) at \(ctx.codingPath.map(\.stringValue))")
+                default:
+                    print("   error: \(error)")
+                }
+                #endif
                 throw APIError.decodingFailed(error)
             }
         } catch {

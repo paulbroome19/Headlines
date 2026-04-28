@@ -1,7 +1,15 @@
 import json
 from sqlalchemy import text
 
-_ALLOWED_UPDATE_FIELDS = {"name", "include_categories", "exclude_categories", "max_stories", "voice"}
+_ALLOWED_UPDATE_FIELDS = {
+    "name", "include_categories", "exclude_categories",
+    "max_duration_minutes", "voice", "include_top_stories",
+}
+
+_SELECT_COLS = """
+    id, name, include_categories, exclude_categories,
+    max_duration_minutes, voice, include_top_stories, created_at, updated_at
+"""
 
 
 class ProfileRepo:
@@ -9,34 +17,35 @@ class ProfileRepo:
         self.db = db
 
     def create(self, *, name: str, include_categories=None, exclude_categories=None,
-               max_stories: int = 8, voice: str | None = None) -> dict:
-        row = self.db.execute(text("""
-            INSERT INTO data.profiles (name, include_categories, exclude_categories, max_stories, voice)
-            VALUES (:name, :inc, :exc, :max_stories, :voice)
-            RETURNING id, name, include_categories, exclude_categories,
-                      max_stories, voice, created_at, updated_at
+               max_duration_minutes: int = 5, voice: str | None = None,
+               include_top_stories: bool = True) -> dict:
+        row = self.db.execute(text(f"""
+            INSERT INTO data.profiles
+                (name, include_categories, exclude_categories,
+                 max_duration_minutes, voice, include_top_stories)
+            VALUES (:name, :inc, :exc, :max_duration_minutes, :voice, :include_top_stories)
+            RETURNING {_SELECT_COLS}
         """), {
             "name": name,
             "inc": json.dumps(include_categories) if include_categories is not None else None,
             "exc": json.dumps(exclude_categories) if exclude_categories is not None else None,
-            "max_stories": max_stories,
+            "max_duration_minutes": max_duration_minutes,
             "voice": voice,
+            "include_top_stories": include_top_stories,
         }).mappings().fetchone()
         return _parse(dict(row))
 
     def get_all(self) -> list[dict]:
-        rows = self.db.execute(text("""
-            SELECT id, name, include_categories, exclude_categories,
-                   max_stories, voice, created_at, updated_at
+        rows = self.db.execute(text(f"""
+            SELECT {_SELECT_COLS}
             FROM data.profiles
             ORDER BY id
         """)).mappings().fetchall()
         return [_parse(dict(r)) for r in rows]
 
     def get_by_id(self, profile_id: int) -> dict | None:
-        row = self.db.execute(text("""
-            SELECT id, name, include_categories, exclude_categories,
-                   max_stories, voice, created_at, updated_at
+        row = self.db.execute(text(f"""
+            SELECT {_SELECT_COLS}
             FROM data.profiles
             WHERE id = :id
         """), {"id": profile_id}).mappings().fetchone()
@@ -60,8 +69,7 @@ class ProfileRepo:
             UPDATE data.profiles
             SET {', '.join(set_clauses)}
             WHERE id = :id
-            RETURNING id, name, include_categories, exclude_categories,
-                      max_stories, voice, created_at, updated_at
+            RETURNING {_SELECT_COLS}
         """), params).mappings().fetchone()
         return _parse(dict(row)) if row else None
 

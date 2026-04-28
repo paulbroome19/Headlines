@@ -12,43 +12,34 @@ final class ProfileService: ProfileServicing {
         return dto.profiles.map(Profile.init(dto:))
     }
 
-    func createProfile(name: String, maxStories: Int, voice: String?, includeCategories: [String]?, excludeCategories: [String]?) async throws -> Profile {
+    func createProfile(name: String, maxDurationMinutes: Int, voice: String?, includeCategories: [String]?, excludeCategories: [String]?, includeTopStories: Bool) async throws -> Profile {
         let body = CreateProfileBody(
             name: name,
-            maxStories: maxStories,
+            maxDurationMinutes: maxDurationMinutes,
             voice: nilIfEmpty(voice),
             includeCategories: nilIfEmpty(includeCategories),
-            excludeCategories: nilIfEmpty(excludeCategories)
+            excludeCategories: nilIfEmpty(excludeCategories),
+            includeTopStories: includeTopStories
         )
         let dto: ProfileDTO = try await client.post("data/profiles", body: body)
         return Profile(dto: dto)
     }
 
-    func updateProfile(id: Int, name: String, maxStories: Int, voice: String?, includeCategories: [String]?, excludeCategories: [String]?) async throws -> Profile {
+    func updateProfile(id: Int, name: String, maxDurationMinutes: Int, voice: String?, includeCategories: [String]?, excludeCategories: [String]?, includeTopStories: Bool) async throws -> Profile {
         let body = UpdateProfileBody(
             name: name,
-            maxStories: maxStories,
+            maxDurationMinutes: maxDurationMinutes,
             voice: nilIfEmpty(voice),
             includeCategories: nilIfEmpty(includeCategories),
-            excludeCategories: nilIfEmpty(excludeCategories)
+            excludeCategories: nilIfEmpty(excludeCategories),
+            includeTopStories: includeTopStories
         )
         let dto: ProfileDTO = try await client.put("data/profiles/\(id)", body: body)
         return Profile(dto: dto)
     }
-
-    func generateBulletin(profileID: Int) async throws -> BulletinResult {
-        let dto: BulletinResultDTO = try await client.post("data/profiles/\(profileID)/bulletin")
-        return BulletinResult(dto: dto)
-    }
-
-    func audioFileURL(forBulletinID bulletinId: Int) -> URL {
-        var components = URLComponents(url: client.baseURL, resolvingAgainstBaseURL: false)!
-        components.path = "/dev/api/audio/\(bulletinId)/file"
-        return components.url!
-    }
 }
 
-// MARK: - Mapping helpers
+// MARK: - Mapping
 
 private extension Profile {
     init(dto: ProfileDTO) {
@@ -57,26 +48,10 @@ private extension Profile {
             name: dto.name,
             includeCategories: dto.includeCategories,
             excludeCategories: dto.excludeCategories,
-            maxStories: dto.maxStories,
+            maxDurationMinutes: dto.maxDurationMinutes,
             voice: dto.voice,
+            includeTopStories: dto.includeTopStories ?? true,
             updatedAt: dto.updatedAt
-        )
-    }
-}
-
-private extension BulletinResult {
-    init(dto: BulletinResultDTO) {
-        self.init(
-            profileId: dto.profileId,
-            profileName: dto.profileName,
-            bulletinId: dto.bulletinId,
-            storyCount: dto.storyCount ?? 0,
-            bulletinCached: dto.bulletinCached ?? false,
-            script: dto.script,
-            audioId: dto.audioId,
-            audioUrl: dto.audioUrl,
-            voice: dto.voice,
-            audioCached: dto.audioCached ?? false
         )
     }
 }

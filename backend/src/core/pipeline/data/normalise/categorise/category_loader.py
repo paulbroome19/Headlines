@@ -61,6 +61,70 @@ def _flatten_categories(node: dict | None, prefix: str = "") -> list[str]:
     return slugs
 
 
+# ── Display-name helpers ──────────────────────────────────────────────────────
+
+_FULL_SLUG_LABELS: dict[str, str] = {
+    "politics.uk":     "UK Politics",
+    "politics.us":     "US Politics",
+    "politics.europe": "European Politics",
+    "politics.global": "World Politics",
+}
+
+_PART_LABELS: dict[str, str] = {
+    "ai":               "AI",
+    "tv-film":          "TV & Film",
+    "formula1":         "Formula 1",
+    "premier-league":   "Premier League",
+    "championship":     "Championship",
+    "champions-league": "Champions League",
+    "rugby-union":      "Rugby Union",
+    "rugby-league":     "Rugby League",
+    "middle-east":      "Middle East",
+    "personal-finance": "Personal Finance",
+    "nfl":              "NFL",
+    "nba":              "NBA",
+    "mma":              "MMA",
+    "pga":              "PGA",
+    "liv":              "LIV",
+    "uk":               "UK",
+    "us":               "US",
+}
+
+
+def _item_label(full_slug: str, part: str) -> str:
+    if full_slug in _FULL_SLUG_LABELS:
+        return _FULL_SLUG_LABELS[full_slug]
+    return _PART_LABELS.get(part, part.replace("-", " ").title())
+
+
+@lru_cache(maxsize=1)
+def load_category_groups() -> list[dict]:
+    """Return two-level category hierarchy for UI display.
+
+    Top-level keys become group headers; their direct children become
+    selectable items.  Three-level nesting (e.g. sport.football.premier-league)
+    is collapsed — only the second level is exposed.
+    """
+    cats_path = Path(__file__).parent.parent / "taxonomy" / "categories.yml"
+    with open(cats_path, "r") as f:
+        data = yaml.safe_load(f) or {}
+    raw: dict[str, Any] = data.get("categories", {}) or {}
+
+    groups: list[dict] = []
+    for top_slug, children in raw.items():
+        items: list[dict] = []
+        if children:
+            for child_slug in children:
+                full = f"{top_slug}.{child_slug}"
+                items.append({"slug": full, "label": _item_label(full, child_slug)})
+        groups.append({
+            "slug":           top_slug,
+            "label":          _item_label(top_slug, top_slug),
+            "subcategories":  items,
+        })
+    return groups
+
+
 @lru_cache(maxsize=1)
 def load_valid_category_slugs() -> frozenset[str]:
     """

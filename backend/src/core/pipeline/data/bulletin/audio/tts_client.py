@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import urllib.error
 import urllib.request
 
@@ -39,25 +38,19 @@ _DEFAULT_FORMAT_OPENAI = "mp3"
 
 
 def tts_provider() -> str:
-    return os.environ.get("TTS_PROVIDER", _DEFAULT_PROVIDER).lower()
+    return settings.tts_provider.lower()
 
 
 def tts_voice() -> str:
-    provider = tts_provider()
-    default = _DEFAULT_VOICE_ELEVENLABS if provider == "elevenlabs" else _DEFAULT_VOICE_OPENAI
-    return os.environ.get("TTS_VOICE", default)
+    return settings.tts_voice
 
 
 def tts_model() -> str:
-    provider = tts_provider()
-    default = _DEFAULT_MODEL_ELEVENLABS if provider == "elevenlabs" else _DEFAULT_MODEL_OPENAI
-    return os.environ.get("TTS_MODEL", default)
+    return settings.tts_model
 
 
 def tts_audio_format() -> str:
-    provider = tts_provider()
-    default = _DEFAULT_FORMAT_ELEVENLABS if provider == "elevenlabs" else _DEFAULT_FORMAT_OPENAI
-    return os.environ.get("TTS_AUDIO_FORMAT", default)
+    return settings.tts_audio_format
 
 
 def ext_from_format(audio_format: str) -> str:
@@ -77,6 +70,64 @@ def ext_from_format(audio_format: str) -> str:
 def compute_script_hash(script: str) -> str:
     """16-char SHA-256 hex of the bulletin script. Used as cache key."""
     return hashlib.sha256(script.encode()).hexdigest()[:16]
+
+
+def mp3_duration(path: str) -> float | None:
+    """
+    Return MP3 duration in seconds by scanning frame headers.
+    Uses only stdlib — no mutagen dependency.
+    Returns None if the file cannot be read or parsed.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+
+    # Skip ID3v2 tag if present
+    offset = 0
+    if data[:3] == b"ID3":
+        tag_size = (
+            ((data[6] & 0x7F) << 21) |
+            ((data[7] & 0x7F) << 14) |
+            ((data[8] & 0x7F) << 7)  |
+             (data[9] & 0x7F)
+        )
+        offset = 10 + tag_size
+
+    # MPEG1 Layer3 sample rate and bitrate tables
+    _sample_rates = {0: 44100, 1: 48000, 2: 32000}
+    _bitrates = {
+        1: 32, 2: 40, 3: 48, 4: 56, 5: 64, 6: 80, 7: 96,
+        8: 112, 9: 128, 10: 160, 11: 192, 12: 224, 13: 256, 14: 320,
+    }
+
+    total_samples = 0
+    sample_rate = None
+    n = len(data)
+
+    while offset < n - 4:
+        b = data[offset: offset + 4]
+        if b[0] == 0xFF and (b[1] & 0xE0) == 0xE0:
+            mpeg_version = (b[1] >> 3) & 0x3
+            layer        = (b[1] >> 1) & 0x3
+            bitrate_idx  = (b[2] >> 4) & 0xF
+            sr_idx       = (b[2] >> 2) & 0x3
+            padding      = (b[2] >> 1) & 0x1
+            if mpeg_version == 3 and layer == 1 and bitrate_idx in _bitrates:
+                sr = _sample_rates.get(sr_idx)
+                if sr:
+                    sample_rate = sr
+                    br = _bitrates[bitrate_idx] * 1000
+                    frame_size = 144 * br // sr + padding
+                    total_samples += 1152
+                    offset += max(frame_size, 1)
+                    continue
+        offset += 1
+
+    if sample_rate and total_samples > 0:
+        return total_samples / sample_rate
+    return None
 
 
 def synthesize(
@@ -102,7 +153,8 @@ def synthesize(
 # ── ElevenLabs ────────────────────────────────────────────────────────────────
 
 def _elevenlabs(text: str, *, voice: str, model: str, audio_format: str) -> bytes | None:
-    api_key = settings.elevenlabs_api_key or os.environ.get("ELEVENLABS_API_KEY")
+    api_key = settings.elevenlabs_api_key
+    logger.debug("tts_client ElevenLabs: api_key present=%s  voice=%s  model=%s", bool(api_key), voice, model)
     if not api_key:
         logger.warning("tts_client: ELEVENLABS_API_KEY not set — skipping TTS")
         return None
@@ -131,7 +183,12 @@ def _elevenlabs(text: str, *, voice: str, model: str, audio_format: str) -> byte
             audio_bytes = resp.read()
     except urllib.error.HTTPError as e:
         body_snippet = e.read(512).decode(errors="replace")
-        logger.warning("tts_client ElevenLabs HTTP %s: %s — %s", e.code, e.reason, body_snippet)
+        if e.code == 401:
+            logger.warning("tts_client ElevenLabs 401 Unauthorized — check ELEVENLABS_API_KEY: %s", body_snippet)
+        elif e.code == 402:
+            logger.warning("tts_client ElevenLabs 402 Payment Required — voice '%s' may require a paid plan: %s", voice, body_snippet)
+        else:
+            logger.warning("tts_client ElevenLabs HTTP %s: %s — %s", e.code, e.reason, body_snippet)
         return None
     except Exception as e:
         logger.warning("tts_client ElevenLabs error: %s", e)
@@ -148,7 +205,8 @@ def _elevenlabs(text: str, *, voice: str, model: str, audio_format: str) -> byte
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 
 def _openai(text: str, *, voice: str, model: str) -> bytes | None:
-    api_key = settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
+    api_key = settings.openai_api_key
+    logger.debug("tts_client OpenAI: api_key present=%s  voice=%s  model=%s", bool(api_key), voice, model)
     if not api_key:
         logger.warning("tts_client: OPENAI_API_KEY not set — skipping TTS")
         return None

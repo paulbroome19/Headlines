@@ -609,6 +609,195 @@ cd backend && poetry install -E s3
 6. `GET /dev/api/audio/13/file` → `200 audio/mpeg 1.5MB` (local file serving unchanged) ✓
 7. `get_cached()` includes `audio_url` column in result ✓
 
+## Changes Made This Session (2026-04-27 — iOS device fixes)
+
+**Three bugs fixed on physical iPhone:**
+
+**1. Device IP placeholder** (`Core/AppConfig.swift`)
+- `deviceLANIP = "YOUR_MAC_LAN_IP"` → `"192.168.1.111"`
+- Was causing `NSURLErrorDomain Code=-1003` (host not found) on every request
+
+**2. Error logging — response body swallowed** (`Core/APIClient.swift`, `Core/AudioPlayer.swift`, `Features/Playback/PlaybackViewModel.swift`)
+- `APIError.badStatus(Int)` → `badStatus(Int, String)` — now carries response body snippet
+- `send()` prints `⚠️ API METHOD URL → STATUS: body` in DEBUG builds
+- Surfaces backend error detail (e.g. `"No ranking runs found"`) instead of just a status code
+
+**3. Audio silent on device** (`Core/AudioPlayer.swift`, `Features/Briefing/BriefingViewModel.swift`)
+- Root cause: `AVAudioPlayer.play()` uses `.soloAmbient` session by default — silenced by mute switch on device, works fine in simulator
+- Fix: `play()` now calls `AVAudioSession.sharedInstance().setCategory(.playback)` + `setActive(true)` before every play
+- Defensive fix: `resolvedAudioURL()` helper in `BriefingViewModel` rejects `audio_url` values with `localhost`/`127.0.0.1` host and falls back to `audioFileURL(forBulletinID:)` which resolves against `AppConfig.apiBaseURL` (LAN IP on device)
+- Debug logging added: final audio URL, download byte count, failure body
+
+**Ingest configuration (read-only inspection, no changes):**
+- Scheduled ingest: `ENABLE_SCHEDULED_INGEST=false` (disabled), 30-min interval when on
+- Per-run fetch: 10 articles from GNews `top-headlines`, `lang=en`, `country=gb`
+- No env var for `max_results` or country/lang — hardcoded in handler
+- Dedup: SHA-256 of URL checked before every insert; no duplicates stored
+- Ranking window: 48 hours (hardcoded in `candidate_loader.py`)
+
+## Changes Made This Session (2026-04-26 — iOS frontend architecture refactor)
+
+**Goal:** Establish a disciplined feature-based iOS architecture before adding more UI. No product behaviour changes.
+
+**Architecture applied:**
+```
+Core/           — app-wide utilities (APIClient, AppConfig, AudioPlayer)
+Models/         — plain value types (Profile, BulletinResult)
+Services/       — protocol + concrete service per domain
+Features/       — one folder per screen; ViewModel owns state, View owns layout
+Shared/Components/ — generic reusable views only
+```
+
+**New files (10):**
+- `Core/AudioPlayer.swift` — `@MainActor final class`; wraps `AVAudioPlayer`; static `download(from:id:)` method; `progress`, `isAtEnd`, `duration` computed props; `play/pause/stop/load`
+- `Services/BulletinService.swift` — `BulletinServicing` protocol + `BulletinService` impl; private `BulletinResultDTO` (moved from ProfileDTO.swift); `audioFileURL(forBulletinID:)` uses `URLComponents`
+- `Features/Profiles/ProfileListView.swift` — extracted from `ProfilePickerSheet` at bottom of `BriefingView.swift`; renamed to match feature folder
+- `Features/Briefing/PlayerView.swift` — extracted `playerCard`; takes `progress`, `duration`, `canTogglePlayPause`, `isPlaying`, `bulletin`, `onTogglePlayPause`; owns `cacheBadge` and `formatTime` helpers
+- `Features/Briefing/BriefingLoadingView.swift` — handles `.loadingProfiles` (shows `LoadingStateView`) and `.noProfiles` (shows `PrimaryButton`)
+- `Features/Briefing/BriefingErrorView.swift` — thin wrapper around `ErrorStateView`
+- `Features/Settings/SettingsView.swift` — stub showing `AppConfig.apiBaseURL.host` + port for device debugging
+- `Shared/Components/PrimaryButton.swift` — `.borderedProminent` button wrapper
+- `Shared/Components/LoadingStateView.swift` — `ProgressView()` + message
+- `Shared/Components/ErrorStateView.swift` — error icon + title + message + retry button
+
+**Modified files (5):**
+- `Services/Profiles/ProfileServicing.swift` — removed `generateBulletin` and `audioFileURL`; now only profile CRUD
+- `Services/Profiles/ProfileService.swift` — removed `generateBulletin`, `audioFileURL`, `BulletinResult` mapping
+- `Services/Profiles/ProfileDTO.swift` — removed `BulletinResultDTO` (moved to `BulletinService.swift` as private)
+- `Features/Briefing/BriefingViewModel.swift` — removed AVFoundation import; split `service: ProfileServicing` into `profileService + bulletinService`; uses `AudioPlayer` for all playback; `generateBulletin()` delegates download to `AudioPlayer.download()`
+- `Features/Briefing/BriefingView.swift` — removed `ProfilePickerSheet`, `loadingView`, `noProfilesView`, `errorView`, `playerCard`, `cacheBadge`, `formatTime`, `playPauseIcon`; replaced with calls to extracted components; `vm.service` → `vm.profileService`
+
+**All 10 files added to Xcode target membership** via `xcodeproj` Ruby gem.
+
+**Build result:** `BUILD SUCCEEDED` (iPhone 15 simulator, iOS 17.5)
+
+## Changes Made This Session (2026-04-27 — iOS redesign, story nav, summary quality, bulletin flow)
+
+### Task 1 — iOS Briefing Screen Redesign
+- `BriefingView.swift` — full rewrite: uppercase letter-spaced context label, `storiesSection` with separator + story count label, story rows with isCurrent highlight + tap-to-seek, `categoryDisplay()` helper, premium minimal layout
+- `PlayerView.swift` — full rewrite: ZStack prev/play/next layout, 80pt play button, 3px progress bar, `.tertiary` time labels, nav buttons invisible when no timing data
+
+### Task 2 — Story Visibility
+- Backend: `_do_assemble_and_audio()` builds `stories_list` with headline/category/start_time; cached + fresh paths both populate it; returned as `"stories"` key
+- iOS: `BulletinStory` model + `BulletinStoryDTO` decoder; `BriefingView.storyRows()` shows headlines with category labels
+
+### Task 3 — Fix TTS 503
+- Root cause: profile voice `P4DhdyNCB4Nl6MA0sL45` (ElevenLabs "Rachel") requires paid plan → HTTP 402
+- `tts_client.py`: helpers now read `settings.*` not `os.environ.get()` (pydantic-settings doesn't populate environ)
+- Added specific 401/402 warning messages; profile 1 voice cleared to `null` → falls back to George
+- `mp3_duration()` pure stdlib MPEG1 frame scanner added to `tts_client.py`
+
+### Task 4 — Prev/Next Story Navigation
+- Proportional timestamps: `_story_timings(segments, script, duration)` computes `start_time` per story from char offset in assembled script
+- `AudioPlayer.swift`: `currentTime` property + `seek(to:)` method
+- `BriefingViewModel`: `currentStoryIndex`, `hasStoryTimings`, `seekToStory(at:)`, `previousStory()`, `nextStory()`, `resolveCurrentStoryIndex(at:)`, `tick()` updates highlight on playback
+- `BulletinResult`/`BulletinStory` models updated with `startTime: TimeInterval?`
+
+### Task 5 — Story Summary Quality
+- `llm_summariser.py` `_build_prompt()` rewrite: explicit forbidden opener list, sentence rhythm guidance, contractions OK, concrete closing line, `why_it_matters` prohibition list ("ongoing concerns", "raises questions about", etc.)
+- `_MAX_TOKENS` 512 → 600
+- `settings.anthropic_api_key` used directly (was `os.environ.get`)
+
+### Task 6 — Bulletin Flow Quality
+- `assembler.py` full rewrite:
+  - `_extract_hook()` — pulls first sentence of top story's `audio_script` as intro hook
+  - `_build_intro()` — hooks with top story, bridges with "That story leads / We begin there / That leads today", then time-of-day greeting + name; falls back to date-based if no hook
+  - `_build_outro()` — forward-looking: "We'll keep following these stories as they develop", "More on all of this as it comes in", time-aware (morning/afternoon/evening) — replaces "That's all for now"
+  - `_CATEGORY_TRANSITIONS` expanded: 6-8 options per category (was 2-3), added "Politically...", "Overseas...", "Economically speaking...", "On the digital front...", etc.
+  - `_NEUTRAL_TRANSITIONS` expanded: 14 options (was 4), added "At the same time...", "On a related note...", "Also making news...", "Away from that...", "Closer to home..."
+- `POST /data/profiles/{id}/bulletin?force=true` — bypass cache for dev/testing (deletes existing bulletin + audio rows, re-assembles and re-generates TTS)
+
+**Live validation (force=true, profile 1, 3 stories):**
+- Intro: "Authorities have arrested... That leads today. Good evening, Paul." ✓ (hooks with story)
+- Transition: "In government..." (politics.uk), "On the sporting front..." (sport) ✓
+- Outro: "That's the evening briefing, Paul. More updates throughout the day." ✓ (forward-looking)
+
+## Changes Made This Session (2026-04-27 — Task 7: include_top_stories + category filter UI)
+
+### Backend
+
+**Migration `0f1c2e3a4b5d`** — `ALTER TABLE data.profiles ADD COLUMN include_top_stories BOOLEAN NOT NULL DEFAULT true`
+
+**`profile_repo.py`** — `include_top_stories` added to `_ALLOWED_UPDATE_FIELDS`, `create()`, all `SELECT` queries
+
+**`profiles.py`** — `ProfileCreate.include_top_stories: bool = True`, `ProfileUpdate.include_top_stories: Optional[bool] = None`, `_fmt()` includes the field, bulletin route passes it to `_do_assemble_and_audio()`
+
+**`data.py`** — Two changes:
+- `GET /data/categories` — returns `{"categories": [...sorted slugs...]}` from taxonomy YAML (mirrors `/dev/api/categories` but on the public router)
+- `_do_assemble_and_audio(include_top_stories=True)` — `include_top_stories` included in `filters` dict (affects cache key); when `True`: top-tier stories always included first regardless of category filters, remaining slots filled from briefing tier applying category filters; when `False`: current behaviour (filter applied to entire merged pool)
+
+### iOS
+
+**`Profile.swift`** — added `includeTopStories: Bool`
+
+**`ProfileDTO.swift`** — added `includeTopStories` to `ProfileDTO` (CodingKey: `include_top_stories`), `CreateProfileBody`, `UpdateProfileBody`
+
+**`ProfileServicing.swift`** — `createProfile` and `updateProfile` now take `includeTopStories: Bool`
+
+**`ProfileService.swift`** — passes `includeTopStories` in request bodies and `Profile.init(dto:)` mapping
+
+**`Models/CategoryLoader.swift`** (new) — `CategoryListDTO`, `fetchTopCategories()` — calls `GET /data/categories`, derives top-level slugs by splitting on `.`, returns sorted unique list
+
+**`ProfileFormView.swift`** — redesigned with:
+- **Identity section**: Name + Max Stories stepper (unchanged)
+- **Voice section**: Picker (unchanged)
+- **Listening section**: Toggle "Include top stories" + footer helper text
+- **Filters section**: checkboxes for each top-level category (loaded async); checked slugs → `include_categories`; no categories checked = nil (no filter); replaces old include/exclude text fields
+- `selectedCategories: Set<String>` state; `categoryBinding(for:)` helper; parallel `.task` fetches voices + categories simultaneously
+
+## Changes Made This Session (2026-04-27 — product settings + taxonomy refinement)
+
+### Part 1 — Category hierarchy in UI
+
+**`category_loader.py`** — added `load_category_groups()`:
+- Returns two-level hierarchy (top-level groups + their direct children)
+- Special display name mapping: `politics.uk` → "UK Politics", `politics.us` → "US Politics", `politics.europe` → "European Politics", `politics.global` → "World Politics", `ai` → "AI", `tv-film` → "TV & Film", `formula1` → "Formula 1", etc.
+- Three-level nesting (sport.football.premier-league) collapsed — only top two levels exposed to UI
+
+**`data.py`** — `GET /data/categories` now returns `{"groups": [...]}` hierarchy instead of flat slug list
+
+**iOS `CategoryLoader.swift`** — rewritten:
+- New `CategoryGroup` (slug, label, subcategories) and `CategoryItem` (slug, label) types
+- Decodes new `{"groups": [...]}` API shape
+- Cache, timeout, and DEBUG logging preserved
+
+**iOS `ProfileFormView.swift`** — Filters section rewritten:
+- Per-group sections with group label as section header
+- Each subcategory is a toggle with display label
+- Leaf groups (science, climate, health) render as single toggles using group slug
+- `filtersSections` uses `@ViewBuilder` with `ForEach` over groups
+
+### Part 2 — Remove voice options
+
+**iOS `ProfileFormView.swift`** — removed Voice section and `voices` state; always passes `voice: nil` on save
+**Dev dashboard** — voice `<select>` replaced with `<input type="hidden" value="">` (keeps `voiceLabel()` working in audio list)
+
+### Part 3 — Duration-based story selection
+
+**Migration `1a2b3c4d5e6f`** — drops `max_stories`, adds `max_duration_minutes INTEGER NOT NULL DEFAULT 5` on `data.profiles`; applied
+
+**`selector.py`** — added:
+- `estimate_duration_seconds(audio_script)` — word count / 150 wpm * 60
+- `select_stories_by_duration(summaries, *, include_categories, exclude_categories, max_duration_minutes)` — selects stories fitting within budget; always takes at least one; respects category filters
+
+**`profile_repo.py`** — `max_stories` → `max_duration_minutes` everywhere (SELECT, INSERT, UPDATE)
+
+**`profiles.py`** — `ProfileCreate.max_duration_minutes: int = 5`, `ProfileUpdate.max_duration_minutes: Optional[int] = None`, `_fmt()` returns `max_duration_minutes`, bulletin route passes `max_duration_minutes`
+
+**`data.py`** — `AssembleAudioRequest.max_duration_minutes: int = 5`; `_do_assemble_and_audio` now:
+- Takes `max_duration_minutes` instead of `max_stories`
+- Uses `select_stories_by_duration()` for all story selection
+- For `include_top_stories=True`: top pool selected by duration first, remaining minutes filled from briefing pool with category filter
+- Response includes `target_duration_minutes` and `estimated_duration_seconds` (estimated from assembled script)
+
+**iOS `Profile.swift`** — `maxStories: Int` → `maxDurationMinutes: Int`
+**iOS `ProfileDTO.swift`** — `maxDurationMinutes: Int` (CodingKey: `max_duration_minutes`) in DTO and both request bodies
+**iOS `ProfileServicing.swift` / `ProfileService.swift`** — `maxStories` → `maxDurationMinutes` throughout
+**iOS `ProfileFormView.swift`** — max stories `Stepper` replaced with segmented `Picker` (3 min / 5 min / 10 min); `populateForm` snaps to nearest valid option
+**iOS `ProfileListView.swift`** — subtitle changed from "N stories ·" to "N min ·"
+
+**Build result:** `BUILD SUCCEEDED`
+
 ## What Is Incomplete
 
 - **Summaries require API key** — set `ANTHROPIC_API_KEY` in `.env` to activate

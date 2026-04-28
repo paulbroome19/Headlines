@@ -236,15 +236,7 @@ audio{width:100%;border-radius:4px;margin-bottom:12px}
         <input type="text" id="pf-name" class="pf-input" placeholder="e.g. Paul" style="margin-bottom:12px">
         <div class="field-label">Max Stories</div>
         <input type="number" id="pf-max-stories" class="pf-input" value="8" min="1" max="50" style="width:80px;margin-bottom:12px">
-        <div class="field-label">Voice (ElevenLabs ID)</div>
-        <input type="text" id="pf-voice" class="pf-input" list="pf-voice-options" placeholder="leave blank for default">
-        <datalist id="pf-voice-options">
-          <option value="JBFqnCBsd6RMkjVDRZzb">George (British male)</option>
-          <option value="N2lVS1w4EtoT3dr4eOWO">Callum (British male)</option>
-          <option value="XB0fDUnXU5powFXDhCwa">Charlotte (British female)</option>
-          <option value="EXAVITQu4vr4xnSDxMaL">Bella</option>
-        </datalist>
-        <div style="margin-top:6px;font-size:11px;color:#6e7681">Leave blank to use server default</div>
+        <input type="hidden" id="pf-voice" value="">
       </div>
       <div>
         <div class="field-label">Include Categories</div>
@@ -292,6 +284,7 @@ audio{width:100%;border-radius:4px;margin-bottom:12px}
 // ── State ───────────────────────────────────────────────────────────────────
 const loaded = {};
 let categories = [];
+let voices = [];        // [{key, display_name, provider, voice_id}]
 let pipelineData = null;
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
@@ -706,13 +699,13 @@ function conf(v) {
 }
 
 function voiceLabel(voice) {
-  const known = {
-    'JBFqnCBsd6RMkjVDRZzb': 'George (British)',
-    'N2lVS1w4EtoT3dr4eOWO': 'Callum (British)',
-    'XB0fDUnXU5powFXDhCwa': 'Charlotte (British)',
-    'onyx': 'Onyx', 'alloy': 'Alloy', 'nova': 'Nova',
-  };
-  return known[voice] || voice;
+  if (!voice) return 'default';
+  // voices is loaded from /data/voices — match by key or by voice_id
+  const byKey = voices.find(v => v.key === voice);
+  if (byKey) return byKey.display_name;
+  const byId = voices.find(v => v.voice_id === voice);
+  if (byId) return byId.display_name;
+  return voice;
 }
 
 async function api(url) {
@@ -769,6 +762,7 @@ let editingProfileId = null;
 
 async function loadProfiles() {
   await ensureCategories();
+  await ensureVoices();
   const data = await api('/data/profiles');
   if (!data) return;
   profiles = data.profiles;
@@ -779,6 +773,19 @@ async function ensureCategories() {
   if (categories.length) return;
   const cats = await api('/dev/api/categories');
   if (cats) categories = cats;
+}
+
+async function ensureVoices() {
+  if (voices.length) return;
+  const data = await api('/data/voices');
+  if (data && data.voices) {
+    voices = data.voices;
+    const sel = document.getElementById('pf-voice');
+    if (sel) {
+      sel.innerHTML = '<option value="">Default (server)</option>'
+        + voices.map(v => `<option value="${v.key}">${v.display_name}</option>`).join('');
+    }
+  }
 }
 
 function renderProfileList() {
@@ -817,7 +824,7 @@ function showProfileForm(mode, profile = null) {
   el('pf-submit-btn').textContent = mode === 'edit' ? 'Save Changes' : 'Create Profile';
 
   el('pf-name').value = profile ? profile.name : '';
-  el('pf-voice').value = profile ? (profile.voice || '') : '';
+  el('pf-voice').value = profile ? (profile.voice || '') : '';   // key or empty string
   el('pf-max-stories').value = profile ? profile.max_stories : 8;
 
   const selInc = new Set(profile && profile.include_categories ? profile.include_categories : []);

@@ -5,7 +5,8 @@ struct Profile: Identifiable, Equatable {
     let name: String
     let includeCategories: [String]?
     let excludeCategories: [String]?
-    let maxStories: Int
+    let maxDurationMinutes: Int
     let voice: String?
+    let includeTopStories: Bool
     let updatedAt: Date
 }
