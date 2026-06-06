@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.anthropic.com/v1/messages"
 _API_VERSION = "2023-06-01"
-_MAX_TOKENS = 600
+_MAX_TOKENS = 950
 _TIMEOUT_SECONDS = 20
 
 
@@ -45,11 +45,13 @@ def summarise_story(
     story_id: str,
     representative_title: str,
     articles: list[dict],
+    category: str | None = None,
 ) -> SummaryResult | None:
     """
     Generate a structured summary for a story from its article titles and snippets.
 
-    articles: list of {"title": ..., "snippet": ...} dicts, most recent first.
+    articles:  list of {"title": ..., "snippet": ...} dicts, most recent first.
+    category:  top-level taxonomy slug (e.g. "sport", "politics.uk") — used for tone guidance.
     Returns None on API failure or parse error (fail closed).
     """
     api_key = settings.anthropic_api_key
@@ -57,7 +59,7 @@ def summarise_story(
         logger.warning("llm_summariser: ANTHROPIC_API_KEY not set — skipping summarisation")
         return None
 
-    prompt = _build_prompt(representative_title, articles)
+    prompt = _build_prompt(representative_title, articles, category=category)
     body = json.dumps({
         "model": _model(),
         "max_tokens": _MAX_TOKENS,
@@ -115,46 +117,86 @@ def summarise_story(
     return result
 
 
-def _build_prompt(representative_title: str, articles: list[dict]) -> str:
+_TONE_GUIDANCE: dict[str, str] = {
+    "politics":      "Dry, measured. A slight knowing edge is fine. Avoid breathlessness.",
+    "world":         "Calm authority. If it's conflict or tragedy, gravity — not drama.",
+    "business":      "Clear, brisk. Numbers are the story — make them land.",
+    "technology":    "Measured curiosity. Not hype. Specific and grounded.",
+    "sport":         "Energy. Results matter — lead with the outcome.",
+    "entertainment": "Light, a little playful. Still specific.",
+    "health":        "Reassuring, not alarmist. Precision over generalisation.",
+    "science":       "Wonder, not jargon. Make the finding feel significant.",
+    "climate":       "Serious but not catastrophising. Concrete data where possible.",
+}
+
+
+def _build_prompt(
+    representative_title: str,
+    articles: list[dict],
+    category: str | None = None,
+) -> str:
     article_lines = []
     for i, a in enumerate(articles[:5], 1):
         title = (a.get("title") or "").strip()
         snippet = (a.get("snippet") or "").strip()
-        article_lines.append(f"Article {i}: {title}\n{snippet[:300]}")
+        article_lines.append(f"Article {i}: {title}\n{snippet[:400]}")
     articles_text = "\n\n".join(article_lines)
 
+    # Tone guidance from top-level category
+    top_cat = (category or "").split(".")[0].lower()
+    tone_line = _TONE_GUIDANCE.get(top_cat, "Calm, authoritative, conversational.")
+    tone_block = f"Category: {top_cat or 'general'}\nTone for this story: {tone_line}"
+
     return (
-        "You are a senior producer at a national radio news station. "
-        "Your job is to write story segments for a spoken bulletin — the kind that holds attention during a commute.\n\n"
+        "You are a senior producer at a national radio news station — the kind whose bulletins "
+        "listeners actually remember. Your job: write story segments that hold attention during a commute.\n\n"
         f"Story topic: {representative_title}\n\n"
+        f"{tone_block}\n\n"
         f"Source articles (most recent first):\n{articles_text}\n\n"
         "Return ONLY the following JSON — no markdown fences, no explanation:\n"
         '{"headline": "...", "summary_text": "...", "why_it_matters": "...", '
         '"audio_script": "...", "confidence": 0.0}\n\n'
         "FIELD RULES:\n\n"
+
         "headline:\n"
         "  Max 12 words. Active voice, present tense. No source attribution.\n\n"
+
         "summary_text:\n"
         "  2–3 sentences. Factual prose only.\n\n"
+
         "why_it_matters:\n"
-        "  1–2 sentences. Be specific: name who is affected, what decision hangs on this, "
-        "or what concrete change it signals.\n"
-        "  Never use: 'ongoing concerns', 'raises questions about', 'highlights the importance of', "
-        "'amid concerns', 'underscores', or any phrase that could fit any story.\n\n"
+        "  1–2 sentences. Name who is affected and what concrete change or decision this signals.\n"
+        "  BANNED: 'ongoing concerns', 'raises questions about', 'highlights the importance of', "
+        "'amid concerns', 'underscores', 'it remains to be seen', or any phrase that fits every story.\n\n"
+
         "audio_script:\n"
-        "  70–85 words, written to be read aloud.\n\n"
-        "  Opening sentence: lead with what is striking, consequential, or unexpected — "
-        "not with who announced it. "
-        "Never open with 'Authorities', 'Officials say', 'A man has', 'A woman has', "
-        "'The government has', 'It has been', 'There has been', or a passive-voice subject.\n\n"
-        "  Sentence rhythm: vary the length. Short punchy sentences land harder next to longer ones. "
-        "Avoid the same sentence structure twice in a row.\n\n"
-        "  Tone: human and spoken. Contractions are fine — it's, they've, here's, there's. "
-        "No 'according to'. No 'it is worth noting'. No formal broadcast stiffness.\n\n"
-        "  Closing line: end on something concrete — the next development, the sharpest fact, "
-        "or what the listener should watch for. Not a vague implication or rhetorical question.\n\n"
+        "  4–6 sentences, 120–180 words. Written to be heard, not read.\n\n"
+
+        "  FIRST SENTENCE — this is the bulletin hook. It must:\n"
+        "    - Name something specific: a person, a number, a place, a concrete fact\n"
+        "    - Create tension or curiosity — what's at stake, what's surprising, what changed\n"
+        "    - Be 1 sentence only — punchy, complete, works as a standalone opener\n"
+        "    - NEVER start with: 'Authorities', 'Officials', 'The government', 'Sources say',\n"
+        "      'It has been', 'There has been', 'A man has', 'A woman has', or any passive opener\n\n"
+
+        "  BODY (sentences 2–5): develop the story with at least one specific fact per two sentences.\n"
+        "    A specific fact = a name, a number, a date, a place, a direct quote, a concrete consequence.\n"
+        "    Vary sentence length. Short punchy sentences next to longer ones. No two sentences same structure.\n"
+        "    Contractions are required — it's, they've, here's, won't, didn't. No broadcast stiffness.\n\n"
+
+        "  LAST SENTENCE: forward-looking close. What happens next? Who's affected? What's the stake?\n"
+        "    NOT: vague implications, rhetorical questions, or anything that 'the story is developing'.\n\n"
+
+        "  BANNED PHRASES (never use in audio_script):\n"
+        "    'officials are considering', 'raises questions about', 'ongoing concerns',\n"
+        "    'the situation remains', 'according to reports', 'sources say',\n"
+        "    'many are wondering', 'in a developing story', 'more on this as it unfolds',\n"
+        "    'the story continues to develop', 'it remains unclear', 'amid uncertainty'\n\n"
+
         "confidence:\n"
         "  0.0–1.0. How clearly the articles support one coherent story "
-        "(0.9+ = clear, 0.7–0.9 = mostly clear, below 0.7 = conflicting or ambiguous).\n\n"
-        "Fact discipline: use only information from the supplied articles above. No speculation. No external knowledge."
+        "(0.9+ = clear single story, 0.7–0.9 = mostly clear, below 0.7 = conflicting or ambiguous).\n\n"
+
+        "Fact discipline: every claim in audio_script must come from the supplied articles. "
+        "No speculation. No external knowledge."
     )

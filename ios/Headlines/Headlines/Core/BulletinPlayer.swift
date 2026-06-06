@@ -1,0 +1,805 @@
+import AVFoundation
+import Combine
+import Foundation
+import MediaPlayer
+
+// MARK: - Request / response types
+
+private struct ManifestRequest: Encodable {
+    let includeTopStories: Bool = true
+    enum CodingKeys: String, CodingKey {
+        case includeTopStories = "include_top_stories"
+    }
+}
+
+private struct EventRequest: Encodable {
+    let profileId: Int
+    let storyHash: String
+    let action: String
+    let positionPct: Double
+    enum CodingKeys: String, CodingKey {
+        case profileId   = "profile_id"
+        case storyHash   = "story_hash"
+        case action
+        case positionPct = "position_pct"
+    }
+}
+
+private struct SummaryRequest: Encodable {
+    let profileId: Int
+    let events: [EventItem]
+    struct EventItem: Encodable {
+        let storyHash: String
+        let action: String
+        let positionPct: Double
+        enum CodingKeys: String, CodingKey {
+            case storyHash   = "story_hash"
+            case action
+            case positionPct = "position_pct"
+        }
+    }
+    enum CodingKeys: String, CodingKey {
+        case profileId = "profile_id"
+        case events
+    }
+}
+
+// Accepts {"status": "...", "updated": N?} — used for fire-and-forget endpoints.
+private struct StatusResponse: Decodable {
+    let status: String
+    let updated: Int?
+}
+
+private struct StoryEvent {
+    let storyHash: String
+    let action: String
+    let positionPct: Double
+}
+
+// MARK: - BulletinPlayer
+
+/// Streaming bulletin player backed by AVQueuePlayer.
+///
+/// Lifecycle:
+///   load(profileId:) → manifest fetch → enqueue first 2 segments
+///   play()           → player.play(), state → .playing
+///   skip()           → fire "skipped" event, advance past story + transition
+///   sendSummary()    → batch-fire all accumulated events (call on background/terminate)
+///   stop()           → sendSummary + teardown
+///
+/// Sliding window: item N's readyToPlay triggers enqueue of item N+2. At most 3
+/// items are in the queue at once.
+///
+/// Stall detection: 2 × 2s timer. After 4s total stall, silently skip item.
+@MainActor
+final class BulletinPlayer: NSObject, ObservableObject {
+
+    // MARK: State
+
+    enum PlayerState: Equatable {
+        case idle
+        case loadingManifest
+        case buffering        // manifest received; items loading; waiting for play tap
+        case playing
+        case paused
+        case stalled          // buffering mid-playback
+        case ended
+        case failed(String)
+    }
+
+    // MARK: Published
+
+    @Published private(set) var playerState: PlayerState = .idle {
+        didSet {
+            #if DEBUG
+            print("🎙 playerState: \(oldValue) → \(playerState)")
+            #endif
+        }
+    }
+    @Published private(set) var currentSegment: ManifestSegment?
+    @Published private(set) var storyIndex: Int = 0
+    @Published private(set) var storyCount: Int = 0
+    @Published private(set) var positionSeconds: Double = 0
+    @Published private(set) var currentPositionPct: Double = 0
+    /// Position (0–1) across the entire story-unit timeline (wrappers excluded).
+    @Published private(set) var globalPositionPct: Double = 0
+    /// Story units that have been consumed (furthest position ≥ threshold) this session.
+    @Published private(set) var consumedStoryHashes: Set<String> = []
+    /// Index of the story unit the playhead is currently in (updated on transition entry too).
+    @Published private(set) var currentUnitIndex: Int = 0
+
+    // MARK: Accessors
+
+    private(set) var manifest: BulletinManifest?
+    var storySegments: [ManifestSegment] { _storySegments }
+    var storyUnits: [StoryUnit] { _storyUnits }
+    var totalStoryDurationSeconds: Double { _totalStoryDurationSeconds }
+    var profileId: Int? { _profileId }
+    var bulletinId: Int? { _bulletinId }
+
+    // MARK: Dependencies
+
+    private let client: APIClient
+
+    // MARK: Private — context
+
+    private var _profileId: Int?
+    private var _bulletinId: Int?
+    private var segments: [ManifestSegment] = []
+    private var _storySegments: [ManifestSegment] = []
+    private var _storyUnits: [StoryUnit] = []
+    private var _totalStoryDurationSeconds: Double = 0
+
+    // MARK: Private — seek state
+
+    private var lastSkipBackTime: Date?
+
+    // MARK: Private — queue player
+
+    private var player: AVQueuePlayer?
+    private var timeObserver: Any?
+    private var cancellables = Set<AnyCancellable>()
+    // Per-item observations (readyToPlay / failed). Stored separately so we can
+    // remove them when items are force-removed from the queue (skip, stall skip).
+    private var itemObservations = [ObjectIdentifier: AnyCancellable]()
+    private var itemSegmentMap   = [ObjectIdentifier: ManifestSegment]()
+    private var nextEnqueueIdx   = 0
+
+    // MARK: Private — stall detection
+
+    private var stallTimer: Timer?
+    private var stallCount = 0
+    private let stallTimeout: Double = 2.0   // tunable
+    private let stallMaxCount = 2            // 2 × 2s = 4s total
+
+    // MARK: Private — event tracking
+
+    // Distinguishes how the previous item left the queue so handleCurrentItemChanged
+    // knows whether to fire a "completed" event.
+    private enum PreviousOutcome { case natural, userSkip, stallSkip }
+    private var prevOutcome: PreviousOutcome = .natural
+
+    private var accumulatedEvents = [StoryEvent]()
+
+    // MARK: Init / deinit
+
+    init(client: APIClient = APIClient(baseURL: AppConfig.apiBaseURL)) {
+        self.client = client
+        super.init()
+        setupAudioSession()
+        setupRemoteCommands()
+        registerSystemObservers()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        let cc = MPRemoteCommandCenter.shared()
+        cc.playCommand.removeTarget(self)
+        cc.pauseCommand.removeTarget(self)
+        cc.nextTrackCommand.removeTarget(self)
+    }
+
+    // MARK: - Public API
+
+    func load(profileId: Int) async {
+        // Stop any current playback (sends summary if mid-session).
+        stopInternal(sendEvents: true)
+
+        _profileId = profileId
+        playerState = .loadingManifest
+
+        do {
+            let m: BulletinManifest = try await client.post(
+                "data/profiles/\(profileId)/manifest",
+                body: ManifestRequest()
+            )
+            manifest = m
+            _bulletinId = m.bulletinId
+            segments = m.segments
+            _storySegments = segments.filter { $0.isStory }
+            _storyUnits = Self.buildStoryUnits(from: segments)
+            _totalStoryDurationSeconds = _storyUnits.reduce(0) { $0 + $1.totalDurationSeconds }
+            storyCount = _storySegments.count
+            storyIndex = 0
+            currentUnitIndex = 0
+            globalPositionPct = 0
+
+            #if DEBUG
+            print("🎙 BulletinPlayer: manifest ok — \(segments.count) segments, \(storyCount) stories")
+            for seg in segments {
+                print("   [\(seg.index)] \(seg.type.padding(toLength: 12, withPad: " ", startingAt: 0))  \(seg.url.split(separator: "/").last ?? "?")")
+            }
+            #endif
+
+            setupQueuePlayer()
+            #if DEBUG
+            print("🎙 BulletinPlayer: setupQueuePlayer done — setting .buffering")
+            #endif
+            playerState = .buffering
+
+        } catch {
+            #if DEBUG
+            print("🎙 BulletinPlayer: load failed — \(error)")
+            #endif
+            playerState = .failed(error.localizedDescription)
+        }
+    }
+
+    func play() {
+        switch playerState {
+        case .buffering, .paused, .stalled:
+            activateAudioSession()
+            player?.play()
+            if playerState != .stalled { playerState = .playing }
+        default:
+            break
+        }
+    }
+
+    func pause() {
+        guard playerState == .playing || playerState == .stalled else { return }
+        player?.pause()
+        cancelStallTimer()
+        playerState = .paused
+    }
+
+    func togglePlayPause() {
+        if playerState == .playing || playerState == .stalled { pause() } else { play() }
+    }
+
+    func skip() {
+        guard let p = player else { return }
+
+        // Fire skipped event for the current story before advancing.
+        if let seg = currentSegment, seg.isStory, let hash = seg.storyHash {
+            let ev = StoryEvent(storyHash: hash, action: "skipped", positionPct: currentPositionPct)
+            fireEvent(ev)
+            accumulatedEvents.append(ev)
+        }
+        prevOutcome = .userSkip
+
+        // Remove the following transition (if any) so we land on the next story.
+        let items = p.items()
+        if items.count >= 2 {
+            let next = items[1]
+            if let nextSeg = itemSegmentMap[ObjectIdentifier(next)], nextSeg.type == "transition" {
+                let key = ObjectIdentifier(next)
+                p.remove(next)
+                itemObservations.removeValue(forKey: key)
+                itemSegmentMap.removeValue(forKey: key)
+                // Fill the gap with the next un-enqueued segment.
+                enqueueNext()
+            }
+        }
+
+        p.advanceToNextItem()
+    }
+
+    func stop() {
+        stopInternal(sendEvents: true)
+    }
+
+    func sendSummary() {
+        guard let pid = _profileId, let bid = _bulletinId else { return }
+
+        // Append abandoned event for the story currently mid-play.
+        if let seg = currentSegment, seg.isStory, let hash = seg.storyHash,
+           playerState == .playing || playerState == .paused || playerState == .stalled {
+            let ev = StoryEvent(storyHash: hash, action: "abandoned", positionPct: currentPositionPct)
+            accumulatedEvents.append(ev)
+        }
+
+        guard !accumulatedEvents.isEmpty else { return }
+
+        let events = accumulatedEvents
+        accumulatedEvents = []
+
+        let req = SummaryRequest(
+            profileId: pid,
+            events: events.map { .init(storyHash: $0.storyHash, action: $0.action, positionPct: $0.positionPct) }
+        )
+        Task { _ = try? await self.client.post("data/bulletins/\(bid)/summary", body: req) as StatusResponse }
+    }
+
+    // MARK: - Audio session
+
+    private func setupAudioSession() {
+        activateAudioSession()
+    }
+
+    private func activateAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            #if DEBUG
+            print("⚠️ BulletinPlayer audio session: \(error)")
+            #endif
+        }
+    }
+
+    // MARK: - System observers (interruptions + headphone unplug)
+
+    private func registerSystemObservers() {
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleInterruption),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleRouteChange),
+            name: AVAudioSession.routeChangeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleInterruption(_ note: Notification) {
+        guard let ui = note.userInfo,
+              let raw = ui[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            if playerState == .playing { player?.pause(); playerState = .paused }
+        case .ended:
+            if let optRaw = ui[AVAudioSessionInterruptionOptionKey] as? UInt,
+               AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume) { play() }
+        @unknown default: break
+        }
+    }
+
+    @objc private func handleRouteChange(_ note: Notification) {
+        guard let ui = note.userInfo,
+              let raw = ui[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable,
+              playerState == .playing else { return }
+        player?.pause()
+        playerState = .paused
+    }
+
+    // MARK: - Remote command center
+
+    private func setupRemoteCommands() {
+        let cc = MPRemoteCommandCenter.shared()
+        cc.playCommand.addTarget  { [weak self] _ in self?.play();  return .success }
+        cc.pauseCommand.addTarget { [weak self] _ in self?.pause(); return .success }
+        cc.nextTrackCommand.addTarget { [weak self] _ in self?.skip(); return .success }
+        cc.nextTrackCommand.isEnabled      = true
+        cc.previousTrackCommand.isEnabled  = false
+        cc.changePlaybackPositionCommand.isEnabled = false
+    }
+
+    // MARK: - Queue player lifecycle
+
+    private func setupQueuePlayer() {
+        teardownQueuePlayer()
+
+        let q = AVQueuePlayer()
+        q.automaticallyWaitsToMinimizeStalling = false   // tunable
+        player = q
+
+        // Observe currentItem to detect item advancement.
+        q.publisher(for: \.currentItem)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] item in self?.handleCurrentItemChanged(item) }
+            .store(in: &cancellables)
+
+        // Observe timeControlStatus for stall detection.
+        q.publisher(for: \.timeControlStatus)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] status in self?.handleTimeControlStatus(status) }
+            .store(in: &cancellables)
+
+        // 0.1s periodic time observer for position tracking.
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+        timeObserver = q.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            MainActor.assumeIsolated { self?.handlePeriodicTime(time) }
+        }
+
+        // Initial sliding window: load first 2 segments.
+        nextEnqueueIdx = 0
+        enqueueNext()
+        enqueueNext()
+    }
+
+    private func teardownQueuePlayer() {
+        cancelStallTimer()
+        if let obs = timeObserver { player?.removeTimeObserver(obs); timeObserver = nil }
+        player?.pause()
+        player = nil
+        cancellables.removeAll()
+        itemObservations.removeAll()
+        itemSegmentMap.removeAll()
+        nextEnqueueIdx = 0
+    }
+
+    private func stopInternal(sendEvents: Bool) {
+        if sendEvents { sendSummary() }
+        teardownQueuePlayer()
+        manifest       = nil
+        segments       = []
+        _storySegments = []
+        _storyUnits    = []
+        _totalStoryDurationSeconds = 0
+        storyCount     = 0
+        storyIndex     = 0
+        currentUnitIndex     = 0
+        currentSegment       = nil
+        positionSeconds      = 0
+        currentPositionPct   = 0
+        globalPositionPct    = 0
+        consumedStoryHashes  = []
+        accumulatedEvents    = []
+        prevOutcome          = .natural
+        lastSkipBackTime     = nil
+        _profileId           = nil
+        _bulletinId          = nil
+        playerState          = .idle
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    // MARK: - Sliding window enqueue
+
+    private func enqueueNext() {
+        guard let p = player, nextEnqueueIdx < segments.count else { return }
+        let seg = segments[nextEnqueueIdx]
+        nextEnqueueIdx += 1
+
+        guard let url = URL(string: seg.url) else {
+            enqueueNext()   // skip malformed URL, try next
+            return
+        }
+
+        let item = AVPlayerItem(url: url)
+        let key  = ObjectIdentifier(item)
+        itemSegmentMap[key] = seg
+        p.insert(item, after: nil)
+
+        #if DEBUG
+        print("🎙 enqueue [\(seg.index)] \(seg.type)  \(url.lastPathComponent)")
+        #endif
+
+        // Observe readyToPlay (triggers N+2 pre-fetch) and failed (silent skip).
+        itemObservations[key] = item.publisher(for: \.status)
+            .receive(on: RunLoop.main)
+            .sink { [weak self, weak item] status in
+                guard let self, let item else { return }
+                let label = self.itemSegmentMap[ObjectIdentifier(item)].map { "[\($0.index)] \($0.type)" } ?? "?"
+                switch status {
+                case .readyToPlay:
+                    #if DEBUG
+                    print("🎙 readyToPlay \(label)")
+                    #endif
+                    self.enqueueNext()
+                case .failed:
+                    #if DEBUG
+                    let err = item.error?.localizedDescription ?? "unknown"
+                    print("🎙 FAILED \(label) — \(err)")
+                    #endif
+                    self.handleItemFailed(item)
+                default:
+                    break
+                }
+            }
+    }
+
+    // MARK: - Playback callbacks
+
+    private func handleCurrentItemChanged(_ item: AVPlayerItem?) {
+        #if DEBUG
+        if let item {
+            let label = itemSegmentMap[ObjectIdentifier(item)].map { "[\($0.index)] \($0.type)" } ?? "unknown"
+            print("🎙 currentItemChanged → \(label)  playerState=\(playerState)")
+        } else {
+            print("🎙 currentItemChanged → nil (queue exhausted)  playerState=\(playerState)")
+        }
+        #endif
+        let prevSeg = currentSegment
+        let outcome = prevOutcome
+        prevOutcome = .natural
+
+        // Fire completion event for the previous story on natural advancement.
+        if let prev = prevSeg, prev.isStory, let hash = prev.storyHash, outcome == .natural {
+            let ev = StoryEvent(storyHash: hash, action: "completed", positionPct: 1.0)
+            fireEvent(ev)
+            accumulatedEvents.append(ev)
+            consumedStoryHashes.insert(hash)
+        }
+
+        guard let item = item else {
+            currentSegment = nil
+            // Guard against spurious nil from AVQueuePlayer init AND from seek queue rebuilds.
+            // seekToStoryUnit sets playerState = .buffering before removeAllItems() so both
+            // cases are covered by the same check.
+            guard playerState != .buffering else { return }
+            playerState    = .ended
+            updateNowPlaying()
+            return
+        }
+
+        let seg = itemSegmentMap[ObjectIdentifier(item)]
+        currentSegment     = seg
+        positionSeconds    = 0
+        currentPositionPct = 0
+
+        if let seg {
+            if let unit = storyUnit(forSegment: seg) {
+                currentUnitIndex = unit.index
+                if seg.isStory { storyIndex = unit.index }
+            }
+        }
+
+        updateNowPlaying()
+    }
+
+    private func handleTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
+        #if DEBUG
+        let statusName = status == .playing ? "playing" : status == .paused ? "paused" : "waitingToPlay"
+        print("🎙 timeControlStatus → \(statusName)  playerState=\(playerState)")
+        #endif
+        switch status {
+        case .playing:
+            cancelStallTimer()
+            stallCount = 0
+            if playerState == .buffering || playerState == .stalled { playerState = .playing }
+        case .waitingToPlayAtSpecifiedRate:
+            // Only start stall detection during active playback (not initial buffering).
+            if playerState == .playing {
+                playerState = .stalled
+                startStallTimer()
+            }
+        case .paused:
+            cancelStallTimer()
+        @unknown default:
+            break
+        }
+    }
+
+    private func handlePeriodicTime(_ time: CMTime) {
+        let secs = CMTimeGetSeconds(time)
+        guard secs.isFinite else { return }
+        positionSeconds = secs
+
+        if let seg = currentSegment, seg.isStory {
+            currentPositionPct = seg.durationSeconds > 0 ? min(1.0, secs / seg.durationSeconds) : 0
+        }
+
+        updateGlobalPosition(positionWithinSegment: secs)
+
+        // Keep lock screen elapsed time current without rebuilding the full info dict.
+        if var info = MPNowPlayingInfoCenter.default().nowPlayingInfo {
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = secs
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        }
+    }
+
+    private func updateGlobalPosition(positionWithinSegment secs: Double) {
+        guard let seg = currentSegment,
+              let unit = storyUnit(forSegment: seg),
+              _totalStoryDurationSeconds > 0 else { return }
+
+        let offsetInUnit: Double
+        if let trans = unit.transitionSegment, seg.index == trans.index {
+            offsetInUnit = secs  // inside the transition part
+        } else {
+            offsetInUnit = unit.transitionDurationSeconds + secs  // inside the story part
+        }
+
+        let absolute = unit.cumulativeStartSeconds + offsetInUnit
+        globalPositionPct = min(1.0, absolute / _totalStoryDurationSeconds)
+    }
+
+    private func handleItemFailed(_ item: AVPlayerItem) {
+        #if DEBUG
+        print("⚠️ BulletinPlayer: item failed — \(item.error?.localizedDescription ?? "unknown")")
+        #endif
+        prevOutcome = .stallSkip
+        if player?.currentItem === item {
+            player?.advanceToNextItem()
+        } else {
+            let key = ObjectIdentifier(item)
+            player?.remove(item)
+            itemObservations.removeValue(forKey: key)
+            itemSegmentMap.removeValue(forKey: key)
+            enqueueNext()  // replace the failed item in the window
+        }
+    }
+
+    // MARK: - Seek / navigation
+
+    /// Jump to story unit `index`, optionally at `offsetSeconds` within that unit
+    /// (0 = start of its transition, or story if no transition).
+    func seekToStoryUnit(at index: Int, offsetSeconds: Double = 0) {
+        let clamped = max(0, min(index, _storyUnits.count - 1))
+        guard clamped < _storyUnits.count, let p = player else { return }
+        let unit = _storyUnits[clamped]
+        let wasPlaying = playerState == .playing || playerState == .stalled
+
+        // Fire skipped event for the current story when seeking forward.
+        if clamped > storyIndex, let seg = currentSegment, seg.isStory,
+           let hash = seg.storyHash {
+            let ev = StoryEvent(storyHash: hash, action: "skipped", positionPct: currentPositionPct)
+            fireEvent(ev)
+            accumulatedEvents.append(ev)
+        }
+        prevOutcome = .userSkip
+
+        // Determine which segment to start from and the seek offset within it.
+        let startArrayIdx: Int
+        let seekSeconds: Double
+        if offsetSeconds < unit.transitionDurationSeconds,
+           let trans = unit.transitionSegment,
+           let idx = segments.firstIndex(where: { $0.index == trans.index }) {
+            startArrayIdx = idx
+            seekSeconds   = offsetSeconds
+        } else if let idx = segments.firstIndex(where: { $0.index == unit.storySegment.index }) {
+            startArrayIdx = idx
+            seekSeconds   = max(0, offsetSeconds - unit.transitionDurationSeconds)
+        } else {
+            return
+        }
+
+        // Update tracking immediately for responsive UI.
+        storyIndex       = clamped
+        currentUnitIndex = clamped
+
+        // Set .buffering BEFORE removeAllItems(). The currentItemChanged(nil) KVO is deferred
+        // to the next RunLoop iteration via .receive(on: RunLoop.main), so playerState must
+        // already be .buffering by then to satisfy the existing nil guard. _isSeeking would
+        // be set synchronously and cleared before the deferred callback fires — wrong timing.
+        playerState = .buffering
+        p.pause()
+        p.removeAllItems()
+        itemObservations.removeAll()
+        itemSegmentMap.removeAll()
+
+        nextEnqueueIdx = startArrayIdx
+        enqueueNext()
+        enqueueNext()
+
+        if seekSeconds > 0 {
+            let t = CMTime(seconds: seekSeconds, preferredTimescale: 600)
+            p.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if wasPlaying { self.player?.play() }
+                }
+            }
+        } else {
+            if wasPlaying { p.play() }
+        }
+    }
+
+    /// Seek to a fraction (0–1) across the story-unit timeline.
+    func seekToGlobalFraction(_ fraction: Double) {
+        guard !_storyUnits.isEmpty, _totalStoryDurationSeconds > 0 else { return }
+        let targetSecs = max(0, min(1, fraction)) * _totalStoryDurationSeconds
+
+        var unitIndex    = _storyUnits.count - 1
+        var offsetInUnit = _storyUnits.last!.totalDurationSeconds
+
+        for unit in _storyUnits {
+            let unitEnd = unit.cumulativeStartSeconds + unit.totalDurationSeconds
+            if targetSecs <= unitEnd {
+                unitIndex    = unit.index
+                offsetInUnit = targetSecs - unit.cumulativeStartSeconds
+                break
+            }
+        }
+
+        seekToStoryUnit(at: unitIndex, offsetSeconds: max(0, offsetInUnit))
+    }
+
+    /// Skip backward: restart current unit, or go to previous unit if near the start
+    /// or called again within 2 s (standard podcast double-tap-back pattern).
+    func skipBack() {
+        let now = Date()
+        let nearStart    = positionSeconds < 2.0
+        let recentBack   = lastSkipBackTime.map { now.timeIntervalSince($0) < 2.0 } ?? false
+
+        if nearStart || recentBack {
+            seekToStoryUnit(at: max(0, currentUnitIndex - 1))
+        } else {
+            seekToStoryUnit(at: currentUnitIndex)
+        }
+        lastSkipBackTime = now
+    }
+
+    // MARK: - Stall detection
+
+    private func startStallTimer() {
+        cancelStallTimer()
+        stallTimer = Timer.scheduledTimer(withTimeInterval: stallTimeout, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleStallTimeout() }
+        }
+    }
+
+    private func cancelStallTimer() {
+        stallTimer?.invalidate()
+        stallTimer = nil
+    }
+
+    private func handleStallTimeout() {
+        stallCount += 1
+        if stallCount >= stallMaxCount {
+            stallCount  = 0
+            prevOutcome = .stallSkip
+            // Reset to .playing so stall detection can start fresh for the next item.
+            playerState = .playing
+            player?.advanceToNextItem()
+        } else {
+            startStallTimer()
+        }
+    }
+
+    // MARK: - Story unit helpers
+
+    /// Returns the StoryUnit that contains the given segment (transition or story).
+    private func storyUnit(forSegment seg: ManifestSegment) -> StoryUnit? {
+        _storyUnits.first {
+            $0.storySegment.index == seg.index ||
+            $0.transitionSegment?.index == seg.index
+        }
+    }
+
+    /// Builds the ordered story-unit list with pre-computed cumulative start times.
+    static func buildStoryUnits(from segments: [ManifestSegment]) -> [StoryUnit] {
+        var units: [StoryUnit] = []
+        var pendingTransition: ManifestSegment?
+        var cumulativeSecs = 0.0
+
+        for seg in segments {
+            switch seg.type {
+            case "transition":
+                pendingTransition = seg
+            case "story":
+                let unit = StoryUnit(
+                    index: units.count,
+                    transitionSegment: pendingTransition,
+                    storySegment: seg,
+                    cumulativeStartSeconds: cumulativeSecs
+                )
+                cumulativeSecs += unit.totalDurationSeconds
+                units.append(unit)
+                pendingTransition = nil
+            default:
+                pendingTransition = nil   // sting / intro / outro reset the pending transition
+            }
+        }
+        return units
+    }
+
+    // MARK: - Event firing
+
+    private func fireEvent(_ ev: StoryEvent) {
+        guard let pid = _profileId, let bid = _bulletinId else { return }
+        let req = EventRequest(
+            profileId:   pid,
+            storyHash:   ev.storyHash,
+            action:      ev.action,
+            positionPct: ev.positionPct
+        )
+        Task { _ = try? await self.client.post("data/bulletins/\(bid)/event", body: req) as StatusResponse }
+    }
+
+    // MARK: - Lock screen
+
+    private func updateNowPlaying() {
+        guard let seg = currentSegment else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            return
+        }
+        let title = seg.isStory ? (seg.title ?? "Headlines") : "Headlines"
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle:                   title,
+            MPMediaItemPropertyArtist:                  "Headlines",
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: positionSeconds,
+            MPMediaItemPropertyPlaybackDuration:        seg.durationSeconds,
+            MPNowPlayingInfoPropertyPlaybackRate:       (playerState == .playing) ? 1.0 : 0.0,
+        ]
+        if seg.isStory, storyCount > 0 {
+            info[MPNowPlayingInfoPropertyChapterNumber] = storyIndex + 1
+            info[MPNowPlayingInfoPropertyChapterCount]  = storyCount
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+}

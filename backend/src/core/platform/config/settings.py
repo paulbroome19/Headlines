@@ -33,10 +33,14 @@ class Settings(BaseSettings):
     # LLM fallback categoriser
     anthropic_api_key: str | None = None
     fallback_model: str = "claude-haiku-4-5-20251001"
+    enable_llm_categorise_fallback: bool = True
 
     # Scheduled ingest
     enable_scheduled_ingest: bool = False
     ingest_interval_minutes: int = 30
+
+    # Public API base URL — used to construct absolute URLs in manifest responses
+    public_api_base_url: str = "http://localhost:8000"
 
     # TTS
     tts_provider: str = "elevenlabs"

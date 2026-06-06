@@ -3,6 +3,7 @@ import SwiftUI
 struct BriefingView: View {
 
     @StateObject private var vm = BriefingViewModel()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingProfilePicker = false
     @State private var showingCreateProfile = false
     @State private var showingEditProfile   = false
@@ -21,6 +22,13 @@ struct BriefingView: View {
         .background(Color(.systemBackground).ignoresSafeArea())
         .task {
             if case .idle = vm.state { await vm.loadProfiles() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:  vm.handleBackground()
+            case .active:      vm.handleForeground()
+            default:           break
+            }
         }
         .sheet(isPresented: $showingProfilePicker) {
             ProfileListView(profiles: vm.profiles, selected: vm.selectedProfile) {
@@ -45,29 +53,10 @@ struct BriefingView: View {
 
     private var header: some View {
         HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(contextLabel.uppercased())
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.tertiary)
-                    .kerning(0.8)
-
-                Button {
-                    guard vm.profiles.count > 1 else { return }
-                    showingProfilePicker = true
-                } label: {
-                    HStack(spacing: 5) {
-                        Text(vm.selectedProfile?.name ?? "Headlines")
-                            .font(.title2.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        if vm.profiles.count > 1 {
-                            Image(systemName: "chevron.down")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-            }
+            Text(vm.briefingLabel.uppercased())
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.tertiary)
+                .kerning(0.8)
 
             Spacer()
 
@@ -197,19 +186,24 @@ struct BriefingView: View {
     private var playerSection: some View {
         switch vm.state {
         case .generating:
-            statusView("Generating briefing…")
+            statusView("Fetching bulletin…")
         case .downloadingAudio:
-            statusView("Downloading audio…")
+            statusView("Preparing audio…")
         case .readyToPlay, .playing, .paused, .ended:
             PlayerView(
+                nowPlayingTitle: vm.nowPlayingTitle,
                 progress: vm.progress,
                 duration: vm.audioDuration,
+                globalProgress: vm.globalProgress,
+                totalDuration: vm.totalStoryDuration,
+                storyUnits: vm.bulletinPlayer.storyUnits,
                 canTogglePlayPause: vm.canTogglePlayPause,
                 isPlaying: vm.state == .playing,
                 canNavigate: vm.hasStoryTimings,
                 onPrevious: vm.previousStory,
                 onTogglePlayPause: vm.togglePlayPause,
-                onNext: vm.nextStory
+                onNext: vm.nextStory,
+                onSeek: vm.seekToGlobalFraction
             )
         default:
             idleView
@@ -272,22 +266,12 @@ struct BriefingView: View {
                 .frame(height: 0.5)
                 .padding(.bottom, 20)
 
-            HStack(alignment: .firstTextBaseline) {
-                Text("\(bulletin.storyCount) \(bulletin.storyCount == 1 ? "story" : "stories")".uppercased())
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.tertiary)
-                    .kerning(0.5)
-                Spacer()
-                if !bulletin.bulletinCached {
-                    Text("Fresh")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .overlay(Capsule().strokeBorder(Color(.separator), lineWidth: 0.5))
-                }
-            }
-            .padding(.bottom, 18)
+            Text("\(bulletin.storyCount) \(bulletin.storyCount == 1 ? "story" : "stories")".uppercased())
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.tertiary)
+                .kerning(0.5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 18)
 
             if !bulletin.stories.isEmpty {
                 storyRows(bulletin.stories)
@@ -298,18 +282,19 @@ struct BriefingView: View {
     private func storyRows(_ stories: [BulletinStory]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(stories.enumerated()), id: \.element.id) { index, story in
-                let isCurrent = vm.currentStoryIndex == index
+                let isCurrent  = vm.currentStoryIndex == index
+                let isConsumed = vm.consumedStoryHashes.contains(story.id)
+
                 HStack(alignment: .top, spacing: 12) {
-                    Text("\(index + 1)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(isCurrent ? Color.accentColor : Color(.quaternaryLabel))
-                        .frame(width: 18, alignment: .trailing)
-                        .padding(.top, 2)
+                    // Status indicator column
+                    storyStatusIcon(isCurrent: isCurrent, isConsumed: isConsumed)
+                        .frame(width: 18, alignment: .center)
+                        .padding(.top, 3)
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(story.headline)
                             .font(.subheadline)
-                            .foregroundStyle(isCurrent ? .primary : Color(.label).opacity(0.7))
+                            .foregroundStyle(isCurrent ? .primary : Color(.label).opacity(isConsumed ? 0.45 : 0.7))
                             .fixedSize(horizontal: false, vertical: true)
 
                         if let category = story.category {
@@ -332,23 +317,30 @@ struct BriefingView: View {
                 .contentShape(Rectangle())
                 .onTapGesture { vm.seekToStory(at: index) }
                 .animation(.easeInOut(duration: 0.2), value: isCurrent)
+                .animation(.easeInOut(duration: 0.3), value: isConsumed)
             }
         }
         .padding(.horizontal, -8)
+    }
+
+    @ViewBuilder
+    private func storyStatusIcon(isCurrent: Bool, isConsumed: Bool) -> some View {
+        if isCurrent {
+            PlayingBarsView()
+        } else if isConsumed {
+            Image(systemName: "checkmark")
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(Color(.tertiaryLabel))
+        } else {
+            Circle()
+                .fill(Color(.quaternaryLabel))
+                .frame(width: 5, height: 5)
+        }
     }
 
     private func categoryDisplay(_ slug: String) -> String {
         slug.split(separator: ".").first.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? slug
     }
 
-    // MARK: - Helpers
-
-    private var contextLabel: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        switch hour {
-        case 5..<12:  return "Morning briefing"
-        case 12..<17: return "Afternoon briefing"
-        default:      return "Evening briefing"
-        }
-    }
 }
+

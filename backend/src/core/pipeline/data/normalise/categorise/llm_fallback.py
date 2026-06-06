@@ -5,10 +5,9 @@ could not classify.
 Called only when the YAML pass returns score=0 across all rules.
 Calls the Anthropic Messages API directly via stdlib urllib — no SDK dependency.
 
-Configuration (environment variables):
+Configuration (via settings / backend/.env):
   ANTHROPIC_API_KEY   Required. Absent → fallback silently disabled (no crash).
   FALLBACK_MODEL      Optional. Default: claude-haiku-4-5-20251001.
-                      Swap the model without touching code.
 
 The caller decides whether to persist based on result.accepted
 (confidence >= FALLBACK_CONFIDENCE_THRESHOLD).
@@ -17,10 +16,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+
+from core.platform.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,7 @@ _TIMEOUT_SECONDS = 15
 
 
 def _model() -> str:
-    """Return the model name from env, with a sensible default."""
-    return os.environ.get("FALLBACK_MODEL", "claude-haiku-4-5-20251001")
+    return settings.fallback_model
 
 
 @dataclass(frozen=True)
@@ -82,7 +81,7 @@ def classify_fallback(
     Returns a FallbackResult (always, for logging) or None on API failure.
     The caller checks result.accepted to decide whether to persist.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = settings.anthropic_api_key
     if not api_key:
         return None
 

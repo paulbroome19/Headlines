@@ -68,25 +68,119 @@ def ext_from_format(audio_format: str) -> str:
 
 
 def compute_script_hash(script: str) -> str:
-    """16-char SHA-256 hex of the bulletin script. Used as cache key."""
+    """16-char SHA-256 hex of the segment or bulletin script. Cache key."""
     return hashlib.sha256(script.encode()).hexdigest()[:16]
 
 
-def mp3_duration(path: str) -> float | None:
+def _mp3_frame_info(data: bytes) -> tuple[int, int] | None:
     """
-    Return MP3 duration in seconds by scanning frame headers.
-    Uses only stdlib — no mutagen dependency.
-    Returns None if the file cannot be read or parsed.
+    Return (bitrate_kbps, sample_rate_hz) from the first valid MPEG1 Layer3
+    frame in data, or None if no frame is found.
+    Used by concatenate_mp3 to detect cross-chunk format mismatches.
     """
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
-        return None
-
-    # Skip ID3v2 tag if present
+    _sample_rates = {0: 44100, 1: 48000, 2: 32000}
+    _bitrates = {
+        1: 32, 2: 40, 3: 48, 4: 56, 5: 64, 6: 80, 7: 96,
+        8: 112, 9: 128, 10: 160, 11: 192, 12: 224, 13: 256, 14: 320,
+    }
     offset = 0
-    if data[:3] == b"ID3":
+    if len(data) >= 10 and data[:3] == b"ID3":
+        tag_size = (
+            ((data[6] & 0x7F) << 21) |
+            ((data[7] & 0x7F) << 14) |
+            ((data[8] & 0x7F) << 7) |
+             (data[9] & 0x7F)
+        )
+        offset = 10 + tag_size
+    n = len(data)
+    while offset < n - 4:
+        b = data[offset:offset + 4]
+        if b[0] == 0xFF and (b[1] & 0xE0) == 0xE0:
+            mpeg_version = (b[1] >> 3) & 0x3
+            layer        = (b[1] >> 1) & 0x3
+            bitrate_idx  = (b[2] >> 4) & 0xF
+            sr_idx       = (b[2] >> 2) & 0x3
+            if mpeg_version == 3 and layer == 1 and bitrate_idx in _bitrates:
+                sr = _sample_rates.get(sr_idx)
+                if sr:
+                    return _bitrates[bitrate_idx], sr
+        offset += 1
+    return None
+
+
+def _strip_id3(data: bytes) -> bytes:
+    """
+    Return raw MPEG frames with ID3v2 header and ID3v1 footer removed.
+    Used to prepare chunks 2..N for MP3 concatenation.
+    """
+    start = 0
+    if len(data) >= 10 and data[:3] == b"ID3":
+        # ID3v2 tag size is a syncsafe integer: 4 × 7-bit bytes
+        tag_size = (
+            ((data[6] & 0x7F) << 21) |
+            ((data[7] & 0x7F) << 14) |
+            ((data[8] & 0x7F) << 7) |
+             (data[9] & 0x7F)
+        )
+        start = 10 + tag_size
+    end = len(data) - 128 if (len(data) >= 128 and data[-128:-125] == b"TAG") else len(data)
+    return data[start:end]
+
+
+def concatenate_mp3(chunks: list[bytes]) -> bytes:
+    """
+    Join MP3 byte chunks into a single decodable stream.
+
+    The first chunk is kept verbatim — its ID3v2 header and the initial sync
+    word are preserved so metadata-aware players get sample-rate / bitrate
+    hints. Every subsequent chunk has its ID3v2 header and ID3v1 footer
+    stripped so only raw MPEG frames are appended.
+
+    MP3 frames are self-contained: decoders re-sync at frame boundaries, so
+    the join points are transparent to AVAudioPlayer, ExoPlayer, and ffmpeg.
+    No re-encoding. No dependencies beyond stdlib.
+
+    Logs first chunk's bitrate/sample_rate (debug). Warns if any later chunk
+    differs — indicates a model/voice format change mid-bulletin that will
+    produce an audible artifact at that segment boundary.
+    """
+    if not chunks:
+        return b""
+    if len(chunks) == 1:
+        return chunks[0]
+
+    first_info = _mp3_frame_info(chunks[0])
+    if first_info:
+        logger.debug(
+            "concatenate_mp3: chunk[0]  bitrate=%dkbps  sample_rate=%dHz",
+            *first_info,
+        )
+    for n, chunk in enumerate(chunks[1:], start=1):
+        info = _mp3_frame_info(chunk)
+        if info and first_info and info != first_info:
+            logger.warning(
+                "concatenate_mp3: chunk[%d] format mismatch  "
+                "expected=%skbps/%sHz  got=%skbps/%sHz — audible artifact possible",
+                n, first_info[0], first_info[1], info[0], info[1],
+            )
+
+    return chunks[0] + b"".join(_strip_id3(c) for c in chunks[1:])
+
+
+def mp3_duration_from_bytes(data: bytes) -> float | None:
+    """
+    Return MP3 duration in seconds by scanning MPEG1 Layer3 frame headers.
+    Called on raw audio bytes immediately after synthesis — no filesystem access.
+    Returns None if no valid frames are found.
+    """
+    _sample_rates = {0: 44100, 1: 48000, 2: 32000}
+    _bitrates = {
+        1: 32, 2: 40, 3: 48, 4: 56, 5: 64, 6: 80, 7: 96,
+        8: 112, 9: 128, 10: 160, 11: 192, 12: 224, 13: 256, 14: 320,
+    }
+
+    offset = 0
+    if len(data) >= 10 and data[:3] == b"ID3":
         tag_size = (
             ((data[6] & 0x7F) << 21) |
             ((data[7] & 0x7F) << 14) |
@@ -94,13 +188,6 @@ def mp3_duration(path: str) -> float | None:
              (data[9] & 0x7F)
         )
         offset = 10 + tag_size
-
-    # MPEG1 Layer3 sample rate and bitrate tables
-    _sample_rates = {0: 44100, 1: 48000, 2: 32000}
-    _bitrates = {
-        1: 32, 2: 40, 3: 48, 4: 56, 5: 64, 6: 80, 7: 96,
-        8: 112, 9: 128, 10: 160, 11: 192, 12: 224, 13: 256, 14: 320,
-    }
 
     total_samples = 0
     sample_rate = None
@@ -128,6 +215,19 @@ def mp3_duration(path: str) -> float | None:
     if sample_rate and total_samples > 0:
         return total_samples / sample_rate
     return None
+
+
+def mp3_duration(path: str) -> float | None:
+    """
+    Return MP3 duration in seconds for a file on disk.
+    Returns None if the file cannot be read or parsed.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    return mp3_duration_from_bytes(data)
 
 
 def synthesize(

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 @MainActor
@@ -10,8 +11,8 @@ final class BriefingViewModel: ObservableObject {
         case loadingProfiles
         case noProfiles
         case profileSelected
-        case generating
-        case downloadingAudio
+        case generating       // fetching manifest
+        case downloadingAudio // manifest received, first segment loading
         case readyToPlay
         case playing
         case paused
@@ -24,31 +25,134 @@ final class BriefingViewModel: ObservableObject {
     @Published private(set) var state: State = .idle
     @Published private(set) var profiles: [Profile] = []
     @Published private(set) var selectedProfile: Profile?
-    @Published private(set) var bulletin: BulletinResult?
-    @Published private(set) var progress: Double = 0
-    @Published private(set) var audioDuration: TimeInterval = 0
-    @Published private(set) var currentStoryIndex: Int? = nil
 
     // MARK: - Dependencies
 
     let profileService: ProfileServicing
-    private let bulletinService: BulletinServicing
-    private let audioPlayer = AudioPlayer()
-    private var progressTimer: Timer?
+    let bulletinPlayer = BulletinPlayer()
+
+    private var cancellables = Set<AnyCancellable>()
+    private var lastBackgroundedAt: Date?
 
     // MARK: - Init
 
-    init(
-        profileService: ProfileServicing  = ProfileService(),
-        bulletinService: BulletinServicing = BulletinService()
-    ) {
-        self.profileService  = profileService
-        self.bulletinService = bulletinService
+    init(profileService: ProfileServicing = ProfileService()) {
+        self.profileService = profileService
+
+        // Forward BulletinPlayer state changes into BriefingViewModel.State.
+        bulletinPlayer.$playerState
+            .receive(on: RunLoop.main)
+            .sink { [weak self] ps in self?.syncPlayerState(ps) }
+            .store(in: &cancellables)
+
+        // Trigger UI refresh when story index or current segment changes.
+        bulletinPlayer.$currentSegment
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        bulletinPlayer.$storyIndex
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        bulletinPlayer.$currentPositionPct
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        bulletinPlayer.$globalPositionPct
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        bulletinPlayer.$currentUnitIndex
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        bulletinPlayer.$consumedStoryHashes
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
-    deinit { progressTimer?.invalidate() }
+    // MARK: - Computed (mapped from BulletinPlayer)
 
-    // MARK: - Computed
+    var progress: Double              { bulletinPlayer.currentPositionPct }
+    var audioDuration: TimeInterval   { bulletinPlayer.currentSegment?.durationSeconds ?? 0 }
+    var globalProgress: Double        { bulletinPlayer.globalPositionPct }
+    var totalStoryDuration: TimeInterval { bulletinPlayer.totalStoryDurationSeconds }
+    var currentStoryIndex: Int?       { activeStoryIndex }
+    var hasStoryTimings: Bool         { bulletinPlayer.storyCount > 0 }
+    var consumedStoryHashes: Set<String> { bulletinPlayer.consumedStoryHashes }
+
+    /// The hero headline shown above the player controls.
+    /// Returns a greeting before story 1 begins; the last story's title during the outro.
+    var nowPlayingTitle: String {
+        let units = bulletinPlayer.storyUnits
+        switch bulletinPlayer.currentSegment?.type {
+        case "transition", "story":
+            let idx = bulletinPlayer.currentUnitIndex
+            if idx < units.count, let title = units[idx].title { return title }
+            return greetingText
+        case "outro":
+            if let title = units.last?.title { return title }
+            return greetingText
+        default:
+            // nil (not loaded), "sting", or "intro" — show personalised greeting
+            return greetingText
+        }
+    }
+
+    /// "Morning Briefing" / "Afternoon Briefing" / "Evening Briefing" — top-left masthead.
+    var briefingLabel: String {
+        let tod = Self.timePeriod()
+        return tod.prefix(1).uppercased() + tod.dropFirst() + " Briefing"
+    }
+
+    private var greetingText: String {
+        let tod = Self.timePeriod()
+        if let name = selectedProfile?.name, !name.isEmpty {
+            return "Good \(tod), \(name)"
+        }
+        return "Good \(tod)"
+    }
+
+    /// Single source of truth for the time-of-day period used by both label and greeting.
+    /// Morning: before 12:00 · Afternoon: 12:00–16:59 · Evening: 17:00 onward.
+    private static func timePeriod() -> String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour < 12 { return "morning" }
+        if hour < 17 { return "afternoon" }
+        return "evening"
+    }
+
+    /// BulletinResult synthesised from the live manifest — keeps BriefingView unchanged.
+    var bulletin: BulletinResult? {
+        guard let m = bulletinPlayer.manifest else { return nil }
+        let stories = bulletinPlayer.storySegments.map { seg in
+            BulletinStory(
+                id:        seg.storyHash ?? String(seg.index),
+                headline:  seg.title ?? "",
+                category:  nil,
+                startTime: nil
+            )
+        }
+        return BulletinResult(
+            profileId:      bulletinPlayer.profileId ?? 0,
+            profileName:    selectedProfile?.name ?? "",
+            bulletinId:     m.bulletinId,
+            storyCount:     bulletinPlayer.storyCount,
+            bulletinCached: false,
+            script:         nil,
+            audioId:        nil,
+            audioUrl:       nil,
+            voice:          nil,
+            audioCached:    false,
+            stories:        stories
+        )
+    }
 
     var canGenerate: Bool {
         guard selectedProfile != nil else { return false }
@@ -59,17 +163,10 @@ final class BriefingViewModel: ObservableObject {
     }
 
     var canTogglePlayPause: Bool {
-        switch state {
-        case .readyToPlay, .playing, .paused: return true
+        switch bulletinPlayer.playerState {
+        case .buffering, .playing, .paused, .stalled: return true
         default: return false
         }
-    }
-
-    /// True when every story in the bulletin carries a start_time.
-    /// Controls are hidden until the backend provides this data.
-    var hasStoryTimings: Bool {
-        guard let stories = bulletin?.stories, !stories.isEmpty else { return false }
-        return stories.allSatisfy { $0.startTime != nil }
     }
 
     // MARK: - Profile management
@@ -85,11 +182,7 @@ final class BriefingViewModel: ObservableObject {
 
     func selectProfile(_ profile: Profile) {
         selectedProfile = profile
-        stopAudio()
-        bulletin          = nil
-        progress          = 0
-        audioDuration     = 0
-        currentStoryIndex = nil
+        bulletinPlayer.stop()
         state = .profileSelected
     }
 
@@ -97,92 +190,42 @@ final class BriefingViewModel: ObservableObject {
 
     func generateBulletin() async {
         guard let profile = selectedProfile else { return }
-
-        stopAudio()
-        bulletin          = nil
-        progress          = 0
-        audioDuration     = 0
-        currentStoryIndex = nil
-        state = .generating
-
-        do {
-            let result = try await bulletinService.generateBulletin(profileID: profile.id)
-            bulletin = result
-
-            guard let bulletinId = result.bulletinId else {
-                state = .failed("Bulletin generated but no audio is available yet.")
-                return
-            }
-
-            state = .downloadingAudio
-            let remoteURL = resolvedAudioURL(audioUrl: result.audioUrl, bulletinId: bulletinId)
-            #if DEBUG
-            print("🎵 bulletin audio URL: \(remoteURL)")
-            #endif
-            let localURL = try await AudioPlayer.download(from: remoteURL, id: bulletinId)
-            try audioPlayer.load(from: localURL)
-            audioDuration = audioPlayer.duration
-            progress      = 0
-            currentStoryIndex = resolveCurrentStoryIndex(at: 0)
-            state         = .readyToPlay
-
-        } catch {
-            state = .failed(error.localizedDescription)
-        }
+        await bulletinPlayer.load(profileId: profile.id)
     }
 
     // MARK: - Playback controls
 
-    func play() {
-        guard canTogglePlayPause else { return }
-        audioPlayer.play()
-        state = .playing
-        startProgressTimer()
+    func play()             { bulletinPlayer.play() }
+    func pause()            { bulletinPlayer.pause() }
+    func togglePlayPause()  { bulletinPlayer.togglePlayPause() }
+
+    func nextStory()        { bulletinPlayer.skip() }
+    func previousStory()    { bulletinPlayer.skipBack() }
+    func seekToStory(at index: Int) { bulletinPlayer.seekToStoryUnit(at: index) }
+    func seekToGlobalFraction(_ fraction: Double) { bulletinPlayer.seekToGlobalFraction(fraction) }
+
+    // MARK: - App lifecycle
+
+    func handleBackground() {
+        lastBackgroundedAt = Date()
+        bulletinPlayer.sendSummary()
     }
 
-    func pause() {
-        guard state == .playing else { return }
-        audioPlayer.pause()
-        stopProgressTimer()
-        state = .paused
-    }
-
-    func togglePlayPause() {
-        if state == .playing { pause() } else { play() }
-    }
-
-    // MARK: - Story navigation
-
-    func seekToStory(at index: Int) {
-        guard let bulletin = bulletin,
-              bulletin.stories.indices.contains(index),
-              let startTime = bulletin.stories[index].startTime,
-              audioDuration > 0 else { return }
-        audioPlayer.seek(to: startTime)
-        progress          = startTime / audioDuration
-        currentStoryIndex = index
-    }
-
-    func previousStory() {
-        guard let current = currentStoryIndex,
-              let bulletin = bulletin,
-              let startTime = bulletin.stories[current].startTime else { return }
-        // If more than 3 s into the current story, restart it; otherwise go to previous.
-        let elapsed = audioPlayer.currentTime - startTime
-        if elapsed > 3.0 {
-            seekToStory(at: current)
-        } else {
-            seekToStory(at: max(0, current - 1))
-        }
-    }
-
-    func nextStory() {
-        guard let current = currentStoryIndex,
-              let bulletin = bulletin else { return }
-        seekToStory(at: min(bulletin.stories.count - 1, current + 1))
+    func handleForeground() {
+        guard let bg = lastBackgroundedAt, Date().timeIntervalSince(bg) > 300 else { return }
+        lastBackgroundedAt = nil
+        guard selectedProfile != nil else { return }
+        Task { await generateBulletin() }
     }
 
     // MARK: - Private
+
+    private var activeStoryIndex: Int? {
+        switch bulletinPlayer.playerState {
+        case .playing, .paused, .stalled, .buffering: return bulletinPlayer.currentUnitIndex
+        default: return nil
+        }
+    }
 
     private func fetchProfiles() async {
         state = .loadingProfiles
@@ -204,60 +247,27 @@ final class BriefingViewModel: ObservableObject {
         }
     }
 
-    private func stopAudio() {
-        stopProgressTimer()
-        audioPlayer.stop()
-    }
-
-    private func startProgressTimer() {
-        stopProgressTimer()
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.tick() }
+    private func syncPlayerState(_ ps: BulletinPlayer.PlayerState) {
+        switch ps {
+        case .idle:
+            // Don't clobber profile-selection states driven by fetchProfiles.
+            break
+        case .loadingManifest:
+            state = .generating
+        case .buffering:
+            // Show PlayerView immediately so the user can see stories and tap play
+            // while the first audio segment finishes loading.
+            state = .readyToPlay
+        case .playing:
+            state = .playing
+        case .paused:
+            state = .paused
+        case .stalled:
+            state = .playing   // show as playing; buffering spinner handled at player level
+        case .ended:
+            state = .ended
+        case .failed(let msg):
+            state = .failed(msg)
         }
-    }
-
-    private func stopProgressTimer() {
-        progressTimer?.invalidate()
-        progressTimer = nil
-    }
-
-    private func tick() {
-        guard state == .playing else { return }
-        if audioPlayer.isAtEnd {
-            stopProgressTimer()
-            progress          = 1
-            currentStoryIndex = resolveCurrentStoryIndex(at: audioDuration)
-            state             = .ended
-            return
-        }
-        progress          = audioPlayer.progress
-        currentStoryIndex = resolveCurrentStoryIndex(at: audioPlayer.currentTime)
-    }
-
-    /// Returns the index of the story whose start_time is <= currentTime,
-    /// or nil if timing data is not available.
-    private func resolveCurrentStoryIndex(at currentTime: TimeInterval) -> Int? {
-        guard let stories = bulletin?.stories, !stories.isEmpty,
-              stories.first?.startTime != nil else { return nil }
-        var result: Int? = nil
-        for (i, story) in stories.enumerated() {
-            if let st = story.startTime, st <= currentTime {
-                result = i
-            }
-        }
-        return result
-    }
-
-    // Prefer a non-localhost audio_url from the server (S3/CDN).
-    // If the URL is localhost/127.0.0.1 (cached from a simulator run) or absent,
-    // fall back to the dev serving route resolved against AppConfig.apiBaseURL.
-    private func resolvedAudioURL(audioUrl: String?, bulletinId: Int) -> URL {
-        if let urlString = audioUrl,
-           let url = URL(string: urlString),
-           let host = url.host,
-           !["localhost", "127.0.0.1"].contains(host) {
-            return url
-        }
-        return bulletinService.audioFileURL(forBulletinID: bulletinId)
     }
 }

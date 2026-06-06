@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from core.platform.config.settings import settings
 from .category_loader import load_category_registry, load_valid_category_slugs
 from .category_matcher import match_categories
 from .entity_loader import load_entity_registry
@@ -57,6 +58,14 @@ def categorise_categories(
     )
 
     if not ranked:
+        if not settings.enable_llm_categorise_fallback:
+            return CategoryCategorisationResult(
+                category_slugs=[],
+                primary_category=None,
+                scores={},
+                method="unclassified",
+                version=category_registry.version,
+            )
         valid_slugs = list(load_valid_category_slugs())
         fb = classify_fallback(title, content_snippet, valid_slugs)
         if fb is not None and fb.accepted:

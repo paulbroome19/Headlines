@@ -1,5 +1,114 @@
 # Progress
 
+## Changes Made This Session (2026-05-25 — iOS device fixes, TestFlight prep, cost model restructure)
+
+### iOS — Build fixes
+
+**`ios/Headlines/Headlines/Core/BulletinPlayer.swift`**
+- Swift 6 concurrency fix: wrapped `handlePeriodicTime` call in `MainActor.assumeIsolated` (line ~377) — compiler error: `Call to main actor-isolated method in synchronous nonisolated context`
+- KVO nil-emission bug fix: added `guard playerState != .buffering else { return }` in `handleCurrentItemChanged` — `AVQueuePlayer` fires `currentItemChanged → nil` during init before items become current; previously caused premature `.ended` state → Play button disabled
+
+**`ios/Headlines/Headlines/Features/Briefing/BriefingView.swift`**
+- Updated `onChange(of:perform:)` to two-parameter form `{ _, phase in` — deprecated in iOS 17
+
+### iOS — TestFlight prep
+
+**`ios/Headlines/Headlines/Info.plist`**
+- Added `UIBackgroundModes: [audio]` — required for AVAudioSession to keep playing when screen locks or app is backgrounded
+- Added `NSExceptionDomains` entry for `192.168.1.111` (LAN IP) — `NSAllowsLocalNetworking` only covers `localhost`/`127.0.0.1`; Release builds need explicit ATS exception for LAN IP
+
+### Backend — Cost model restructure (GNews-only pull, LLM+TTS on-demand only)
+
+**`backend/src/core/platform/config/settings.py`**
+- Added `enable_llm_categorise_fallback: bool = True`
+
+**`backend/.env`**
+- Added `# ENABLE_LLM_CATEGORISE_FALLBACK=true` toggle comment
+
+**`backend/src/core/pipeline/data/normalise/categorise/category_service.py`**
+- Gated Haiku categorisation fallback on `settings.enable_llm_categorise_fallback` — early return to `unclassified` when disabled
+
+**`backend/src/core/pipeline/data/summarise/handlers/rank_completed.py`**
+- Extracted `ensure_story_summaries(ranking_run_id, story_ids)` as public function — 3-phase pattern: DB reads → parallel LLM (`ThreadPoolExecutor`, max 6 workers) → persist
+- Content-addressed cache: reuses `(story_id, content_hash, model)` rows from any previous run — zero LLM calls on cache hit
+- `handle_rank_completed` simplified to: deduplicate IDs → `ensure_story_summaries()` → emit outbox event
+
+**`backend/src/core/pipeline/devtools/pull_stories.py`**
+- Removed step 6 (LLM summarisation); now 5 steps — pull → normalise → cluster → categorise → rank
+- Summary line: `Paid API calls: GNews only (LLM categorise fallback if needed)`
+
+**`backend/src/core/api/routes/data.py`**
+- Added `_SUMMARISE_BUDGET = 12` constant
+- Refactored `_get_or_assemble_bulletin()` into two-session pattern:
+  - Session 1: ranking run lookup + cache check + candidate extraction (no summaries yet)
+  - `ensure_story_summaries()` call (no DB held open during LLM calls)
+  - Session 2: read summaries, select by duration, assemble, persist bulletin
+
+### Verification results
+- `pull_stories`: GNews only, 0 LLM calls, 0 TTS ✅
+- Cold Generate: 7 parallel LLM calls, 10 TTS background tasks, 7.56s manifest response
+- Warm Generate (full cache): 0 LLM, 0 TTS, ~100ms
+- New bulletin with shared stories: 0 LLM, 3 TTS (new segment text only), ~105ms
+
+### Current State
+- iOS: archive-ready except for app icon (user to provide 1024×1024 PNG, no alpha) and `API_BASE_URL` User-Defined build setting in Xcode
+- Backend: pull_stories is free (GNews only); all LLM+TTS deferred to Generate time
+- Next: app icon + Xcode build setting, then archive → TestFlight
+
+---
+
+## Changes Made This Session (2026-04-30 — Step 3 server completion + iOS streaming player)
+
+### Server-side (Step 3 pre-iOS cleanup)
+
+**Modified `platform/config/settings.py`:**
+- Added `public_api_base_url: str = "http://localhost:8000"` — used by manifest endpoint to construct absolute URLs
+
+**Modified `api/routes/profiles.py`:**
+- Manifest endpoint now uses `settings.public_api_base_url.rstrip("/")` to construct absolute URLs for all segment URLs
+- Story segments now include `"title"` field populated from `stories_list[].headline` — required for iOS lock screen / now playing info
+
+### iOS — Step 3 streaming playback (chunks a–h complete)
+
+**New `ios/.../Models/BulletinManifest.swift`:**
+- `ManifestSegment`: index, type, url, durationMs, storyHash, storyId, title; computed `isStory`, `durationSeconds`
+- `BulletinManifest`: bulletinId, rankingRunId, segments
+
+**New `ios/.../Core/BulletinPlayer.swift`:**
+- `@MainActor ObservableObject` backed by `AVQueuePlayer`
+- **a. Audio session:** `setCategory(.playback)` + interruption handler (pause on began, resume if shouldResume) + route change handler (pause on headphone unplug)
+- **b+c. Sliding window:** `enqueueNext()` called twice initially; item N's `readyToPlay` triggers N+2 pre-fetch via Combine publisher; `automaticallyWaitsToMinimizeStalling = false`
+- **d. Event firing:** `addPeriodicTimeObserver` at 0.1s; `currentPositionPct` = positionSeconds / durationSeconds; "completed" fires on natural item advancement, "skipped" on skip(), "abandoned" on sendSummary()
+- **e. Skip:** fires "skipped" event, removes following transition if present, calls `advanceToNextItem()`
+- **f. Failure paths:** 4s stall timeout (2×2s); item failure (503) → silent skip via `handleItemFailed()`; manifest fetch failure → `state = .failed(msg)`
+- **g. Lock screen:** `MPNowPlayingInfoCenter` updated on segment change (title, artist "Headlines", duration, chapter N of M); `MPRemoteCommandCenter` play/pause/nextTrack
+- **h. Summary + lifecycle:** `sendSummary()` batches accumulated events + current abandoned event via `POST /data/bulletins/{id}/summary`; `accumulatedEvents` accumulates per-session events for the safety net
+- State machine: idle → loadingManifest → buffering → playing/paused/stalled → ended/failed
+
+**Replaced `ios/.../Features/Briefing/BriefingViewModel.swift`:**
+- Removed `AudioPlayer` + `BulletinService` dependencies
+- Added `BulletinPlayer` owned by the VM; Combine sinks forward player state to `BriefingViewModel.State`
+- `generateBulletin()` → `bulletinPlayer.load(profileId:)`
+- `bulletin: BulletinResult?` synthesised from manifest (stories with title+storyHash, no startTime)
+- `handleBackground()` / `handleForeground()` for lifecycle (5-min re-fetch on foreground)
+
+**Modified `ios/.../Features/Briefing/BriefingView.swift`:**
+- Added `@Environment(\.scenePhase)` + `.onChange(of:)` → `vm.handleBackground/Foreground()`
+- State label: `.generating` → "Fetching bulletin…", `.downloadingAudio` → "Preparing audio…"
+- `.buffering` maps to `.readyToPlay` — PlayerView shows immediately after manifest loads
+
+**Updated Xcode project (`project.pbxproj`):**
+- Added `BulletinPlayer.swift` to Core group
+- Added `BulletinManifest.swift` to Models group
+- Both in Sources build phase
+
+**Build result:** `** BUILD SUCCEEDED **` (no errors, iOS Simulator target)
+
+### Current State
+- Server: manifest endpoint returns absolute URLs + title fields; user_story_state tracking complete
+- iOS: full streaming playback implemented; events fire; lock screen works; lifecycle handled
+- Next: device testing, PlaybackView migration (old AVAudioPlayer-based flow still exists in PlaybackView)
+
 ## What Is Working
 
 ### Full event chain (end-to-end: Ingest → Normalise → Cluster → Categorise → Rank → Summarise)
@@ -797,6 +906,100 @@ Shared/Components/ — generic reusable views only
 **iOS `ProfileListView.swift`** — subtitle changed from "N stories ·" to "N min ·"
 
 **Build result:** `BUILD SUCCEEDED`
+
+## Changes Made This Session (2026-04-29 — audio experience wiring + validation)
+
+### Gaps closed
+
+**`src/core/pipeline/data/summarise/handlers/rank_completed.py`** — category pass-through:
+- Added `story_categories: dict[str, str | None] = {}` to Phase 1 locals
+- Batch-queries `data.stories.primary_category` for all pending story IDs in Phase 1 DB session (one `ANY(:ids)` query, no N+1)
+- Phase 2 now passes `category=story_categories.get(story_id)` to `summarise_story()` so LLM tone guidance actually fires
+
+**`src/core/api/routes/data.py`** — `is_first_bulletin` detection:
+- Added JSONB COUNT query before `assemble()` call: `SELECT COUNT(*) FROM data.bulletins WHERE filters @> jsonb_build_object('name', :name)`
+- Zero prior rows → `is_first_bulletin=True` → first-time intro template fires
+- Only runs when `name` is set and no cached bulletin already exists
+- `assemble()` call now passes `is_first_bulletin=is_first_bulletin`
+
+**Bulletin cache cleared** — deleted 8 `bulletin_audio` rows then 8 `data.bulletins` rows for profile "Paul" (FK-ordered, no data loss; these were all old cached bulletins assembled before the new assembler code).
+
+### Validation (script-only — ElevenLabs credits exhausted)
+
+Direct Python assembly test (`ranking_run_id=16`, 5 stories, `name="Paul"`, `is_first_bulletin=True`):
+
+```
+INTRO:  "Good to have you, Paul. Let's start you off."   ← first-time template
+STORY 1: climate  — High pressure / mostly dry week
+TRANS:  [silent pause]                                    ← ~15% pause roll
+STORY 2: politics.uk — King Charles US visit security
+TRANS:  "In public health..."                             ← category-matched
+STORY 3: health   — Wife spots dementia signs
+TRANS:  "Over in Westminster..."                          ← category-matched
+STORY 4: politics.us — White House press dinner arrest
+TRANS:  "Something a little more cheerful..."             ← tonal bridge (heavy→lighter)
+STORY 5: world.us — Yellow fever surge warning
+OUTRO:  "That's everything for now. Back later if anything breaks."  ← 2-part morning
+```
+
+299 words · 5 stories · 11 segments — within 3-minute target.
+
+**Note:** Existing summaries in DB were generated before the category-aware prompt was wired. Cached summaries (same story content) will be reused as-is; new tone-guided summaries will only appear when story content changes on the next ingest cycle.
+
+**ElevenLabs quota:** ~45 credits remaining. Need top-up or switch to `TTS_PROVIDER=openai` before next audio generation.
+
+---
+
+## Changes Made This Session (2026-04-28 — audio experience pass)
+
+### Files changed
+
+**`src/core/pipeline/data/summarise/llm_summariser.py`** — prompt + config only:
+- `_MAX_TOKENS` 600 → 950 (supports longer summaries)
+- `summarise_story()` gains optional `category: str | None = None` parameter (backward compatible)
+- `_TONE_GUIDANCE` dict: category → tone instruction (8 categories)
+- `_build_prompt()` gains `category` parameter; passes tone guidance to LLM
+- `audio_script` target: 70-85 words → 4-6 sentences, 120-180 words
+- First sentence of `audio_script` must be a hook: specific fact + tension + no banned openers
+- Extended forbidden phrases: added "officials are considering", "the situation remains", "many are wondering", "in a developing story", "more on this as it unfolds", "the story continues to develop", "it remains unclear", "amid uncertainty"
+- Forward-looking close requirement added
+- Specific-fact requirement (one per two sentences) added
+- Snippet length 300 → 400 chars per article
+
+**`src/core/pipeline/data/bulletin/pronunciation.py`** (new):
+- `normalise_numbers()` — converts £2.3bn → "2.3 billion pounds", 10% → "10 percent"
+- `normalise_acronyms()` — spaces HMRC, DVLA, ASOS (observed ElevenLabs problem cases)
+- `apply_pronunciation_overrides()` — whole-word substitutions for 18 proper nouns
+- `normalise_for_tts()` — master pass applied to assembled script before TTS
+- `PRONUNCIATION_OVERRIDES` dict as extension point; `_ACRONYM_AS_WORD` documents leave-as-is set
+
+**`src/core/pipeline/data/bulletin/transitions.py`** (new):
+- 97 total transition phrases (≥ 80 target): 10 per category × 9 categories (90) + 8 tonal heavy→light + 6 tonal light→heavy + 9 geographic + 7 thematic + 14 neutral
+- `_is_heavy()` heuristic: category ∈ {world, health, climate, politics} + heavy keyword in story text
+- `pick_transition()`: takes previous/next story, position, total count, used set; ~15% pause; biases toward tonal bridges after heavy stories; full bulletin dedup via `used_in_bulletin` set
+
+**`src/core/pipeline/data/bulletin/intros.py`** (new):
+- 15 named template functions (all distinct rhythm/structure)
+- `_FIRST_TIME_TEMPLATES` — 3 friendlier first-bulletin variants
+- `_BRIDGES` pool — 8 hook→greeting bridges
+- `build_intro()`: time-of-day filtering, story-count awareness, name enforcement (name always appears when provided), is_first_bulletin support
+- `_extract_hook()` — pulls first sentence of `audio_script` (20-220 char sentence boundary)
+- `_est_minutes()` — rough spoken duration estimate from story count
+
+**`src/core/pipeline/data/bulletin/outros.py`** (new):
+- 8 caught-up variants with name + story count (e.g. "Five stories and you're sorted, Paul.")
+- 8 caught-up variants without name
+- 6 morning / 6 afternoon / 6 evening forward phrases
+- `_SIGNOFFS` pool with blank-weighted distribution
+- `build_outro()`: 3 structure variants (1-part 20%, 2-part 45%, 3-part 35%); name used ~55% of time
+
+**`src/core/pipeline/data/bulletin/assembler.py`** (rewritten):
+- Imports and delegates to all four new modules
+- Passes `used_in_bulletin` set to `pick_transition()` for full within-bulletin dedup
+- Passes previous + next story dicts to transition selector
+- Applies `normalise_for_tts()` to final assembled script
+- `is_first_bulletin` parameter plumbed through to `build_intro()`
+- Filters empty-string transitions (pause) from script join but preserves paragraph break
 
 ## What Is Incomplete
 
