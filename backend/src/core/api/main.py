@@ -1,3 +1,7 @@
+import logging
+import threading
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from core.api.router import router
@@ -5,9 +9,42 @@ from core.api.router import router
 from core.api.routes import audio
 
 
+logger = logging.getLogger(__name__)
+
+
+def _start_daemon(name: str, target) -> None:
+    """Run a worker's blocking main() loop in a background daemon thread.
+
+    Shape B: the dispatcher and consumer run *inside* the API process rather
+    than as separate services. This relies on the API running a SINGLE uvicorn
+    worker — multiple workers would each spawn their own dispatcher/consumer
+    threads and double-process events. The deploy start command must not pass
+    --workers >1 or --reload.
+    """
+    thread = threading.Thread(target=target, name=name, daemon=True)
+    thread.start()
+    logger.info("in-process worker thread started: name=%s", name)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Start background workers in-process. The scheduler is intentionally NOT
+    # started here (deferred) — ingestion is triggered manually for now.
+    from core.workers.run_dispatcher import main as dispatcher_main
+    from core.workers.run_consumer import main as consumer_main
+
+    _start_daemon("dispatcher", dispatcher_main)
+    _start_daemon("consumer", consumer_main)
+    yield
+    # Daemon threads are torn down with the process; no explicit join needed.
+
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Headlines Backend")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s",
+    )
+    app = FastAPI(title="Headlines Backend", lifespan=lifespan)
     app.include_router(router)
     app.include_router(audio.router)
     return app

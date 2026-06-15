@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +10,21 @@ class Settings(BaseSettings):
 
     # Infra
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/headlines"
+
+    @field_validator("database_url")
+    @classmethod
+    def _force_psycopg_driver(cls, v: str) -> str:
+        # Managed Postgres providers (Railway, Heroku, etc.) inject the URL as
+        # postgresql:// or the legacy postgres://, which SQLAlchemy routes to the
+        # psycopg2 dialect — not installed here. This app depends on psycopg v3,
+        # so normalise the scheme to postgresql+psycopg:// regardless of source.
+        if v.startswith("postgresql+"):
+            return v  # driver already specified explicitly — leave untouched
+        if v.startswith("postgresql://"):
+            return "postgresql+psycopg://" + v[len("postgresql://"):]
+        if v.startswith("postgres://"):
+            return "postgresql+psycopg://" + v[len("postgres://"):]
+        return v
     redis_url: str = "redis://localhost:6379/0"
     redis_stream_events: str = "events"
     redis_consumer_group: str = "headlines"

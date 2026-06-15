@@ -2,6 +2,7 @@ from core.platform.queue.registry import HandlerRegistry
 
 from core.pipeline.data.ingest.events import DATA_INGEST_REQUESTED
 from core.pipeline.data.ingest.handlers.requested import handle_ingest_requested
+from core.pipeline.data.ingest.handlers.test_event import handle_test_event
 
 from core.pipeline.data.normalise.events import DATA_NORMALISE_REQUESTED
 from core.pipeline.data.normalise.handlers.requested import handle_normalise_requested
@@ -34,6 +35,7 @@ from core.pipeline.audio.handlers.requested import handle_audio_requested
 
 def build_registry() -> HandlerRegistry:
     r = HandlerRegistry()
+    r.register("test.event", handle_test_event)  # completes /health/test-event bus smoke-test
     r.register(DATA_INGEST_REQUESTED, handle_ingest_requested)
     r.register(DATA_NORMALISE_REQUESTED, handle_normalise_requested)
     r.register(DATA_CLUSTER_REQUESTED, handle_cluster_requested)
