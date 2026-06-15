@@ -1,0 +1,12 @@
+.claude/worktrees/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Environment — real secrets file; .env.example stays tracked
+.env
