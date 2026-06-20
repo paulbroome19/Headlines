@@ -1,0 +1,25 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "nixpacksPlan": {
+      "variables": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONPATH": "backend/src"
+      },
+      "phases": {
+        "install": {
+          "cmds": [
+            "cd backend && poetry install -E s3"
+          ]
+        }
+      }
+    }
+  },
+  "deploy": {
+    "startCommand": "uvicorn core.api.main:app --host 0.0.0.0 --port $PORT",
+    "preDeployCommand": "cd backend && alembic upgrade head",
+    "healthcheckPath": "/health",
+    "restartPolicyType": "ON_FAILURE"
+  }
+}
