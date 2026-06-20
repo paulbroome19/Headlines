@@ -10,9 +10,11 @@
         },
         "install": {
           "cmds": [
-            "poetry config virtualenvs.create false",
+            "python -m venv --copies /opt/venv",
+            ". /opt/venv/bin/activate",
             "cd backend && poetry install -E s3"
-          ]
+          ],
+          "paths": ["/opt/venv/bin"]
         }
       }
     }
