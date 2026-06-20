@@ -1,6 +1,60 @@
 # Railway Deploy Notes
 
-This file documents two non-obvious decisions in `railway.json`.
+This file documents non-obvious decisions in `railway.json` and `nixpacks.toml`.
+
+## (11) Why Poetry is installed via nixPkgs in the setup phase
+
+### The bug
+
+The first Railway deploy failed with:
+
+```
+RUN poetry config virtualenvs.create false
+/bin/bash: line 1: poetry: command not found
+exit code: 127
+```
+
+### Root cause
+
+Nixpacks' Python provider installs Poetry via `pip install poetry==$NIXPACKS_POETRY_VERSION`
+**inside the default install phase** (confirmed in
+[`src/providers/python.rs`](https://github.com/railwayapp/nixpacks/blob/main/src/providers/python.rs)).
+The full default install command is:
+
+```
+python -m venv --copies /opt/venv \
+  && . /opt/venv/bin/activate \
+  && pip install poetry==$NIXPACKS_POETRY_VERSION \
+  && poetry install --no-dev --no-interaction --no-ansi
+```
+
+Our custom `[phases.install]` in `nixpacks.toml` (without a `"..."` extension) **completely
+replaces** those defaults. So when our `poetry config virtualenvs.create false` runs, Poetry
+has never been installed.
+
+### Fix chosen — add `poetry` to `[phases.setup] nixPkgs`
+
+Poetry is available as a Nix package (`poetry`) from the NixOS package registry
+([search.nixos.org](https://search.nixos.org/packages?channel=unstable&query=poetry)).
+Adding it to the setup phase via:
+
+```toml
+[phases.setup]
+nixPkgs = ["...", "poetry"]
+```
+
+installs Poetry system-wide **before** any phase commands run. The `"..."` syntax
+(documented at [nixpacks.com/docs/configuration/file](https://nixpacks.com/docs/configuration/file))
+extends — rather than replaces — the nixPkgs the Python provider already adds (Python, gcc, etc.).
+
+This approach was chosen over alternatives because:
+- It avoids running `poetry install` twice (which would happen if we extended install cmds with `"..."`)
+- It keeps `poetry config virtualenvs.create false` working (see section 7 below)
+- The Nix-provided poetry binary is on PATH system-wide, independent of any venv
+- It is idiomatic Nixpacks: the setup phase is the right place for system-level tooling
+
+The same `setup` phase is declared in both `nixpacks.toml` and the inline `nixpacksPlan` in
+`railway.json` to keep them consistent (consolidation tracked in issue #7).
 
 ## (7) Why `poetry config virtualenvs.create false` precedes `poetry install`
 
