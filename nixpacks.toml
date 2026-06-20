@@ -1,0 +1,26 @@
+# Nixpacks standalone configuration
+# https://nixpacks.com/docs/configuration/file
+#
+# This file is referenced from railway.json via build.nixpacksConfigPath.
+# Railway passes it to the Nixpacks builder, which emits [variables] as
+# Docker ENV instructions in the generated Dockerfile — making them present
+# at every lifecycle phase: build, release (preDeployCommand), and runtime
+# (startCommand). This is the ONLY supported mechanism for baking env vars
+# into the image via Nixpacks config; railway.json's nixpacksPlan.variables
+# is NOT a real field in the Railway schema (https://backboard.railway.app/railway.schema.json)
+# and is silently ignored.
+
+# Declare the Python provider explicitly so Nixpacks detects the language
+# even though pyproject.toml lives in backend/ rather than the repo root.
+# Without this, auto-detection may fall through to a no-op provider.
+providers = ["python"]
+
+[variables]
+PYTHONUNBUFFERED = "1"
+PYTHONPATH = "backend/src"
+
+[phases.install]
+cmds = [
+  "poetry config virtualenvs.create false",
+  "cd backend && poetry install -E s3"
+]
