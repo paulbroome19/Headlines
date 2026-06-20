@@ -61,13 +61,15 @@ nixPkgs = ["...", "poetry"]
 # uvicorn, etc.) are installed to /opt/venv/bin. No virtualenvs.create=false
 # needed (and no longer used).
 #
+# IMPORTANT: venv-create, activate, and install are chained in a SINGLE cmds
+# entry with &&. Nixpacks runs each cmds entry as a separate shell/RUN layer,
+# so splitting them would mean `. /opt/venv/bin/activate` activates a subshell
+# that exits immediately — Poetry would then create its own venv instead of
+# installing into /opt/venv, and alembic/uvicorn would never land on PATH.
+#
 # Ref: https://nixpacks.com/docs/providers/python ("A venv is created at
 #   /opt/venv and PATH is modified to use the venv python binary.")
 # Ref: https://nixpacks.com/docs/configuration/file (paths field)
 [phases.install]
-cmds = [
-  "python -m venv --copies /opt/venv",
-  ". /opt/venv/bin/activate",
-  "cd backend && poetry install -E s3"
-]
+cmds = ["python -m venv --copies /opt/venv && . /opt/venv/bin/activate && cd backend && poetry install -E s3"]
 paths = ["/opt/venv/bin"]
