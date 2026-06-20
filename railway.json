@@ -5,6 +5,9 @@
     "nixpacksConfigPath": "nixpacks.toml",
     "nixpacksPlan": {
       "phases": {
+        "setup": {
+          "nixPkgs": ["...", "poetry"]
+        },
         "install": {
           "cmds": [
             "poetry config virtualenvs.create false",

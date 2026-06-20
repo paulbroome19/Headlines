@@ -19,6 +19,20 @@ providers = ["python"]
 PYTHONUNBUFFERED = "1"
 PYTHONPATH = "backend/src"
 
+# Install Poetry via Nix in the setup phase so it is on PATH when the custom
+# install phase runs. Nixpacks' default Python provider installs Poetry via
+# "pip install poetry" inside the install phase itself (confirmed in
+# src/providers/python.rs). Our custom [phases.install] below replaces those
+# defaults entirely (no "..." extension), so without this setup step poetry
+# is never installed — producing "poetry: command not found" (exit 127).
+#
+# "..." preserves whatever Python/gcc/etc. nixPkgs the provider adds;
+# "poetry" is the nixpkgs attribute name for Poetry.
+# Ref: https://nixpacks.com/docs/configuration/file (nixPkgs in phases.setup)
+# Ref: https://search.nixos.org/packages?channel=unstable&query=poetry
+[phases.setup]
+nixPkgs = ["...", "poetry"]
+
 [phases.install]
 cmds = [
   "poetry config virtualenvs.create false",
