@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime
 from typing import Optional
 
+from core.platform.config.settings import settings
 from core.platform.db.session import SessionLocal
 from core.platform.providers.gnews import GNewsClient
 from core.platform.queue.event import Event
@@ -52,8 +53,6 @@ def handle_ingest_requested(event: dict) -> None:
     lang = payload.get("lang") or "en"
     max_results = int(payload.get("max_results") or 10)
 
-    client = GNewsClient()
-
     with SessionLocal() as db:
         runs = IngestionRunRepo(db)
         ingested = IngestedArticleRepo(db)
@@ -62,8 +61,12 @@ def handle_ingest_requested(event: dict) -> None:
         # 1) Create run
         run = runs.create(source=source)
 
-        # 2) Fetch from GNews
-        if query:
+        # 2) Fetch from GNews (gated on settings.gnews_enabled)
+        if not settings.gnews_enabled:
+            print("ingest skipped: GNEWS_ENABLED=false")
+            articles = []
+        elif query:
+            client = GNewsClient()
             articles = client.search(
                 query=query,
                 lang=lang,
@@ -71,6 +74,7 @@ def handle_ingest_requested(event: dict) -> None:
                 max_results=max_results,
             )
         else:
+            client = GNewsClient()
             articles = client.top_headlines(
                 lang=lang,
                 country=country,
