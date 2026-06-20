@@ -10,6 +10,7 @@
       "phases": {
         "install": {
           "cmds": [
+            "poetry config virtualenvs.create false",
             "cd backend && poetry install -E s3"
           ]
         }
