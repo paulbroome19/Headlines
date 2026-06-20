@@ -114,6 +114,28 @@ headlines
 iOS app builds from Xcode against the backend running on the same
 LAN (default `192.168.1.x:8000`).
 
+## Deployment: single-worker constraint
+
+The Railway deployment **must run exactly one uvicorn worker**. The deploy
+start command is:
+
+```
+uvicorn core.api.main:app --host 0.0.0.0 --port $PORT
+```
+
+No `--workers` flag, no `--reload` flag.
+
+**Why this matters.** Shape B runs the event dispatcher and the Redis Streams
+consumer as in-process daemon threads, started in the FastAPI lifespan handler
+(`backend/src/core/api/main.py`). Launching multiple uvicorn workers would
+spawn a duplicate dispatcher and consumer in each worker process, causing
+events to be double-published and double-processed.
+
+**`PYTHONUNBUFFERED=1` is required.** The in-process worker threads emit
+progress and error output via `print()`. Without `PYTHONUNBUFFERED=1`,
+Python buffers stdout and those log lines never reach Railway's log stream.
+The environment variable must be set in the Railway service configuration.
+
 ## Status
 
 This is a working, in-development personal project. The full pipeline
