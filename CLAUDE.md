@@ -6,7 +6,7 @@
 Ingest → Normalise → Cluster → Categorise → Rank → Select → Summarise → TTS → Playback
 ```
 
-The current implementation covers: **Ingest → Normalise → Cluster**, with Ranking as a standalone module.
+The current implementation covers the full pipeline end-to-end: **Ingest → Normalise → Cluster → Categorise → Rank → Select → Summarise → TTS**, with bulletin assembly and audio synthesis triggered on demand. Ranking and selection are diversity-aware (see Core Product Rules).
 
 ## Core Product Rules
 
@@ -74,4 +74,4 @@ normalise/taxonomy/
 
 ## Session Protocol
 
-At the end of every session, update `PROGRESS.md` with: files changed, decisions made, current state, next step.
+At the end of every session, update `DEVLOG.md` with: files changed, decisions made, current state, next step.

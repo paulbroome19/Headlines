@@ -56,7 +56,7 @@ This approach was chosen over alternatives because:
 The same `setup` phase is declared in both `nixpacks.toml` and the inline `nixpacksPlan` in
 `railway.json` to keep them consistent (consolidation tracked in issue #7).
 
-## (7) Why `poetry config virtualenvs.create false` precedes `poetry install`
+## (7) Why dependencies are installed into `/opt/venv`
 
 The repo's Poetry config has `virtualenvs.create = true` and `virtualenvs.in-project = true`
 (confirmed in `poetry config --list`). Under those defaults, `cd backend && poetry install -E s3`
@@ -69,17 +69,34 @@ uvicorn core.api.main:app --host 0.0.0.0 --port $PORT
 ```
 
 `backend/.venv/bin` is not on `PATH` at that point, so the default config produces
-`uvicorn: command not found` at boot.
+`uvicorn: command not found` at boot (and `alembic: command not found` at pre-deploy).
 
-**Fix chosen — option (a):** run `poetry config virtualenvs.create false` in the install phase
-before `poetry install`. This tells Poetry to skip venv creation for this process and install
-packages directly into the Nixpacks build image's Python (which IS on PATH). The result is that
-`uvicorn`, `alembic`, and all other dependencies are importable and executable from the image's
-system Python at runtime.
+### Earlier fix (removed in #13 / PR #14)
 
-Option (b) — adding `backend/.venv/bin` to the runtime PATH — was rejected because it is
-fragile: the path depends on the venv being created, the Python version suffix in the path, and
-the cwd at build time. Option (a) is the idiomatic Railway/Nixpacks approach.
+The first working config ran `poetry config virtualenvs.create false` before `poetry install`,
+so Poetry installed packages into the build image's Python instead of a venv. That resolved
+imports, but the Nix-store Python is read-only: the console scripts (`alembic`, `uvicorn`) ended
+up in an unpredictable writable location that was **not** on `PATH`, so they still failed at
+pre-deploy and runtime. This mechanism is no longer used.
+
+### Current fix — install into Nixpacks' canonical `/opt/venv`
+
+The install phase recreates the venv exactly as Nixpacks' Python provider normally would, then
+uses the `paths` field to bake `/opt/venv/bin` onto `PATH` as a Docker `ENV` instruction:
+
+```toml
+[phases.install]
+cmds = ["python -m venv --copies /opt/venv && . /opt/venv/bin/activate && cd backend && poetry install -E s3"]
+paths = ["/opt/venv/bin"]
+```
+
+Because `paths` becomes an image-level `ENV`, `/opt/venv/bin` is present at every lifecycle
+phase — build, pre-deploy (`preDeployCommand`), and runtime (`startCommand`) — so both `alembic`
+and `uvicorn` resolve. The venv-create, activate, and `poetry install` steps are chained in a
+**single** `cmds` entry with `&&`: Nixpacks runs each `cmds` entry as a separate shell, so
+splitting them would let the `. /opt/venv/bin/activate` subshell exit before `poetry install`
+runs — Poetry would then create its own venv instead of installing into `/opt/venv`. No
+`virtualenvs.create false` is needed or used.
 
 ## (8) How `PYTHONUNBUFFERED` and `PYTHONPATH` reach the runtime container
 

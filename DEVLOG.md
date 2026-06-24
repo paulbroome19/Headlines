@@ -1,4 +1,13 @@
-# Progress
+# Development log
+
+This is a running, session-by-session development log — the build's
+working notes, not a polished document. Most of the implementation was
+done with AI coding agents under my direction (see the README's "Notes"
+section), and these entries capture the decisions, dead ends, and
+fixes from each session: what changed, why, and what was next. It is
+kept for provenance and as a record of the reasoning behind the code,
+and reads newest-context-first within each session rather than top to
+bottom.
 
 ## Changes Made This Session (2026-05-25 — iOS device fixes, TestFlight prep, cost model restructure)
 
@@ -15,7 +24,7 @@
 
 **`ios/Headlines/Headlines/Info.plist`**
 - Added `UIBackgroundModes: [audio]` — required for AVAudioSession to keep playing when screen locks or app is backgrounded
-- Added `NSExceptionDomains` entry for `192.168.1.111` (LAN IP) — `NSAllowsLocalNetworking` only covers `localhost`/`127.0.0.1`; Release builds need explicit ATS exception for LAN IP
+- Added `NSExceptionDomains` entry for `<dev-machine-ip>` (LAN IP) — `NSAllowsLocalNetworking` only covers `localhost`/`127.0.0.1`; Release builds need explicit ATS exception for LAN IP
 
 ### Backend — Cost model restructure (GNews-only pull, LLM+TTS on-demand only)
 
@@ -602,7 +611,7 @@ Simulator-only default. Device needs Mac LAN IP.
 
 **Files changed:**
 - `Core/APIClient.swift` — rewrote to fix struct closure bug; extracted `buildURL()` + `send()` helpers; all methods now inside struct
-- `Core/AppConfig.swift` — `#if targetEnvironment(simulator)` auto-selects `127.0.0.1` for simulator, `deviceLANIP` constant for device; one-time edit: set `deviceLANIP = "192.168.1.111"` (current Mac LAN IP)
+- `Core/AppConfig.swift` — `#if targetEnvironment(simulator)` auto-selects `127.0.0.1` for simulator, `deviceLANIP` constant for device; one-time edit: set `deviceLANIP = "<dev-machine-ip>"` (current Mac LAN IP)
 - `Headlines/Info.plist` — **new file** replacing auto-generated plist:
   - Replicates all `INFOPLIST_KEY_*` build settings (UIApplicationSceneManifest, UILaunchScreen, UISupportedInterfaceOrientations, etc.)
   - Adds `NSAppTransportSecurity`: `NSAllowsLocalNetworking = true`, `NSAllowsArbitraryLoadsInDebug = true` (debug builds only — no ATS impact on release)
@@ -612,18 +621,18 @@ Simulator-only default. Device needs Mac LAN IP.
 1. In Xcode project navigator: right-click `Headlines` group → Add Files → select `Info.plist`
 2. Build Settings → search "Generate Info.plist" → set to **No** for Debug and Release
 3. Build Settings → search "Info.plist File" → set to `Headlines/Info.plist`
-4. In `AppConfig.swift` line `static let deviceLANIP = "YOUR_MAC_LAN_IP"` → replace with `"192.168.1.111"` (or your current LAN IP — run `ipconfig getifaddr en0` to check)
+4. In `AppConfig.swift` line `static let deviceLANIP = "YOUR_MAC_LAN_IP"` → replace with `"<dev-machine-ip>"` (or your current LAN IP — run `ipconfig getifaddr en0` to check)
 
 **Audio URL handling (all cases covered):**
 | Scenario | `audioUrl` in response | How iOS downloads |
 |---|---|---|
 | Local dev (simulator) | `null` | `service.audioFileURL()` → `http://127.0.0.1:8000/dev/api/audio/{id}/file` |
-| Local dev (device) | `null` | `service.audioFileURL()` → `http://192.168.1.111:8000/dev/api/audio/{id}/file` |
+| Local dev (device) | `null` | `service.audioFileURL()` → `http://<dev-machine-ip>:8000/dev/api/audio/{id}/file` |
 | S3 production | `https://bucket.s3.region.amazonaws.com/...` | URL used directly, no Mac involved |
 
 **Validation:**
-- `GET http://192.168.1.111:8000/data/profiles` → `200 {"profiles":[...]}` ✓
-- `GET http://192.168.1.111:8000/dev/api/audio/13/file` → `200 1,587,453 bytes` ✓
+- `GET http://<dev-machine-ip>:8000/data/profiles` → `200 {"profiles":[...]}` ✓
+- `GET http://<dev-machine-ip>:8000/dev/api/audio/13/file` → `200 1,587,453 bytes` ✓
 - Backend bound to `0.0.0.0:8000` (uvicorn `--host 0.0.0.0`) ✓
 - No hardcoded `127.0.0.1` outside `AppConfig.swift` ✓
 
@@ -723,7 +732,7 @@ cd backend && poetry install -E s3
 **Three bugs fixed on physical iPhone:**
 
 **1. Device IP placeholder** (`Core/AppConfig.swift`)
-- `deviceLANIP = "YOUR_MAC_LAN_IP"` → `"192.168.1.111"`
+- `deviceLANIP = "YOUR_MAC_LAN_IP"` → `"<dev-machine-ip>"`
 - Was causing `NSURLErrorDomain Code=-1003` (host not found) on every request
 
 **2. Error logging — response body swallowed** (`Core/APIClient.swift`, `Core/AudioPlayer.swift`, `Features/Playback/PlaybackViewModel.swift`)

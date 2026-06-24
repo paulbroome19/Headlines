@@ -75,21 +75,33 @@ Segment manifest → iOS player
 
 ## Repo structure
 
+```
 backend/
-src/core/
-api/                 FastAPI endpoints
-pipeline/            Ingestion, clustering, categorisation,
-summarisation, audio synthesis
-models/              Domain models
-workers/             Event consumers
+  src/core/
+    api/        FastAPI app — routes, middleware, schemas
+    pipeline/   The processing stages — ingest, normalise, cluster,
+                categorise, rank, summarise, bulletin assembly, audio
+                synthesis. Each stage owns its own handlers/ and repos/.
+    platform/   Cross-cutting infrastructure:
+                  queue/     Postgres outbox + Redis Streams consumer
+                  db/        SQLAlchemy session + models
+                  storage/   audio object storage (R2 / S3)
+                  providers/ external API clients (GNews)
+                  config/    settings
+    workers/    Process entry points — dispatcher, consumer, scheduler
 ios/
-Headlines/             Swift app — player, manifest models,
-BulletinPlayer, view models, views
+  Headlines/    Swift app — BulletinPlayer, manifest models,
+                view models, views
 ops/
-Start Headlines.command   Double-click to run the dev server
-Pull 50 Stories.command   Double-click to trigger ingestion
-Reset Profile.command     Double-click to reset listened-to state
-for a profile (dev only)
+  Start Headlines.command   Double-click to run the dev server
+  Pull 50 Stories.command   Double-click to trigger ingestion
+  Reset Profile.command     Double-click to reset listened-to state
+                            for a profile (dev only)
+```
+
+The `platform/queue` layer is the spine of the system: pipeline stages
+never call each other directly — they communicate through events
+published via a Postgres outbox and consumed off Redis Streams.
 
 ## Running it locally
 
@@ -138,12 +150,37 @@ The environment variable must be set in the Railway service configuration.
 
 ## Status
 
-This is a working, in-development personal project. The full pipeline
-runs end-to-end: ingestion → clustering → categorisation → bulletin
-assembly → audio generation → streaming playback on iOS with full
+A working, in-development personal project. The full pipeline runs
+end-to-end — ingestion → clustering → categorisation → bulletin
+assembly → audio generation → streaming playback on iOS with per-user
 listened-to tracking.
 
-What's working:
+**Deployment.** The backend is deployed on Railway, running the Shape B
+single-worker process described above. The deploy pipeline is proven
+end-to-end:
+
+- Postgres is provisioned via the Railway plugin; schema migrations run
+  on each deploy through an `alembic upgrade head` pre-deploy command.
+- Redis is provisioned via the Railway plugin. `DATABASE_URL` and
+  `REDIS_URL` are wired through Railway reference variables.
+- `/health` returns 200 from the public URL
+  (`https://headlines-production-5566.up.railway.app/health`).
+
+It is deployed but not yet configured for end-to-end use — it cannot
+serve a bulletin in production yet. Still to set up:
+
+- Provider API keys (Anthropic, ElevenLabs, GNews) are not yet set in
+  the Railway environment.
+- Object storage for audio (`AUDIO_STORAGE_PROVIDER`, the R2/S3 vars)
+  is not yet configured.
+- `PUBLIC_API_BASE_URL` is not yet set, so generated manifests would
+  still point at localhost.
+- No ingest has been run against the production database, so it holds
+  no stories yet.
+- iOS still points at the dev backend (the ATS local-network exception
+  is still in place); there is no TestFlight build yet.
+
+What runs today, locally and full end-to-end:
 - Segment-level audio cache (one TTS call per unique content, ever)
 - Story-level deduplication and clustering
 - On-demand summarisation + TTS, with full caching
@@ -151,9 +188,10 @@ What's working:
 - Per-user listened-to enforcement across bulletins
 - Dev ops layer (start server, pull stories, reset profile)
 
-What's still ahead:
-- Cloud-hosted backend (currently runs on dev laptop)
-- TestFlight distribution
+Next:
+- Set the remaining production env vars and run a production ingest
+- Point iOS at the production URL and remove the ATS exception
+- TestFlight Internal distribution
 - Stats / observability (cache hit rates, listening analytics)
 - Hot pre-generation for popular stories (multi-user optimisation)
 - Polish on the iOS player UI
