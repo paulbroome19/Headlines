@@ -604,7 +604,7 @@ data.story_summaries (
 `post`, `put`, and `request` methods were defined outside the struct closing brace. Code would not compile. Fixed by rewriting the file: extracted `buildURL()` and `send()` as private helpers; all methods now inside the struct.
 
 **Problem 2 — ATS blocks HTTP to LAN IPs on device:**
-`NSAllowsLocalNetworking` only covers `127.0.0.1`/`.local`. Physical device hitting `http://192.168.x.x:8000` is blocked by default ATS. The project uses `GENERATE_INFOPLIST_FILE = YES` (no Info.plist exists), so ATS can't be configured without creating one.
+`NSAllowsLocalNetworking` only covers `127.0.0.1`/`.local`. Physical device hitting `http://<dev-machine-ip>:8000` is blocked by default ATS. The project uses `GENERATE_INFOPLIST_FILE = YES` (no Info.plist exists), so ATS can't be configured without creating one.
 
 **Problem 3 — URL hardcoded to 127.0.0.1:**
 Simulator-only default. Device needs Mac LAN IP.
