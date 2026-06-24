@@ -88,6 +88,7 @@ backend/
                   storage/   audio object storage (R2 / S3)
                   providers/ external API clients (GNews)
                   config/    settings
+    users/      User-account module (stub)
     workers/    Process entry points — dispatcher, consumer, scheduler
 ios/
   Headlines/    Swift app — BulletinPlayer, manifest models,

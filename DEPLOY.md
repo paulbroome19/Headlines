@@ -49,7 +49,6 @@ extends — rather than replaces — the nixPkgs the Python provider already add
 
 This approach was chosen over alternatives because:
 - It avoids running `poetry install` twice (which would happen if we extended install cmds with `"..."`)
-- It keeps `poetry config virtualenvs.create false` working (see section 7 below)
 - The Nix-provided poetry binary is on PATH system-wide, independent of any venv
 - It is idiomatic Nixpacks: the setup phase is the right place for system-level tooling
 
