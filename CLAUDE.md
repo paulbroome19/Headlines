@@ -74,4 +74,4 @@ normalise/taxonomy/
 
 ## Session Protocol
 
-At the end of every session, update `PROGRESS.md` with: files changed, decisions made, current state, next step.
+At the end of every session, update `DEVLOG.md` with: files changed, decisions made, current state, next step.
