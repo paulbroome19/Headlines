@@ -81,5 +81,9 @@
     <key>API_BASE_URL</key>
     <string>$(API_BASE_URL)</string>
 
+    <!-- Declares the app uses only standard OS/TLS encryption (exempt from EAR) -->
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+
 </dict>
 </plist>
