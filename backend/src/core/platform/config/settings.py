@@ -53,7 +53,6 @@ class Settings(BaseSettings):
 
     # Scheduled ingest
     enable_scheduled_ingest: bool = False
-    ingest_interval_minutes: int = 30
 
     # Public API base URL — used to construct absolute URLs in manifest responses
     public_api_base_url: str = "http://localhost:8000"

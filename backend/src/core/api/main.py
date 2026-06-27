@@ -28,13 +28,16 @@ def _start_daemon(name: str, target) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Start background workers in-process. The scheduler is intentionally NOT
-    # started here (deferred) — ingestion is triggered manually for now.
+    # Start background workers in-process. The scheduler thread is always
+    # started; run_scheduler.main() returns immediately when
+    # ENABLE_SCHEDULED_INGEST is false, so a disabled scheduler costs nothing.
     from core.workers.run_dispatcher import main as dispatcher_main
     from core.workers.run_consumer import main as consumer_main
+    from core.workers.run_scheduler import main as scheduler_main
 
     _start_daemon("dispatcher", dispatcher_main)
     _start_daemon("consumer", consumer_main)
+    _start_daemon("scheduler", scheduler_main)
     yield
     # Daemon threads are torn down with the process; no explicit join needed.
 
