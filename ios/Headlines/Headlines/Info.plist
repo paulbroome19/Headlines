@@ -70,21 +70,6 @@
         <true/>
         <key>NSAllowsArbitraryLoadsInDebug</key>
         <true/>
-        <!--
-            Targeted HTTP exception for the dev laptop's LAN IP.
-            Remove this entire NSExceptionDomains block once the backend
-            is behind HTTPS and API_BASE_URL points at a real domain.
-        -->
-        <key>NSExceptionDomains</key>
-        <dict>
-            <key>192.168.1.111</key>
-            <dict>
-                <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                <true/>
-                <key>NSIncludesSubdomains</key>
-                <false/>
-            </dict>
-        </dict>
     </dict>
 
     <!--
