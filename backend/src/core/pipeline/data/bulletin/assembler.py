@@ -99,7 +99,15 @@ def assemble(
     segments.append({"type": "outro", "text": outro_text})
 
     # ── Assemble script + pronunciation normalisation ──────────────────────────
-    raw_script = "\n\n".join(seg["text"] for seg in segments if seg["text"])
-    script = normalise_for_tts(raw_script)
+    # Normalise each segment's text for TTS, then derive the script from the
+    # normalised segments. The per-segment audio path (segment_synth) hashes and
+    # synthesises seg["text"], so normalising here is what actually reaches
+    # ElevenLabs. Joining already-normalised segments is equivalent to normalising
+    # the joined string (no normalise pattern spans the "\n\n" boundary) and avoids
+    # double-normalisation — and keeps script, segments, hashes, and the
+    # _story_timings offset math all consistent (len(script) == Σ(len(seg)+2)).
+    for seg in segments:
+        seg["text"] = normalise_for_tts(seg["text"])
+    script = "\n\n".join(seg["text"] for seg in segments if seg["text"])
 
     return BulletinResult(script=script, segments=segments)

@@ -73,10 +73,18 @@ _NUMBER_PATTERN = re.compile(
 _PERCENT_PATTERN = re.compile(r"(\d[\d,]*(?:\.\d+)?)%")
 
 
+_AMBIGUOUS_SINGLE = frozenset({"B", "m", "M", "k", "K", "T"})  # need currency context
+
+
 def _replace_number(match: re.Match) -> str:
     symbol = match.group(1) or ""
     number = match.group(2).replace(",", "")
     scale_key = match.group(3)
+    # Single-letter scales are ambiguous with units (100m = metres, 5K = run
+    # distance). Only treat them as magnitudes when a currency symbol anchors
+    # the value (£5m, $45M). Multi-char bn/tr are unambiguous and always expand.
+    if scale_key in _AMBIGUOUS_SINGLE and not symbol:
+        return match.group(0)
     scale = _SCALE.get(scale_key, scale_key)
     currency = _CURRENCY_SYMBOLS.get(symbol, "")
     parts = [number, scale]
