@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     # LLM fallback categoriser
     anthropic_api_key: str | None = None
     fallback_model: str = "claude-haiku-4-5-20251001"
+    connective_model: str = "claude-sonnet-4-6"
     enable_llm_categorise_fallback: bool = True
 
     # Scheduled ingest

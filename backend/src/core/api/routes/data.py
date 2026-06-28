@@ -23,6 +23,7 @@ from core.pipeline.data.bulletin.repos.user_story_state_repo import (
     compute_new_state,
 )
 from core.pipeline.data.bulletin.assembler import assemble
+from core.pipeline.data.bulletin.connective import generate_connective, uk_now
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
     validate_filter_categories,
@@ -288,6 +289,7 @@ def assemble_bulletin(req: BulletinRequest):
                 continue
             all_stories.append({
                 "story_id": sid,
+                "headline": summary.get("headline") or "",
                 "audio_script": (summary.get("audio_script") or "").strip() or (summary.get("summary_text") or ""),
                 "summary_text": summary.get("summary_text") or "",
                 "primary_category": item["primary_category"],
@@ -303,11 +305,19 @@ def assemble_bulletin(req: BulletinRequest):
         if not stories:
             raise HTTPException(status_code=404, detail="No stories match the requested filters")
 
+        now_uk = uk_now()
+        conn = generate_connective(
+            stories=stories,
+            name=req.name or None,
+            now=now_uk,
+            is_first_bulletin=False,
+        )
         result = assemble(
             stories,
             seed=int(request_hash, 16),
             name=req.name or None,
-            now=datetime.now(timezone.utc),
+            now=now_uk,
+            connective=conn,
         )
 
         BulletinRepo(db).insert(
@@ -609,6 +619,7 @@ def _get_or_assemble_bulletin(
                     continue
                 all_stories.append({
                     "story_id": sid,
+                    "headline": summary.get("headline") or "",
                     "audio_script": (summary.get("audio_script") or "").strip() or (summary.get("summary_text") or ""),
                     "summary_text": summary.get("summary_text") or "",
                     "primary_category": o["primary_category"],
@@ -668,12 +679,20 @@ def _get_or_assemble_bulletin(
                 for s in stories
             ]
 
+            now_uk = uk_now()
+            conn = generate_connective(
+                stories=stories,
+                name=name,
+                now=now_uk,
+                is_first_bulletin=is_first_bulletin,
+            )
             result = assemble(
                 stories,
                 seed=int(request_hash, 16),
                 name=name,
-                now=datetime.now(timezone.utc),
+                now=now_uk,
                 is_first_bulletin=is_first_bulletin,
+                connective=conn,
             )
             bulletin_segments = result.segments
 
