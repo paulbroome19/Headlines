@@ -21,6 +21,7 @@ from core.pipeline.data.bulletin.intros import build_intro
 from core.pipeline.data.bulletin.transitions import pick_transition
 from core.pipeline.data.bulletin.outros import build_outro
 from core.pipeline.data.bulletin.pronunciation import normalise_for_tts
+from core.pipeline.data.bulletin.connective import ConnectiveResult
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ def assemble(
     name: str | None = None,
     now: datetime | None = None,
     is_first_bulletin: bool = False,
+    connective: ConnectiveResult | None = None,
 ) -> BulletinResult:
     """
     Assemble a bulletin from an ordered list of story dicts.
@@ -49,6 +51,9 @@ def assemble(
     name              — personalises intro and outro.
     now               — datetime for time-of-day logic; defaults to UTC now.
     is_first_bulletin — True on the user's very first bulletin.
+    connective        — pre-generated LLM connective tissue; when provided the
+                        template intro/transitions/outro are bypassed. Pass None
+                        to use the fallback template path (unchanged behaviour).
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -56,47 +61,63 @@ def assemble(
     rng = random.Random(seed)
     segments: list[dict] = []
 
-    # ── Intro ──────────────────────────────────────────────────────────────────
-    intro_text = build_intro(
-        rng,
-        name=name,
-        now=now,
-        stories=stories,
-        is_first_bulletin=is_first_bulletin,
-    )
-    segments.append({"type": "intro", "text": intro_text})
+    if connective is not None:
+        # ── LLM connective path ────────────────────────────────────────────────
+        segments.append({"type": "intro", "text": connective.greeting})
 
-    # ── Stories with transitions ───────────────────────────────────────────────
-    used_transitions: set[str] = set()
+        for i, story in enumerate(stories):
+            if i > 0:
+                segments.append({"type": "transition", "text": connective.transitions[i]})
 
-    for i, story in enumerate(stories):
-        if i > 0:
-            transition_text = pick_transition(
-                rng,
-                previous_story=stories[i - 1],
-                next_story=story,
-                position=i - 1,
-                total_stories=len(stories),
-                used_in_bulletin=used_transitions,
-            )
-            used_transitions.add(transition_text)
-            segments.append({"type": "transition", "text": transition_text})
+            story_text = (story.get("audio_script") or "").strip() or (story.get("summary_text") or "")
+            segments.append({
+                "type": "story",
+                "story_id": story["story_id"],
+                "text": story_text,
+            })
 
-        story_text = (story.get("audio_script") or "").strip() or (story.get("summary_text") or "")
-        segments.append({
-            "type": "story",
-            "story_id": story["story_id"],
-            "text": story_text,
-        })
+        segments.append({"type": "outro", "text": connective.outro})
 
-    # ── Outro ──────────────────────────────────────────────────────────────────
-    outro_text = build_outro(
-        rng,
-        name=name,
-        now=now,
-        story_count=len(stories),
-    )
-    segments.append({"type": "outro", "text": outro_text})
+    else:
+        # ── Template fallback path (unchanged) ────────────────────────────────
+        intro_text = build_intro(
+            rng,
+            name=name,
+            now=now,
+            stories=stories,
+            is_first_bulletin=is_first_bulletin,
+        )
+        segments.append({"type": "intro", "text": intro_text})
+
+        used_transitions: set[str] = set()
+
+        for i, story in enumerate(stories):
+            if i > 0:
+                transition_text = pick_transition(
+                    rng,
+                    previous_story=stories[i - 1],
+                    next_story=story,
+                    position=i - 1,
+                    total_stories=len(stories),
+                    used_in_bulletin=used_transitions,
+                )
+                used_transitions.add(transition_text)
+                segments.append({"type": "transition", "text": transition_text})
+
+            story_text = (story.get("audio_script") or "").strip() or (story.get("summary_text") or "")
+            segments.append({
+                "type": "story",
+                "story_id": story["story_id"],
+                "text": story_text,
+            })
+
+        outro_text = build_outro(
+            rng,
+            name=name,
+            now=now,
+            story_count=len(stories),
+        )
+        segments.append({"type": "outro", "text": outro_text})
 
     # ── Assemble script + pronunciation normalisation ──────────────────────────
     # Normalise each segment's text for TTS, then derive the script from the
