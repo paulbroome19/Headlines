@@ -44,6 +44,10 @@ private struct PlayButtonStyle: ButtonStyle {
 struct HomeView: View {
 
     var userName: String   = "PAUL"
+    /// The clock used for the time-of-day greeting. Defaults to now; injectable
+    /// for previews/tests. Computed on appear — fine that it doesn't live-update
+    /// if the clock crosses a band boundary while Home is open.
+    var now: Date = Date()
     var onGenerate: () -> Void = {}
     var onProfile:  () -> Void = {}
 
@@ -66,8 +70,8 @@ struct HomeView: View {
             let playDiam: CGFloat = min(w * 0.18, 72)
 
             // Greeting cell sizing: fit the longer of the two lines
-            let line1 = "GOOD MORNING,"         // 13 chars
-            let line2 = userName.uppercased()    // board world is caps
+            let line1 = TimeOfDay.current(now).greeting + ","   // e.g. "GOOD AFTERNOON,"
+            let line2 = userName.uppercased()                   // board world is caps
             let longerCount = max(line1.count, line2.count)
             let boardW = w * 0.88
             let cellGap: CGFloat = 3
@@ -121,7 +125,7 @@ struct HomeView: View {
 
                     Spacer(minLength: h * 0.22) // calm empty top space
 
-                    // Greeting row 1: GOOD MORNING,
+                    // Greeting row 1: time-of-day greeting, e.g. "GOOD AFTERNOON,"
                     flapRow(text: line1, cellSz: cellSz, gap: cellGap)
 
                     Spacer().frame(height: cellGap)
@@ -276,6 +280,25 @@ struct HomeView: View {
 
 // MARK: - Preview
 
-#Preview {
+/// Builds a date at a fixed hour today (local) to demonstrate a greeting band.
+private func atHour(_ hour: Int) -> Date {
+    var c = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+    c.hour = hour; c.minute = 0
+    return Calendar.current.date(from: c) ?? Date()
+}
+
+#Preview("Now") {
     HomeView()
+}
+
+#Preview("2pm · Afternoon") {
+    HomeView(now: atHour(14))
+}
+
+#Preview("8pm · Evening") {
+    HomeView(now: atHour(20))
+}
+
+#Preview("2am · Night") {
+    HomeView(now: atHour(2))
 }
