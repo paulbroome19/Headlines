@@ -13,6 +13,7 @@ Dependencies:
 """
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,8 @@ from core.pipeline.data.bulletin.transitions import pick_transition
 from core.pipeline.data.bulletin.outros import build_outro
 from core.pipeline.data.bulletin.pronunciation import normalise_for_tts
 from core.pipeline.data.bulletin.connective import ConnectiveResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -62,12 +65,30 @@ def assemble(
     segments: list[dict] = []
 
     if connective is not None:
+        # ── Defensive check: order must be a permutation of our story ids ─────
+        by_id = {str(s["story_id"]): s for s in stories}
+        if set(connective.order) != set(by_id):
+            logger.warning(
+                "assemble: connective.order %r does not match story ids %r — "
+                "falling back to templates",
+                connective.order, list(by_id),
+            )
+            connective = None
+
+    if connective is not None:
         # ── LLM connective path ────────────────────────────────────────────────
+        # Reorder stories using the model's chosen narrative order so that
+        # each transition[id] actually previews the correct next story.
+        ordered = [by_id[sid] for sid in connective.order]
         segments.append({"type": "intro", "text": connective.greeting})
 
-        for i, story in enumerate(stories):
+        for i, story in enumerate(ordered):
             if i > 0:
-                segments.append({"type": "transition", "text": connective.transitions[i]})
+                sid = str(story["story_id"])
+                segments.append({
+                    "type": "transition",
+                    "text": connective.transitions.get(sid, ""),
+                })
 
             story_text = (story.get("audio_script") or "").strip() or (story.get("summary_text") or "")
             segments.append({

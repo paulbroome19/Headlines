@@ -670,15 +670,6 @@ def _get_or_assemble_bulletin(
             if not stories:
                 raise HTTPException(status_code=404, detail="No stories match the requested filters")
 
-            stories_list = [
-                {
-                    "story_id": s["story_id"],
-                    "headline": (summaries_by_id.get(s["story_id"]) or {}).get("headline") or "",
-                    "category": s.get("primary_category"),
-                }
-                for s in stories
-            ]
-
             now_uk = uk_now()
             conn = generate_connective(
                 stories=stories,
@@ -695,6 +686,23 @@ def _get_or_assemble_bulletin(
                 connective=conn,
             )
             bulletin_segments = result.segments
+
+            # Derive stories_list from assembled segments so the order matches
+            # the model's chosen running order (mirrors the cache-hit reconstruction path).
+            cat_map = {str(s["story_id"]): s.get("primary_category") for s in all_stories}
+            ordered_story_ids = [
+                str(seg["story_id"])
+                for seg in result.segments
+                if seg.get("type") == "story" and seg.get("story_id")
+            ]
+            stories_list = [
+                {
+                    "story_id": sid,
+                    "headline": (summaries_by_id.get(sid) or {}).get("headline") or "",
+                    "category": cat_map.get(sid),
+                }
+                for sid in ordered_story_ids
+            ]
 
             bulletin_id = BulletinRepo(db).insert(
                 ranking_run_id=ranking_run_id,
