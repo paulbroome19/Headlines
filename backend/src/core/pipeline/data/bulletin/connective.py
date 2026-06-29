@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.anthropic.com/v1/messages"
 _API_VERSION = "2023-06-01"
-_MAX_TOKENS = 700
+_MAX_TOKENS = 900
 _TIMEOUT_SECONDS = 20
 
 
@@ -46,7 +46,8 @@ def _model() -> str:
 @dataclass(frozen=True)
 class ConnectiveResult:
     greeting: str
-    transitions: list[str]   # one per story; index 0 is the "before story 1" slot (always "")
+    order: list[str]              # story_ids in the model's chosen running order (permutation of input ids)
+    transitions: dict[str, str]   # story_id -> transition text that plays BEFORE that story; first is ""
     outro: str
 
 
@@ -84,17 +85,23 @@ def _build_prompt(
     name_str = name if name else "no name provided (skip personalisation)"
 
     story_lines: list[str] = []
-    for i, story in enumerate(stories):
+    input_ids: list[str] = []
+    for story in stories:
+        sid = str(story["story_id"])
+        input_ids.append(sid)
         hook = _extract_hook(story)
         descriptor = story.get("headline") or hook or "(no descriptor)"
         category = (story.get("primary_category") or "general").split(".")[0]
         story_lines.append(
-            f"  Story {i + 1}: [{category}] {descriptor!r}\n"
+            f"  Story {sid}: [{category}] {descriptor!r}\n"
             f"    Hook: {hook!r}"
         )
     stories_block = "\n".join(story_lines)
+    ids_list = ", ".join(f'"{sid}"' for sid in input_ids)
 
-    transitions_example = '["", "' + '", "'.join("..." for _ in range(n - 1)) + '"]' if n > 1 else '[""]'
+    # Shape example: show the ids in input order (model should reorder them in output)
+    example_order = json.dumps(input_ids)
+    example_transitions = json.dumps({sid: ("" if i == 0 else "...") for i, sid in enumerate(input_ids)})
 
     return (
         "You are a calm, intelligent morning-briefing host — a trusted person catching "
@@ -105,12 +112,14 @@ def _build_prompt(
         f"- Time of day: {time_word} (raw hour: {hour})\n"
         f"- Is this their first-ever bulletin: {is_first_bulletin}\n"
         f"- Number of stories: {n} ({duration})\n"
-        f"- Stories (ordered):\n{stories_block}\n\n"
-        "Your task: generate the greeting, one transition per story, and the outro — "
+        f"- Stories (use these ids exactly in your output):\n{stories_block}\n\n"
+        "Your task: generate the greeting, choose the best narrative running order for "
+        "the stories, write one transition per story, and write the outro — "
         "all as natural spoken text ready for TTS synthesis.\n\n"
         "GREETING:\n"
         "Greeting FIRST, then ease into the news.\n"
-        "Pattern: greet by name → orient (how many stories, rough length) → lead naturally into story 1.\n"
+        "Pattern: greet by name → orient (how many stories, rough length) → lead naturally "
+        "into YOUR FIRST story (the first id in your chosen 'order').\n"
         "Exact contrast:\n"
         "  WRONG: \"Markets opened green this morning. Morning, Paul.\"\n"
         "  RIGHT: \"Morning, Paul. Five stories for you today — let's start with the markets, "
@@ -121,11 +130,17 @@ def _build_prompt(
             else ""
         )
         + "\n"
+        "RUNNING ORDER:\n"
+        f"Choose the best narrative order for the {n} stories. Your 'order' array MUST be a "
+        f"permutation of exactly these ids: [{ids_list}] — all {n} ids, each exactly once, "
+        "none added, none dropped. Reorder them however makes the best broadcast sense "
+        "(e.g. grouping thematically related stories, building to a strong closer).\n\n"
         "TRANSITIONS:\n"
-        f"Return exactly {n} transitions (array length MUST equal {n}).\n"
-        "- Index 0 must always be \"\" (nothing precedes story 1).\n"
+        "Return a 'transitions' object mapping EVERY story id to the bridge that plays "
+        "immediately BEFORE that story in YOUR chosen order.\n"
+        "- The FIRST story in your 'order' MUST have \"\" — the greeting leads directly into it.\n"
         + (
-            f"- Indices 1 to {n - 1} bridge from the PREVIOUS story to the NEXT story.\n"
+            "- Each subsequent bridge references real content from the previous story in YOUR order.\n"
             if n > 1
             else ""
         )
@@ -145,7 +160,9 @@ def _build_prompt(
         "- Write numbers and times as spoken words (\"five stories\", not \"5\").\n"
         "- Keep names naturally spelled (a downstream layer handles problem names).\n\n"
         "Output ONLY valid JSON in this exact shape — no markdown fences, no commentary:\n"
-        "{\"greeting\":\"...\",\"transitions\":" + transitions_example + ",\"outro\":\"...\"}"
+        "{\"greeting\":\"...\",\"order\":" + example_order + ",\"transitions\":" + example_transitions + ",\"outro\":\"...\"}\n"
+        "Remember: 'order' is YOUR chosen permutation of all story ids (reorder as you see fit); "
+        "'transitions' maps every id to its pre-story bridge ('\"\"' for the first story in your order)."
     )
 
 
@@ -224,38 +241,34 @@ def generate_connective(
         greeting = str(parsed["greeting"]).strip()
         outro = str(parsed["outro"]).strip()
 
-        # Validate transitions is a list before iterating.
-        # list(parsed["transitions"]) would silently turn a string into a char-list,
-        # so we check the type explicitly first.
-        transitions_raw = parsed["transitions"]
-        if not isinstance(transitions_raw, list):
-            raise ValueError("transitions is not a list")
-        transitions = list(transitions_raw)
-
         if not greeting:
             raise ValueError("greeting is empty")
         if not outro:
             raise ValueError("outro is empty")
 
-        # Tolerate both N and N-1 transitions for N stories.
-        # Sonnet naturally returns N-1 bridges (one between each adjacent pair);
-        # the correct/natural model shape. We prepend the leading "" for the
-        # no-transition-before-story-1 slot so downstream code always sees N items.
-        n = len(stories)
-        if len(transitions) == n:
-            pass  # already the right length; index-0 coercion happens below
-        elif len(transitions) == n - 1:
-            transitions = [""] + transitions
-        else:
+        # Validate order: must be a list that is a strict permutation of input ids.
+        input_ids = [str(s["story_id"]) for s in stories]
+        order_raw = parsed["order"]
+        if not isinstance(order_raw, list):
+            raise ValueError("order is not a list")
+        order = [str(x) for x in order_raw]
+        if set(order) != set(input_ids) or len(order) != len(input_ids):
             raise ValueError(
-                f"transitions length {len(transitions)} not in {{{n - 1}, {n}}}"
+                f"order {order!r} is not a permutation of input ids {input_ids!r}"
             )
 
-        # Coerce index 0 to "" — nothing precedes story 1
-        if transitions and transitions[0]:
-            transitions[0] = ""
+        # Validate transitions: must be a dict with an entry for every id in order.
+        transitions_raw = parsed["transitions"]
+        if not isinstance(transitions_raw, dict):
+            raise ValueError("transitions is not a dict")
+        for sid in order:
+            if sid not in transitions_raw:
+                raise ValueError(f"transitions missing entry for story id {sid!r}")
+        transitions = {sid: str(transitions_raw[sid]) for sid in order}
 
-        transitions = [str(t) for t in transitions]
+        # Coerce first story's transition to "" — the greeting leads directly into it.
+        if order:
+            transitions[order[0]] = ""
 
     except (KeyError, IndexError, ValueError, json.JSONDecodeError, TypeError) as e:
         logger.warning(
@@ -265,7 +278,7 @@ def generate_connective(
         return None
 
     logger.info(
-        "connective: generated  stories=%d  model=%s",
-        len(stories), _model(),
+        "connective: generated  stories=%d  order=%s  model=%s",
+        len(order), order, _model(),
     )
-    return ConnectiveResult(greeting=greeting, transitions=transitions, outro=outro)
+    return ConnectiveResult(greeting=greeting, order=order, transitions=transitions, outro=outro)
