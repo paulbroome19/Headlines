@@ -223,15 +223,32 @@ def generate_connective(
 
         greeting = str(parsed["greeting"]).strip()
         outro = str(parsed["outro"]).strip()
-        transitions = list(parsed["transitions"])
+
+        # Validate transitions is a list before iterating.
+        # list(parsed["transitions"]) would silently turn a string into a char-list,
+        # so we check the type explicitly first.
+        transitions_raw = parsed["transitions"]
+        if not isinstance(transitions_raw, list):
+            raise ValueError("transitions is not a list")
+        transitions = list(transitions_raw)
 
         if not greeting:
             raise ValueError("greeting is empty")
         if not outro:
             raise ValueError("outro is empty")
-        if len(transitions) != len(stories):
+
+        # Tolerate both N and N-1 transitions for N stories.
+        # Sonnet naturally returns N-1 bridges (one between each adjacent pair);
+        # the correct/natural model shape. We prepend the leading "" for the
+        # no-transition-before-story-1 slot so downstream code always sees N items.
+        n = len(stories)
+        if len(transitions) == n:
+            pass  # already the right length; index-0 coercion happens below
+        elif len(transitions) == n - 1:
+            transitions = [""] + transitions
+        else:
             raise ValueError(
-                f"transitions length {len(transitions)} != stories length {len(stories)}"
+                f"transitions length {len(transitions)} not in {{{n - 1}, {n}}}"
             )
 
         # Coerce index 0 to "" — nothing precedes story 1
