@@ -62,15 +62,6 @@ def _time_of_day(hour: int) -> str:
         return "night"
 
 
-def _est_spoken_duration(n: int) -> str:
-    """Rough spoken duration estimate for n stories."""
-    seconds = n * 35
-    mins = round(seconds / 60)
-    if mins <= 1:
-        return "about a minute"
-    return f"about {mins} minutes"
-
-
 def _build_prompt(
     *,
     stories: list[dict],
@@ -81,7 +72,6 @@ def _build_prompt(
     hour = now.hour
     time_word = _time_of_day(hour)
     n = len(stories)
-    duration = _est_spoken_duration(n)
     name_str = name if name else "no name provided (skip personalisation)"
 
     story_lines: list[str] = []
@@ -111,19 +101,37 @@ def _build_prompt(
         f"- Listener's name: {name_str}\n"
         f"- Time of day: {time_word} (raw hour: {hour})\n"
         f"- Is this their first-ever bulletin: {is_first_bulletin}\n"
-        f"- Number of stories: {n} ({duration})\n"
         f"- Stories (use these ids exactly in your output):\n{stories_block}\n\n"
         "Your task: generate the greeting, choose the best narrative running order for "
         "the stories, write one transition per story, and write the outro — "
         "all as natural spoken text ready for TTS synthesis.\n\n"
         "GREETING:\n"
-        "Greeting FIRST, then ease into the news.\n"
-        "Pattern: greet by name → orient (how many stories, rough length) → lead naturally "
-        "into YOUR FIRST story (the first id in your chosen 'order').\n"
-        "Exact contrast:\n"
-        "  WRONG: \"Markets opened green this morning. Morning, Paul.\"\n"
-        "  RIGHT: \"Morning, Paul. Five stories for you today — let's start with the markets, "
-        "which opened green.\"\n"
+        "Greet the listener, then TRAIL the bulletin — like a radio 'coming up...' — then hand "
+        "into the news. The greeting is a MENU, not the first course: it points at stories, it "
+        "does NOT report them in full.\n"
+        "- Personal greeting, name once if available (e.g. \"Evening, Paul.\" / \"Hi Paul.\"), using "
+        "the UK time of day. If no name, greet naturally without one.\n"
+        "- Trail only the TWO or THREE most compelling stories — NOT every story. The lead is the "
+        "first id in your 'order'; also pick one or two others that hook well. On a long bulletin "
+        "do NOT mention the rest — they're discovered as they play, so the greeting stays the same "
+        "comfortable length whether there are three stories or eight.\n"
+        "- WEIGHTED depth: the LEAD trailed story gets a topic phrase PLUS one concrete hook (a "
+        "number, a name, the single key fact). The other one or two get just a LIGHT topic touch, "
+        "no facts.\n"
+        "- End with a short, natural hand-off into the bulletin (vary it: \"Here's the latest.\" / "
+        "\"Let's get into it.\" / similar).\n"
+        "Target (works the same for three stories or eight):\n"
+        "  \"Hi Paul. Tonight we're covering Venezuela, where the earthquake death toll's climbed "
+        "past fourteen hundred — plus a big telecoms merger, and why some business owners say "
+        "they're earning less than their own staff. Here's the latest.\"\n"
+        "BANNED in the greeting (these are the tells of a machine):\n"
+        "- NO story counts (\"four stories\", \"three things\").\n"
+        "- NO durations (\"should take two minutes\", \"in the next few minutes\").\n"
+        "- NO commentary on the news as a category or on 'the day': never say things like \"heavy "
+        "news day\", \"big day for news\", \"a lot going on today\", \"busy news day\", \"quiet day\", "
+        "\"lots to get through\", or ANY sentence describing the day's overall news volume or "
+        "texture. Stay INSIDE the content — lead with substance, never comment on the news from "
+        "outside.\n"
         + (
             "This is the listener's first-ever bulletin — give a warmer welcome than usual.\n"
             if is_first_bulletin
@@ -153,11 +161,20 @@ def _build_prompt(
         "- Some transitions can be very short or \"\" (a brief pause) — not every one "
         "needs a full sentence.\n\n"
         "OUTRO:\n"
-        "Warm close. Use the name sometimes (not always). Be time-aware — it is currently "
-        f"{time_word} in the UK (hour {hour}). Examples: \"catch you this evening\" in the "
-        "morning, \"sleep well\" at night. Forward-looking but not vague.\n\n"
+        "Close warmly. Name optional (not every time).\n"
+        "- If you point the listener at something to follow, point at a SPECIFIC story by name "
+        "(e.g. \"Venezuela's the one to keep an eye on tomorrow\"), NEVER a characterisation of the "
+        "day.\n"
+        "- Keep genuine human warmth (e.g. \"take care of yourself tonight\").\n"
+        f"- UK time-aware sign-off — it is currently {time_word} in the UK (hour {hour}): morning → "
+        "\"catch you this evening\", evening → \"more tomorrow\", night → \"sleep well\".\n"
+        "- SAME BAN as the greeting: no story counts, no durations, and NO commentary on the day's "
+        "news texture or volume (\"heavy news day\" and all variants).\n"
+        "Target (after a serious bulletin):\n"
+        "  \"That's it for tonight, Paul. Venezuela's the one to keep an eye on as the rescue "
+        "continues. More tomorrow — take care of yourself.\"\n\n"
         "TTS RULES (critical — this is read aloud):\n"
-        "- Write numbers and times as spoken words (\"five stories\", not \"5\").\n"
+        "- Write numbers and times as spoken words (\"fourteen hundred\", not \"1400\").\n"
         "- Keep names naturally spelled (a downstream layer handles problem names).\n\n"
         "Output ONLY valid JSON in this exact shape — no markdown fences, no commentary:\n"
         "{\"greeting\":\"...\",\"order\":" + example_order + ",\"transitions\":" + example_transitions + ",\"outro\":\"...\"}\n"
