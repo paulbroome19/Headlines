@@ -41,7 +41,13 @@ struct CreateProfileView: View {
 
     var body: some View {
         ZStack {
-            BoardColors.background.ignoresSafeArea()
+            // Tapping anywhere off the field dismisses the keyboard. This sits
+            // behind the content, so the input line and chevron still receive
+            // their own taps.
+            BoardColors.background
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { focused = false }
 
             // Progress indicator — top-right, step 1 lit.
             VStack {
@@ -73,27 +79,41 @@ struct CreateProfileView: View {
 
     // MARK: Input line
 
+    // Cell sizing for the typed name — same 1.5 aspect + gap as the Home
+    // greeting so the name reads as the identical board tile.
+    private let nameCellW: CGFloat = 22
+    private var nameCellSize: CGSize { CGSize(width: nameCellW, height: nameCellW * 1.5) }
+    private let nameGap: CGFloat = 3
+
     private var inputLine: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             HStack(spacing: 12) {
+                // The name renders on the shared FlapCell — identical material to
+                // the loader and the "GOOD MORNING, PAUL" greeting. A transparent
+                // TextField behind it captures keystrokes and owns focus.
                 ZStack(alignment: .leading) {
-                    if draft.isEmpty {
-                        Text("WHAT IS YOUR NAME?")
-                            .font(.board(17))
-                            .foregroundColor(BoardColors.character.opacity(0.32))
-                            .tracking(1)
-                    }
                     TextField("", text: $draft)
                         .font(.board(17))
-                        .foregroundColor(BoardColors.character)
-                        .tint(BoardColors.character)
-                        .tracking(1)
+                        .foregroundColor(.clear)
+                        .tint(.clear)                       // hide caret; the cells show the text
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
                         .submitLabel(.go)
                         .focused($focused)
                         .onSubmit(submit)
+                        .frame(height: nameCellSize.height)
+
+                    if draft.isEmpty {
+                        Text("WHAT IS YOUR NAME?")
+                            .font(.board(17))
+                            .foregroundColor(BoardColors.character.opacity(0.32))
+                            .tracking(1)
+                    } else {
+                        nameCells
+                    }
                 }
+                .contentShape(Rectangle())
+                .onTapGesture { focused = true }            // tap the line to (re)focus
 
                 // Open-chevron "enter" — dimmed until a name is entered.
                 Button(action: submit) {
@@ -114,6 +134,22 @@ struct CreateProfileView: View {
                 .fill(BoardColors.character.opacity(0.25))
                 .frame(height: 1)
         }
+    }
+
+    /// The typed name on shared FlapCells — uppercased into the board's caps
+    /// world, spaces rendered as a half-cell gap, matching the Home greeting.
+    private var nameCells: some View {
+        HStack(spacing: nameGap) {
+            ForEach(Array(draft.uppercased().enumerated()), id: \.offset) { _, ch in
+                if ch == " " {
+                    Color.clear.frame(width: nameCellSize.width * 0.5, height: nameCellSize.height)
+                } else {
+                    FlapCell(glyph: ch, size: nameCellSize)
+                }
+            }
+        }
+        .fixedSize()
+        .animation(.easeOut(duration: 0.12), value: draft)
     }
 
     private func submit() {

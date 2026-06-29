@@ -91,7 +91,7 @@ struct HomeView: View {
                 // ── Grain overlay ───────────────────────────────────────
                 Image(uiImage: BoardGrain.image)
                     .resizable(resizingMode: .tile)
-                    .opacity(0.022)
+                    .opacity(0.012)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
 
@@ -240,7 +240,7 @@ struct HomeView: View {
                 // Grain on the button face
                 Image(uiImage: BoardGrain.image)
                     .resizable(resizingMode: .tile)
-                    .opacity(0.04)
+                    .opacity(0.018)
                     .clipShape(Circle())
                     .frame(width: diameter, height: diameter)
 
