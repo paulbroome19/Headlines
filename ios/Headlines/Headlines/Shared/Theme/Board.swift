@@ -65,7 +65,13 @@ enum BoardGrain {
             return UInt8((seed >> 56) & 0xFF)
         }
         for i in 0..<(size * size) {
-            let v = next()
+            // Very low-amplitude noise: a faint deviation around mid-grey so the
+            // tile reads as the subtlest matte texture, never visible static. The
+            // mean is unchanged (neutral 128) so surfaces keep their tone; only
+            // the contrast is cut hard (~8× quieter) so cells and the play button
+            // stay smooth machined material at any normal viewing distance.
+            let dev = (Int(next()) - 128) >> 3            // ≈ −16 … +15
+            let v = UInt8(clamping: 128 + dev)
             pixels[i * 4] = v; pixels[i * 4 + 1] = v; pixels[i * 4 + 2] = v; pixels[i * 4 + 3] = 255
         }
         let cs = CGColorSpaceCreateDeviceRGB()

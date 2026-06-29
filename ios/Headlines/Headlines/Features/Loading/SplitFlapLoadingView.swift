@@ -181,7 +181,7 @@ struct SplitFlapLoadingView: View {
             // Faint coated-material grain over the board.
             Image(uiImage: BoardGrain.image)
                 .resizable(resizingMode: .tile)
-                .opacity(0.022)
+                .opacity(0.012)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
         }

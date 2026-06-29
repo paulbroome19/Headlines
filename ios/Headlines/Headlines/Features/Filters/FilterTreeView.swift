@@ -66,7 +66,7 @@ struct BoardToggle: View {
                 .overlay(
                     Image(uiImage: BoardGrain.image)
                         .resizable(resizingMode: .tile)
-                        .opacity(0.05)
+                        .opacity(0.02)
                         .clipShape(Capsule())
                 )
                 .frame(width: trackW, height: trackH)
