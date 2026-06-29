@@ -67,7 +67,7 @@ struct HomeView: View {
 
             // Greeting cell sizing: fit the longer of the two lines
             let line1 = "GOOD MORNING,"         // 13 chars
-            let line2 = userName                 // variable
+            let line2 = userName.uppercased()    // board world is caps
             let longerCount = max(line1.count, line2.count)
             let boardW = w * 0.88
             let cellGap: CGFloat = 3
@@ -260,7 +260,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private func profileButton() -> some View {
-        let initial = String(userName.prefix(1))
+        let initial = String(userName.prefix(1)).uppercased()
         Button(action: onProfile) {
             ZStack {
                 Circle()
