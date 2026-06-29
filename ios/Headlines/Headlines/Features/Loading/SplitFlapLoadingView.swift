@@ -23,19 +23,23 @@ import AVFoundation
 // MARK: - Design tokens (promote to a shared token file later if desired)
 
 private enum Palette {
-    static let background    = Color(hex: 0x0B0A08)   // warm near-black
-    static let panelTopHi    = Color(hex: 0x3A332A)   // top-panel highlight
-    static let panelTop      = Color(hex: 0x322C24)   // top panel (lighter charcoal)
-    static let panelBottom   = Color(hex: 0x1C1813)   // bottom panel (darker)
-    static let panelBottomLo = Color(hex: 0x141009)   // bottom-panel shade
-    static let seam          = Color(hex: 0x0B0907)   // hinge seam
-    static let pin           = Color(hex: 0x4A4036)   // hinge pins (metallic)
-    static let character     = Color(hex: 0xF6E7D7)   // newsprint cream
+    // Locked monochrome board — no warmth anywhere.
+    static let background = Color(hex: 0x0B0B0B)        // near-black neutral
+
+    // Per-cell vertical gradient #2E2E2E → #151515, split across the two flaps
+    // (top flap slightly lighter than the bottom flap).
+    static let topFlapTop    = Color(hex: 0x2E2E2E)
+    static let topFlapBottom = Color(hex: 0x232323)
+    static let botFlapTop    = Color(hex: 0x1E1E1E)
+    static let botFlapBottom = Color(hex: 0x151515)
+
+    static let seam      = Color(hex: 0x0A0A0A)        // hinge seam / shadows
+    static let character = Color(hex: 0xEDEDEA)        // bone off-white (lit type)
 
     static let panelTopGradient = LinearGradient(
-        colors: [panelTopHi, panelTop], startPoint: .top, endPoint: .bottom)
+        colors: [topFlapTop, topFlapBottom], startPoint: .top, endPoint: .bottom)
     static let panelBottomGradient = LinearGradient(
-        colors: [panelBottom, panelBottomLo], startPoint: .top, endPoint: .bottom)
+        colors: [botFlapTop, botFlapBottom], startPoint: .top, endPoint: .bottom)
 }
 
 private enum Config {
@@ -77,16 +81,11 @@ private enum Config {
     static let tickVolume: Float = 0.12
     static let tickVolumeAccent: Float = 0.22
 
-    static let fontName = "HelveticaNeue-CondensedBold"
     static let flickerGlyphs: [Character] =
         Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&★◆")
 
-    static func font(size: CGFloat) -> Font {
-        if UIFont(name: fontName, size: size) != nil {
-            return .custom(fontName, size: size)
-        }
-        return .system(size: size, weight: .bold).width(.condensed) // iOS 16+ fallback
-    }
+    // Characters route through the shared board token (DejaVu Sans Bold, bundled).
+    static func font(size: CGFloat) -> Font { .board(size) }
 }
 
 // MARK: - Cell model (built once, immutable)
@@ -200,6 +199,13 @@ struct SplitFlapLoadingView: View {
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
             }
+
+            // Faint coated-material grain over the board.
+            Image(uiImage: BoardGrain.image)
+                .resizable(resizingMode: .tile)
+                .opacity(0.022)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
         }
         .onAppear(perform: start)
         .onDisappear { audio?.stop() }
@@ -344,7 +350,8 @@ private struct FlapCellView: View {
         }
         .frame(width: cell.width, height: cell.height)
         .scaleEffect(render.settleScale)
-        .shadow(color: .black.opacity(0.5), radius: 1.5, y: 1)
+        // Soft drop shadow so each cell reads as a separate raised tile.
+        .shadow(color: .black.opacity(0.6), radius: 2, y: 1.5)
     }
 }
 
@@ -358,6 +365,10 @@ private struct FlapPanel: View {
 
     var body: some View {
         let corner = size.width * Config.cornerFraction
+        let halfH = size.height / 2
+        let shape = RoundedCorner(radius: corner,
+                                  corners: half == .top ? [.topLeft, .topRight]
+                                                        : [.bottomLeft, .bottomRight])
         ZStack {
             (half == .top ? Palette.panelTopGradient : Palette.panelBottomGradient)
 
@@ -373,30 +384,40 @@ private struct FlapPanel: View {
 
             if shade > 0 { Color.black.opacity(shade) }
         }
-        .frame(width: size.width, height: size.height / 2)
-        .clipShape(RoundedCorner(radius: corner,
-                                 corners: half == .top ? [.topLeft, .topRight]
-                                                       : [.bottomLeft, .bottomRight]))
+        .frame(width: size.width, height: halfH)
+        // Material edges: top sheen on the upper flap; hinge shadow + hairline
+        // highlight on the top edge of the lower flap, so each cell reads as two
+        // physical panels with a real gap.
+        .overlay(alignment: .top) {
+            if half == .top {
+                LinearGradient(colors: [.white.opacity(0.05), .clear],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: halfH * 0.16)
+                    .allowsHitTesting(false)
+            } else {
+                ZStack(alignment: .top) {
+                    LinearGradient(colors: [.black.opacity(0.5), .clear],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: halfH * 0.22)
+                    Color.white.opacity(0.06)
+                        .frame(height: max(0.5, size.height * 0.006))
+                }
+                .allowsHitTesting(false)
+            }
+        }
+        .clipShape(shape)
     }
 }
 
 private struct SeamView: View {
     let size: CGSize
     var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(Palette.seam)
-                .frame(width: size.width, height: max(1, size.height * 0.03))
-            HStack {
-                Capsule().fill(Palette.pin)
-                    .frame(width: size.width * 0.07, height: max(2, size.height * 0.05))
-                Spacer()
-                Capsule().fill(Palette.pin)
-                    .frame(width: size.width * 0.07, height: max(2, size.height * 0.05))
-            }
-            .frame(width: size.width)
-        }
-        .frame(width: size.width, height: size.height) // centred -> seam at mid-line
+        // The hinge gap: a thin near-black line at the mid-line (the per-flap
+        // shadow + highlight above/below it complete the physical fold).
+        Rectangle()
+            .fill(Palette.seam)
+            .frame(width: size.width, height: max(1, size.height * 0.02))
+            .frame(width: size.width, height: size.height) // centred -> seam at mid-line
     }
 }
 
@@ -483,6 +504,35 @@ private extension Color {
                   green: Double((hex >> 8) & 0xFF) / 255,
                   blue: Double(hex & 0xFF) / 255,
                   opacity: 1)
+    }
+}
+
+// MARK: - Grain texture (coated-material feel)
+
+private enum BoardGrain {
+    /// A small, deterministic monochrome noise tile, generated once and tiled
+    /// under a very low opacity so the board reads as coated material, not flat.
+    static let image: UIImage = make(size: 128)
+
+    private static func make(size: Int) -> UIImage {
+        var pixels = [UInt8](repeating: 0, count: size * size * 4)
+        var seed: UInt64 = 0x9E3779B97F4A7C15            // fixed seed → no per-launch flicker
+        func next() -> UInt8 {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return UInt8((seed >> 56) & 0xFF)
+        }
+        for i in 0..<(size * size) {
+            let v = next()
+            pixels[i * 4] = v; pixels[i * 4 + 1] = v; pixels[i * 4 + 2] = v; pixels[i * 4 + 3] = 255
+        }
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: &pixels, width: size, height: size,
+                                  bitsPerComponent: 8, bytesPerRow: size * 4, space: cs,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let cg = ctx.makeImage() else {
+            return UIImage()
+        }
+        return UIImage(cgImage: cg)
     }
 }
 
