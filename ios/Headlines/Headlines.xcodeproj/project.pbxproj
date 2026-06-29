@@ -22,6 +22,7 @@
 		A1B2C3D4E5F60718293A4B03 /* FilterTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4C03 /* FilterTreeView.swift */; };
 		A1B2C3D4E5F60718293A4B04 /* CreateProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4C04 /* CreateProfileView.swift */; };
 		A1B2C3D4E5F60718293A4B05 /* BuildBriefingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4C05 /* BuildBriefingView.swift */; };
+		A1B2C3D4E5F60718293A4B06 /* TimeOfDay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4C06 /* TimeOfDay.swift */; };
 		B173B5A4FEEADBAC3E744F93 /* DejaVuSans-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B931D6025F630EF803EEC38D /* DejaVuSans-Bold.ttf */; };
 		B1C3D5E7F9A2340678B12345 /* PlayingBarsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B4C6D8E0F1234567890ABC /* PlayingBarsView.swift */; };
 		C2D4E6F8A0B2345678901BCD /* MarqueeText.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C5D7E9F1A2345678902CDE /* MarqueeText.swift */; };
@@ -99,6 +100,7 @@
 		A1B2C3D4E5F60718293A4C03 /* FilterTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilterTreeView.swift; path = Headlines/Features/Filters/FilterTreeView.swift; sourceTree = SOURCE_ROOT; };
 		A1B2C3D4E5F60718293A4C04 /* CreateProfileView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CreateProfileView.swift; path = Headlines/Features/Onboarding/CreateProfileView.swift; sourceTree = SOURCE_ROOT; };
 		A1B2C3D4E5F60718293A4C05 /* BuildBriefingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BuildBriefingView.swift; path = Headlines/Features/Onboarding/BuildBriefingView.swift; sourceTree = SOURCE_ROOT; };
+		A1B2C3D4E5F60718293A4C06 /* TimeOfDay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TimeOfDay.swift; path = Headlines/Shared/TimeOfDay.swift; sourceTree = SOURCE_ROOT; };
 		B931D6025F630EF803EEC38D /* DejaVuSans-Bold.ttf */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = file; name = "DejaVuSans-Bold.ttf"; path = "Resources/Fonts/DejaVuSans-Bold.ttf"; sourceTree = SOURCE_ROOT; };
 		A2B4C6D8E0F1234567890ABC /* PlayingBarsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PlayingBarsView.swift; path = Briefing/PlayingBarsView.swift; sourceTree = "<group>"; };
 		B3C5D7E9F1A2345678902CDE /* MarqueeText.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MarqueeText.swift; path = Briefing/MarqueeText.swift; sourceTree = "<group>"; };
@@ -227,6 +229,7 @@
 			children = (
 			098AB789F6EC577EAC5BB514 /* BoardFont.swift */,
 			A505F4BA0B8230EE734B26BC /* Board.swift */,
+				A1B2C3D4E5F60718293A4C06 /* TimeOfDay.swift */,
 				84E63FDDBB63801738F934BD /* Components */,
 			);
 			name = Shared;
@@ -602,6 +605,7 @@
 				A1B2C3D4E5F60718293A4B03 /* FilterTreeView.swift in Sources */,
 				A1B2C3D4E5F60718293A4B04 /* CreateProfileView.swift in Sources */,
 				A1B2C3D4E5F60718293A4B05 /* BuildBriefingView.swift in Sources */,
+				A1B2C3D4E5F60718293A4B06 /* TimeOfDay.swift in Sources */,
 				B1C3D5E7F9A2340678B12345 /* PlayingBarsView.swift in Sources */,
 				C2D4E6F8A0B2345678901BCD /* MarqueeText.swift in Sources */,
 				64065BC422C7069155D1A006 /* ProfileFormView.swift in Sources */,
