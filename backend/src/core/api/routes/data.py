@@ -24,6 +24,7 @@ from core.pipeline.data.bulletin.repos.user_story_state_repo import (
 )
 from core.pipeline.data.bulletin.assembler import assemble
 from core.pipeline.data.bulletin.connective import generate_connective, uk_now
+from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
     validate_filter_categories,
@@ -669,6 +670,13 @@ def _get_or_assemble_bulletin(
 
             if not stories:
                 raise HTTPException(status_code=404, detail="No stories match the requested filters")
+
+            # TACTICAL #35: collapse same-event duplicates that keyword/hint
+            # clustering missed (paraphrased headlines) BEFORE the connective
+            # tissue and assembly run — so the event is reported once and the
+            # greeting/transitions never repeat it. Conservative; falls back to
+            # no-dedup on any failure. Remove when #36 (embeddings) lands.
+            stories = dedup_same_event(stories)
 
             now_uk = uk_now()
             conn = generate_connective(
