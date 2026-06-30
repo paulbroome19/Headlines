@@ -2,40 +2,69 @@
 //  HeadlinesUITests.swift
 //  HeadlinesUITests
 //
-//  Created by Paul Broome on 31/01/2026.
-//
 
 import XCTest
 
 final class HeadlinesUITests: XCTestCase {
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
-        continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
+        continueAfterFailure = true
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
-    }
-
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    /// Launch straight to Home (skip onboarding) via the UserDefaults argument domain.
+    private func launchToHome() -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchArguments = [
+            "-didOnboard", "1",
+            "-profileId", "1",
+            "-userName", "Paul",
+            "-hasSeenHomeHint", "1",
+        ]
         app.launch()
-
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
+        sleep(5)   // wait out the split-flap loader → Home
+        return app
     }
 
-    func testLaunchPerformance() throws {
-        if #available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 7.0, *) {
-            // This measures how long it takes to launch your application.
-            measure(metrics: [XCTApplicationLaunchMetric()]) {
-                XCUIApplication().launch()
-            }
-        }
+    private func attach(_ name: String, _ text: String) {
+        let a = XCTAttachment(string: text)
+        a.name = name
+        a.lifetime = .keepAlways
+        add(a)
+    }
+
+    /// Tap the REAL Home Play button (centre, on the seam ~61% down) and check
+    /// whether the now-playing screen actually presents. Closes the prior gap
+    /// where only the player VIEW was tested, never the Home BUTTON.
+    func testHomePlayButtonPresentsPlayer() throws {
+        let app = launchToHome()
+        attach("home-before-tap", app.debugDescription)
+
+        // The play button sits at screen centre-x, ~61% down (on the seam).
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.61)).tap()
+
+        // The player (loading "PREPARING YOUR BRIEFING", failed "COULDN'T LOAD
+        // BRIEFING", or the "… BRIEFING" masthead) should appear within a few s.
+        let briefing = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS[c] %@", "BRIEFING")
+        ).firstMatch
+        let appeared = briefing.waitForExistence(timeout: 10)
+
+        attach("home-after-play-tap", app.debugDescription)
+        XCTAssertTrue(appeared, "Play tap did NOT present the player. Screen after tap is attached.")
+    }
+
+    /// Tap the REAL Home Profile "P" (top-right) and record whether any profile
+    /// screen presents.
+    func testHomeProfileButtonOpensProfile() throws {
+        let app = launchToHome()
+
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.11)).tap()
+        sleep(2)
+
+        attach("home-after-profile-tap", app.debugDescription)
+        // A profile/edit screen would contain a Save/Cancel button or a "Name" field.
+        let opened = app.navigationBars.firstMatch.waitForExistence(timeout: 4)
+            || app.buttons["Save"].exists || app.buttons["Cancel"].exists
+        XCTAssertTrue(opened, "Profile tap did NOT open any profile screen. Screen after tap is attached.")
     }
 }
