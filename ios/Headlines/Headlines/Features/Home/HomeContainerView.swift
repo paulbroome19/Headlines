@@ -5,9 +5,9 @@
 //  Wires BOTH Home buttons to the real app:
 //   • Play  (onGenerate) → load a bulletin for the persisted profile (POST
 //     manifest) and present the now-playing screen. Back/close stops + returns.
-//   • Profile (onProfile) → present the profile/filter editor for the current
-//     profile (the working ProfileFormView). Previously unwired (a stub), so
-//     tapping the P did nothing.
+//   • Profile (onProfile) → present the shared filters screen in its SETTINGS
+//     context (ProfileFiltersView) — the SAME light tri-state tree as onboarding,
+//     pre-loaded with the user's current selections, "DONE" saves + returns.
 //
 
 import SwiftUI
@@ -24,13 +24,14 @@ struct HomeContainerView: View {
         HomeView(
             userName: userName.isEmpty ? "PAUL" : userName,
             onGenerate: startBriefing,
-            onProfile: { showProfile = true }
+            onProfile: { showProfile = true },
+            onRefresh: refreshBriefing
         )
         .fullScreenCover(isPresented: $showPlayer) {
             NowPlayingView(player: player, onClose: closePlayer, onRetry: startBriefing)
         }
-        .sheet(isPresented: $showProfile) {
-            ProfileSheet()
+        .fullScreenCover(isPresented: $showProfile) {
+            ProfileFiltersView()
         }
     }
 
@@ -58,68 +59,11 @@ struct HomeContainerView: View {
         player.stop()
         showPlayer = false
     }
-}
 
-// MARK: - Profile sheet
-
-/// Loads the user's current profile and presents the working ProfileFormView in
-/// edit mode (falls back to creating one if none exists). Self-contained so the
-/// Home profile button can present it directly.
-private struct ProfileSheet: View {
-    @AppStorage("profileId") private var profileId = 0
-    @Environment(\.dismiss) private var dismiss
-
-    private enum LoadState: Equatable {
-        case loading
-        case edit(Profile)
-        case create
-        case failed(String)
-    }
-    @State private var state: LoadState = .loading
-    private let service = ProfileService()
-
-    var body: some View {
-        switch state {
-        case .loading:
-            NavigationStack {
-                ProgressView("Loading profile…")
-                    .navigationTitle("Profile")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-            }
-            .task { await load() }
-
-        case .edit(let profile):
-            ProfileFormView(mode: .edit(profile), service: service, onSaved: {})
-
-        case .create:
-            ProfileFormView(mode: .create, service: service, onSaved: {})
-
-        case .failed(let msg):
-            NavigationStack {
-                VStack(spacing: 12) {
-                    Text("Couldn't load your profile").font(.headline)
-                    Text(msg).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    Button("Retry") { state = .loading; Task { await load() } }
-                }
-                .padding()
-                .navigationTitle("Profile")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-            }
-        }
-    }
-
-    private func load() async {
-        do {
-            let profiles = try await service.fetchProfiles()
-            if let p = profiles.first(where: { $0.id == profileId }) ?? profiles.first {
-                state = .edit(p)
-            } else {
-                state = .create
-            }
-        } catch {
-            state = .failed(error.localizedDescription)
-        }
+    /// Refresh = regenerate a fresh briefing, discarding already-heard stories.
+    /// Stubbed for now (the discard-heard behaviour is wired later); kept quiet
+    /// and secondary to the primary Assemble arrow.
+    private func refreshBriefing() {
+        // TODO: regenerate discarding already-heard stories.
     }
 }

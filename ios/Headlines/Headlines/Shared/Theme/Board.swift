@@ -43,6 +43,43 @@ enum BoardColors {
         colors: [botFlapTop, botFlapBottom], startPoint: .top, endPoint: .bottom)
 }
 
+// MARK: - Light register tokens
+
+/// The light "page" world the dark board sits ON — the locked register shared by
+/// the new home, onboarding (Create Profile) and the filters screen. The flap
+/// board is always a contained dark instrument on this near-white page.
+enum LightColors {
+    static let page = Color(hex: 0xF7F7F5)   // near-white page
+    static let ink  = Color(hex: 0x141414)   // near-black ink for labels/rules
+}
+
+extension View {
+    /// The dark flap-board card surface that sits ON the light page — charcoal
+    /// gradient, matte grain, a hairline top-edge highlight and a soft drop
+    /// shadow. Shared by the Home greeting hero and the onboarding cards so the
+    /// contained instrument is identical everywhere.
+    func boardCard(cornerRadius: CGFloat = 18) -> some View {
+        background {
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(LinearGradient(
+                        colors: [BoardColors.topFlapTop, BoardColors.botFlapBottom],
+                        startPoint: .top, endPoint: .bottom))
+
+                Image(uiImage: BoardGrain.image)
+                    .resizable(resizingMode: .tile)
+                    .opacity(0.02)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    .allowsHitTesting(false)
+
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.05), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.22), radius: 22, y: 12)
+        }
+    }
+}
+
 // MARK: - Layout metrics
 
 enum BoardMetrics {
