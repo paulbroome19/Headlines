@@ -40,6 +40,12 @@
         <string>audio</string>
     </array>
 
+    <!-- Bundled board typeface (DejaVu Sans Bold) -->
+    <key>UIAppFonts</key>
+    <array>
+        <string>DejaVuSans-Bold.ttf</string>
+    </array>
+
     <!-- Replaces INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone -->
     <key>UISupportedInterfaceOrientations</key>
     <array>

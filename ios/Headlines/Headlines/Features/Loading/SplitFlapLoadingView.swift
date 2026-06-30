@@ -12,31 +12,15 @@
 //  Drives every cell from a single TimelineView clock (no per-cell timers);
 //  cell state is a pure function of elapsed time, so it's cheap and 60fps.
 //
-//  Almost everything you'd want to dial in lives in `Config` and `Palette`
-//  at the top of this file.
+//  Almost everything you'd want to dial in lives in `Config` at the top of
+//  this file. Colours and shared material live in Shared/Theme/Board.swift.
 //
 
 import SwiftUI
 import UIKit
 import AVFoundation
 
-// MARK: - Design tokens (promote to a shared token file later if desired)
-
-private enum Palette {
-    static let background    = Color(hex: 0x0B0A08)   // warm near-black
-    static let panelTopHi    = Color(hex: 0x3A332A)   // top-panel highlight
-    static let panelTop      = Color(hex: 0x322C24)   // top panel (lighter charcoal)
-    static let panelBottom   = Color(hex: 0x1C1813)   // bottom panel (darker)
-    static let panelBottomLo = Color(hex: 0x141009)   // bottom-panel shade
-    static let seam          = Color(hex: 0x0B0907)   // hinge seam
-    static let pin           = Color(hex: 0x4A4036)   // hinge pins (metallic)
-    static let character     = Color(hex: 0xF6E7D7)   // newsprint cream
-
-    static let panelTopGradient = LinearGradient(
-        colors: [panelTopHi, panelTop], startPoint: .top, endPoint: .bottom)
-    static let panelBottomGradient = LinearGradient(
-        colors: [panelBottom, panelBottomLo], startPoint: .top, endPoint: .bottom)
-}
+// MARK: - Local config (timing, layout, animation — not shared)
 
 private enum Config {
     // ── Board layout ──────────────────────────────────────────────
@@ -47,8 +31,6 @@ private enum Config {
     static let widthFraction: CGFloat = 0.90   // board width as a fraction of screen
     static let cellAspect: CGFloat   = 1.5     // cell height / width
     static let gap: CGFloat          = 3       // uniform gap between cells
-    static let cornerFraction: CGFloat = 0.12  // cell corner radius / cell width
-    static let glyphHeightRatio: CGFloat = 0.62
 
     // ── Timing (seconds) — the feel lives here ────────────────────
     static let flipMin = 0.058          // fastest single-flap duration
@@ -77,16 +59,11 @@ private enum Config {
     static let tickVolume: Float = 0.12
     static let tickVolumeAccent: Float = 0.22
 
-    static let fontName = "HelveticaNeue-CondensedBold"
     static let flickerGlyphs: [Character] =
         Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&★◆")
 
-    static func font(size: CGFloat) -> Font {
-        if UIFont(name: fontName, size: size) != nil {
-            return .custom(fontName, size: size)
-        }
-        return .system(size: size, weight: .bold).width(.condensed) // iOS 16+ fallback
-    }
+    // Characters route through the shared board token (DejaVu Sans Bold, bundled).
+    static func font(size: CGFloat) -> Font { .board(size) }
 }
 
 // MARK: - Cell model (built once, immutable)
@@ -185,7 +162,7 @@ struct SplitFlapLoadingView: View {
 
     var body: some View {
         ZStack {
-            Palette.background.ignoresSafeArea()
+            BoardColors.background.ignoresSafeArea()
 
             GeometryReader { geo in
                 let cell = cellSize(for: geo.size)
@@ -200,6 +177,13 @@ struct SplitFlapLoadingView: View {
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
             }
+
+            // Faint coated-material grain over the board.
+            Image(uiImage: BoardGrain.image)
+                .resizable(resizingMode: .tile)
+                .opacity(0.012)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
         }
         .onAppear(perform: start)
         .onDisappear { audio?.stop() }
@@ -306,7 +290,7 @@ struct SplitFlapLoadingView: View {
     }
 }
 
-// MARK: - Cell view
+// MARK: - Animated cell view (loader-private; uses shared FlapHalfPanel + FlapSeam)
 
 private struct FlapCellView: View {
     let render: CellRender
@@ -316,15 +300,15 @@ private struct FlapCellView: View {
         ZStack {
             // Static base: top and bottom halves.
             VStack(spacing: 0) {
-                FlapPanel(glyph: render.staticTop, half: .top, size: cell)
-                FlapPanel(glyph: render.staticBottom, half: .bottom, size: cell)
+                FlapHalfPanel(glyph: render.staticTop,    half: .top,    size: cell)
+                FlapHalfPanel(glyph: render.staticBottom, half: .bottom, size: cell)
             }
 
-            SeamView(size: cell)
+            FlapSeam(size: cell)
 
             // Folding top flap (old top half rotating down on the hinge).
             if let tf = render.topFlap {
-                FlapPanel(glyph: tf.glyph, half: .top, size: cell, shade: tf.shade)
+                FlapHalfPanel(glyph: tf.glyph, half: .top, size: cell, shade: tf.shade)
                     .rotation3DEffect(.degrees(tf.angle * Config.foldSign),
                                       axis: (x: 1, y: 0, z: 0),
                                       anchor: .bottom, perspective: Config.perspective)
@@ -334,7 +318,7 @@ private struct FlapCellView: View {
 
             // Incoming bottom flap (new bottom half falling into place).
             if let bf = render.bottomFlap {
-                FlapPanel(glyph: bf.glyph, half: .bottom, size: cell, shade: bf.shade)
+                FlapHalfPanel(glyph: bf.glyph, half: .bottom, size: cell, shade: bf.shade)
                     .rotation3DEffect(.degrees(bf.angle * Config.foldSign),
                                       axis: (x: 1, y: 0, z: 0),
                                       anchor: .top, perspective: Config.perspective)
@@ -344,68 +328,8 @@ private struct FlapCellView: View {
         }
         .frame(width: cell.width, height: cell.height)
         .scaleEffect(render.settleScale)
-        .shadow(color: .black.opacity(0.5), radius: 1.5, y: 1)
-    }
-}
-
-private enum Half { case top, bottom }
-
-private struct FlapPanel: View {
-    let glyph: Character?
-    let half: Half
-    let size: CGSize
-    var shade: Double = 0
-
-    var body: some View {
-        let corner = size.width * Config.cornerFraction
-        ZStack {
-            (half == .top ? Palette.panelTopGradient : Palette.panelBottomGradient)
-
-            if let g = glyph, g != " " {
-                Text(String(g))
-                    .font(Config.font(size: size.height * Config.glyphHeightRatio))
-                    .foregroundColor(Palette.character)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .frame(width: size.width, height: size.height)
-                    .offset(y: half == .top ? size.height / 4 : -size.height / 4)
-            }
-
-            if shade > 0 { Color.black.opacity(shade) }
-        }
-        .frame(width: size.width, height: size.height / 2)
-        .clipShape(RoundedCorner(radius: corner,
-                                 corners: half == .top ? [.topLeft, .topRight]
-                                                       : [.bottomLeft, .bottomRight]))
-    }
-}
-
-private struct SeamView: View {
-    let size: CGSize
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(Palette.seam)
-                .frame(width: size.width, height: max(1, size.height * 0.03))
-            HStack {
-                Capsule().fill(Palette.pin)
-                    .frame(width: size.width * 0.07, height: max(2, size.height * 0.05))
-                Spacer()
-                Capsule().fill(Palette.pin)
-                    .frame(width: size.width * 0.07, height: max(2, size.height * 0.05))
-            }
-            .frame(width: size.width)
-        }
-        .frame(width: size.width, height: size.height) // centred -> seam at mid-line
-    }
-}
-
-private struct RoundedCorner: Shape {
-    var radius: CGFloat
-    var corners: UIRectCorner
-    func path(in rect: CGRect) -> Path {
-        Path(UIBezierPath(roundedRect: rect, byRoundingCorners: corners,
-                          cornerRadii: CGSize(width: radius, height: radius)).cgPath)
+        // Soft drop shadow so each cell reads as a separate raised tile.
+        .shadow(color: .black.opacity(0.6), radius: 2, y: 1.5)
     }
 }
 
@@ -471,18 +395,6 @@ private final class FlapAudio {
         guard available else { return }
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
-    }
-}
-
-// MARK: - Color hex helper
-
-private extension Color {
-    init(hex: UInt32) {
-        self.init(.sRGB,
-                  red: Double((hex >> 16) & 0xFF) / 255,
-                  green: Double((hex >> 8) & 0xFF) / 255,
-                  blue: Double(hex & 0xFF) / 255,
-                  opacity: 1)
     }
 }
 
