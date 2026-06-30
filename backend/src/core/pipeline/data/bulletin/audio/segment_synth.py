@@ -48,10 +48,17 @@ from core.pipeline.data.bulletin.audio.tts_client import (
     tts_provider,
 )
 from core.pipeline.data.bulletin.audio.repos.segment_audio_repo import SegmentAudioRepo
+from core.pipeline.data.bulletin.audio.repos.segment_audio_failure_repo import SegmentAudioFailureRepo
 from core.platform.db.session import SessionLocal
 from core.platform.storage.audio_storage import get_audio_storage_provider
 
 logger = logging.getLogger(__name__)
+
+# TTS is occasionally transient (rate limit, blip) — retry a couple of times with
+# brief backoff before declaring a segment genuinely FAILED, so the API can tell
+# iOS "still generating" vs "failed" honestly.
+_TTS_MAX_ATTEMPTS = 3                # 1 initial + 2 retries
+_TTS_RETRY_BACKOFF = [0.5, 1.5]      # seconds of backoff before attempts 2 and 3
 
 _FETCH_TIMEOUT_SECONDS = 30
 _MAX_PARALLEL_FETCHES = 8
@@ -221,18 +228,55 @@ def _synthesize_and_cache(
                                created_at.
     stale_row is None      →  insert(): ON CONFLICT DO NOTHING; first writer wins.
     """
-    audio = synthesize(
-        text,
-        provider=tts_provider(),
-        voice=voice,
-        model=model,
-        audio_format=audio_format,
-    )
+    # Retry a couple of times with brief backoff — most TTS failures are
+    # transient. Only after all attempts fail is the segment GENUINELY failed.
+    audio = None
+    last_error = ""
+    for attempt in range(1, _TTS_MAX_ATTEMPTS + 1):
+        try:
+            audio = synthesize(
+                text,
+                provider=tts_provider(),
+                voice=voice,
+                model=model,
+                audio_format=audio_format,
+            )
+        except Exception as e:  # defensive — synthesize() is fail-closed, but never let it raise here
+            audio = None
+            last_error = repr(e)
+        if audio is not None:
+            break
+        last_error = last_error or "TTS returned None"
+        if attempt < _TTS_MAX_ATTEMPTS:
+            backoff = _TTS_RETRY_BACKOFF[min(attempt - 1, len(_TTS_RETRY_BACKOFF) - 1)]
+            logger.warning(
+                "_synthesize_and_cache RETRY  type=%-12s hash=%s  attempt=%d/%d (%s) — backoff %.1fs",
+                segment_type, script_hash, attempt, _TTS_MAX_ATTEMPTS, last_error, backoff,
+            )
+            time.sleep(backoff)
+
     if audio is None:
-        logger.warning(
-            "_synthesize_and_cache FAIL  type=%-12s hash=%s — TTS returned None",
-            segment_type, script_hash,
+        # GENUINELY failed after retries — record an honest FAILED state (so iOS
+        # can distinguish it from "still generating") and log it loudly.
+        logger.error(
+            "_synthesize_and_cache FAILED  type=%-12s hash=%s — TTS failed after %d attempts: %s",
+            segment_type, script_hash, _TTS_MAX_ATTEMPTS, last_error,
         )
+        try:
+            with SessionLocal() as db:
+                SegmentAudioFailureRepo(db).record(
+                    script_hash=script_hash,
+                    voice=voice,
+                    model=model,
+                    audio_format=audio_format,
+                    attempts=_TTS_MAX_ATTEMPTS,
+                    last_error=last_error,
+                )
+                db.commit()
+        except Exception as e:  # never let failure-bookkeeping itself break the worker
+            logger.warning(
+                "_synthesize_and_cache: could not record failure for hash=%s (%s)", script_hash, e
+            )
         return None
 
     duration = mp3_duration_from_bytes(audio)
@@ -269,6 +313,10 @@ def _synthesize_and_cache(
                 character_count=len(text),
                 duration_seconds=duration,
             )
+        # Recovered: clear any prior failure row so it's no longer reported failed.
+        SegmentAudioFailureRepo(db).clear(
+            script_hash=script_hash, voice=voice, model=model, audio_format=audio_format,
+        )
         db.commit()
 
     return audio

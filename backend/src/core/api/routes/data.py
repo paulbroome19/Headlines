@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel
 from uuid import uuid4
 
@@ -45,6 +45,7 @@ from core.pipeline.data.bulletin.audio.tts_client import (
 from core.pipeline.data.bulletin.audio.segment_synth import synthesize_segments, synthesize_segment
 from core.pipeline.data.summarise.handlers.rank_completed import ensure_story_summaries
 from core.pipeline.data.bulletin.audio.repos.segment_audio_repo import SegmentAudioRepo
+from core.pipeline.data.bulletin.audio.repos.segment_audio_failure_repo import SegmentAudioFailureRepo
 from core.pipeline.data.bulletin.audio.repos.bulletin_audio_repo import BulletinAudioRepo
 from core.platform.storage.audio_storage import get_audio_storage_provider
 from core.platform.config.voices import get_available_voices, get_voice, Voice
@@ -55,6 +56,11 @@ router = APIRouter(prefix="/data", tags=["data"])
 
 _SEGMENT_POLL_INTERVAL = 0.25   # seconds between cache-check polls
 _SEGMENT_POLL_MAX      = 40     # 40 × 0.25s = 10s max wait
+
+# "Safe to start" playback when the first N segments (intro + first story, for the
+# current intro/story/transition/... structure) have audio ready — a head-start so
+# real-time speech stays ahead of ~1-2s/segment background generation. Tunable.
+_SAFE_START_LEAD_SEGMENTS = 2
 
 # Maximum ranked stories to summarise on-demand per Generate press.
 # Covers a 5-min bulletin (typically 5–6 stories) with headroom for category filtering.
@@ -852,13 +858,20 @@ def assemble_and_audio(req: AssembleAudioRequest):
 @router.get("/segments/{segment_hash}.{ext}")
 async def serve_segment(segment_hash: str, ext: str):
     """
-    Serve a cached segment audio file.
+    Serve a segment's audio, with HONEST, DISTINGUISHABLE states so iOS can tell
+    "not ready yet, keep polling" apart from "genuinely failed":
 
-    For cache hits: serves immediately from local storage or redirects to S3/CDN.
-    For in-flight generation: polls the segment_audio DB row every 250ms for up
-    to 10s. Returns 503 if generation does not complete within the timeout.
+      READY    → 302 redirect to R2 (or FileResponse). Unchanged — current apps
+                 follow this exactly as before.
+      FAILED   → 502 + JSON {"state":"failed", ...}. The segment's TTS failed
+                 after retries (a failure row exists). Returned immediately, no
+                 pointless wait. Distinct from "pending".
+      PENDING  → 503 + Retry-After + JSON {"state":"pending", ...} after the poll
+                 window. Still generating — keep polling. (Kept at 503 so current
+                 apps behave exactly as today; the body/Retry-After is additive.)
 
-    This endpoint is async so it never holds a thread while waiting.
+    Polls the segment_audio cache every 250ms for up to 10s. Async — never holds
+    a thread while waiting.
     """
     voice = tts_voice()
     model = tts_model()
@@ -867,11 +880,14 @@ async def serve_segment(segment_hash: str, ext: str):
     for _ in range(_SEGMENT_POLL_MAX):
         with SessionLocal() as db:
             row = SegmentAudioRepo(db).get_cached(
-                script_hash=segment_hash,
-                voice=voice,
-                model=model,
-                audio_format=audio_fmt,
+                script_hash=segment_hash, voice=voice, model=model, audio_format=audio_fmt,
             )
+            # Only check the failure table when there's no audio yet (keeps the
+            # hot READY path a single query).
+            failure = None if row else SegmentAudioFailureRepo(db).is_failed(
+                script_hash=segment_hash, voice=voice, model=model, audio_format=audio_fmt,
+            )
+
         if row:
             storage_path = row.get("storage_path") or ""
             if storage_path and os.path.isfile(storage_path):
@@ -879,12 +895,96 @@ async def serve_segment(segment_hash: str, ext: str):
             audio_url = row.get("audio_url")
             if audio_url:
                 return RedirectResponse(audio_url, status_code=302)
+
+        if failure:
+            # GENUINELY FAILED — distinct from "still generating". Return now.
+            logger.warning(
+                "serve_segment FAILED  hash=%s  attempts=%s  reason=%s",
+                segment_hash, failure.get("attempts"), failure.get("last_error"),
+            )
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "state": "failed",
+                    "segment": segment_hash,
+                    "reason": failure.get("last_error") or "tts_failed",
+                },
+            )
+
         await asyncio.sleep(_SEGMENT_POLL_INTERVAL)
 
-    raise HTTPException(
+    # Poll window elapsed and not failed → STILL GENERATING. Honest "keep polling".
+    return JSONResponse(
         status_code=503,
-        detail=f"Segment {segment_hash} not yet available — generation timed out",
+        content={"state": "pending", "segment": segment_hash},
+        headers={"Retry-After": "1"},
     )
+
+
+@router.get("/bulletins/{bulletin_id}/readiness")
+def get_bulletin_readiness(bulletin_id: int):
+    """
+    Honest readiness/progress signal for the iOS loader gate.
+
+    Reports, for a bulletin iOS already has the id for (from the manifest), which
+    segments' audio is READY (cached) vs PENDING (still generating) vs FAILED
+    (genuinely failed after retries), plus whether it is SAFE_TO_START playback
+    now — the first `_SAFE_START_LEAD_SEGMENTS` segments (intro + first story)
+    have audio, so real-time speech stays ahead of ~1-2s/segment background
+    generation while the rest finish.
+
+    iOS polls this ~0.5-1s after the manifest returns to drive a real progress
+    bar and flip to playback at `safe_to_start`. Additive — does NOT change the
+    manifest or segment contracts iOS already depends on.
+    """
+    voice = tts_voice()
+    model = tts_model()
+    audio_fmt = tts_audio_format()
+
+    with SessionLocal() as db:
+        bulletin = BulletinRepo(db).get_by_id(bulletin_id)
+        if bulletin is None:
+            raise HTTPException(status_code=404, detail=f"Bulletin {bulletin_id} not found")
+
+        segs = bulletin["segments"]
+        if not isinstance(segs, list):
+            segs = _json.loads(segs)
+
+        # Reconstruct the manifest's playable segment list: non-empty text, in
+        # order (mirrors get_manifest's hashing exactly).
+        playable = [s for s in segs if (s.get("text") or "").strip()]
+        hashes = [compute_script_hash(s["text"]) for s in playable]
+
+        ready_map = SegmentAudioRepo(db).get_cached_batch(
+            script_hashes=hashes, voice=voice, model=model, audio_format=audio_fmt,
+        )
+        failed_set = SegmentAudioFailureRepo(db).get_failed_batch(
+            script_hashes=hashes, voice=voice, model=model, audio_format=audio_fmt,
+        )
+
+    ready_set = set(ready_map.keys())
+    out_segments: list[dict] = []
+    for i, (s, h) in enumerate(zip(playable, hashes)):
+        if h in ready_set:
+            state = "ready"
+        elif h in failed_set:
+            state = "failed"
+        else:
+            state = "pending"
+        out_segments.append({"index": i, "type": s.get("type", "story"), "state": state})
+
+    lead = min(_SAFE_START_LEAD_SEGMENTS, len(out_segments))
+    safe_to_start = lead > 0 and all(out_segments[i]["state"] == "ready" for i in range(lead))
+
+    return {
+        "bulletin_id": bulletin_id,
+        "assembled": True,
+        "total_segments": len(out_segments),
+        "ready_segments": sum(1 for x in out_segments if x["state"] == "ready"),
+        "failed_segments": sum(1 for x in out_segments if x["state"] == "failed"),
+        "safe_to_start": safe_to_start,
+        "segments": out_segments,
+    }
 
 
 # ── Bulletin event tracking ────────────────────────────────────────────────────
