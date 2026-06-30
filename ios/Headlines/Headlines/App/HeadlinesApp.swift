@@ -12,6 +12,23 @@ struct HeadlinesApp: App {
 
     @State private var phase: Phase = .loading
 
+    init() {
+        #if DEBUG
+        // DEBUG-only: launch with `-resetFirstRun` (e.g. via `xcrun simctl
+        // launch <udid> <bid> -resetFirstRun`) to clear onboarding + the hint
+        // flag and re-trigger the full first-run, no reinstall needed.
+        if CommandLine.arguments.contains("-resetFirstRun") {
+            // Write the first-run values explicitly (not removeObject) so the
+            // App's own @AppStorage reads pick them up deterministically on this
+            // launch rather than racing a deleted key.
+            let d = UserDefaults.standard
+            d.set("", forKey: "userName")
+            d.set(false, forKey: "didOnboard")
+            d.set(false, forKey: "hasSeenHomeHint")
+        }
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             Group {
