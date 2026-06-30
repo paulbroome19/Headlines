@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from core.api.router import router
+from core.api.middleware.security import SecurityMiddleware
 
 from core.api.routes import audio
 
@@ -48,6 +49,11 @@ def create_app() -> FastAPI:
         format="%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s",
     )
     app = FastAPI(title="Headlines Backend", lifespan=lifespan)
+    # API protection (issue #19): app-key gating, dev-endpoint lockdown, and
+    # rate limiting — all centralised in one middleware so it applies to every
+    # route consistently. Defaults are safe (no enforcement) until env flags are
+    # set, so adding this never breaks the running app.
+    app.add_middleware(SecurityMiddleware)
     app.include_router(router)
     app.include_router(audio.router)
     return app

@@ -58,6 +58,25 @@ class Settings(BaseSettings):
     # Public API base URL — used to construct absolute URLs in manifest responses
     public_api_base_url: str = "http://localhost:8000"
 
+    # ── API protection (issue #19) ────────────────────────────────────────────
+    # Single shared app key gating /data/* and /feeds/*. Enforcement is OFF by
+    # default so deploying this never breaks the running app — flip REQUIRE_API_KEY
+    # to true (with API_ACCESS_KEY set) only once the iOS build that sends the key
+    # is live. Audio delivery (/data/segments, /audio/outputs, /dev/api/audio) and
+    # /health are always exempt.
+    require_api_key: bool = False
+    api_access_key: str | None = None
+
+    # Dev/inspection endpoints (/dev/api/*, /data/ingest/test, /data/*/latest,
+    # /scripts/*) are disabled in production by default — set true locally to use
+    # them via curl. The app's /dev/api/audio/{id}/file download is NEVER gated.
+    enable_dev_endpoints: bool = False
+
+    # Per-IP rate limit on expensive (LLM/TTS) endpoints — a cost/DoS backstop,
+    # not a quota system. Generous for ~20 users; caps a runaway loop.
+    rate_limit_max: int = 20
+    rate_limit_window_seconds: int = 60
+
     # TTS
     tts_provider: str = "elevenlabs"
     tts_voice: str = "JBFqnCBsd6RMkjVDRZzb"   # ElevenLabs "George" — British male
