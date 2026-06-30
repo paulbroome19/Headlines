@@ -1,17 +1,27 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import time
 from datetime import datetime
 from typing import Optional
 
 from core.platform.config.settings import settings
 from core.platform.db.session import SessionLocal
-from core.platform.providers.gnews import GNewsClient
+from core.platform.providers.gnews import GNewsClient, GNewsError
 from core.platform.queue.event import Event
 from core.platform.queue.outbox import OutboxRepo
 from core.pipeline.data.ingest.repos.ingested_article_repo import IngestedArticleRepo
 from core.pipeline.data.ingest.repos.ingestion_run_repo import IngestionRunRepo
 from core.pipeline.data.normalise.events import DATA_NORMALISE_REQUESTED
+
+logger = logging.getLogger(__name__)
+
+# On a GNews 429 we honour Retry-After, but cap the in-thread sleep so a large
+# server value can't stall the shared consumer thread. The real backoff is the
+# 30-min scheduled cadence; this just avoids hammering within a batch.
+_GNEWS_429_DEFAULT_BACKOFF_SECONDS = 2
+_GNEWS_BACKOFF_CAP_SECONDS = 5
 
 
 def _dedup_hash_for_url(url: str) -> str:
@@ -62,25 +72,51 @@ def handle_ingest_requested(event: dict) -> None:
         run = runs.create(source=source)
 
         # 2) Fetch from GNews (gated on settings.gnews_enabled)
-        if not settings.gnews_enabled:
-            print("ingest skipped: GNEWS_ENABLED=false")
+        #
+        # A GNews 429 / network error / API error must NEVER kill the consumer
+        # thread (the audit's silent-death mode: GNews rate-limits, GNewsError
+        # propagates, the thread dies, ingestion stops forever). Catch it here,
+        # log it, skip this cycle, and let the next scheduled tick retry. The
+        # run row is still recorded with zero articles, and the pipeline
+        # continues cleanly (normalise of 0 articles is a no-op) — exactly the
+        # same path as GNEWS_ENABLED=false.
+        try:
+            if not settings.gnews_enabled:
+                print("ingest skipped: GNEWS_ENABLED=false")
+                articles = []
+            elif query:
+                client = GNewsClient()
+                articles = client.search(
+                    query=query,
+                    lang=lang,
+                    country=country,
+                    max_results=max_results,
+                )
+            else:
+                client = GNewsClient()
+                articles = client.top_headlines(
+                    lang=lang,
+                    country=country,
+                    max_results=max_results,
+                    topic=topic,
+                )
+        except GNewsError as e:
             articles = []
-        elif query:
-            client = GNewsClient()
-            articles = client.search(
-                query=query,
-                lang=lang,
-                country=country,
-                max_results=max_results,
-            )
-        else:
-            client = GNewsClient()
-            articles = client.top_headlines(
-                lang=lang,
-                country=country,
-                max_results=max_results,
-                topic=topic,
-            )
+            if e.status_code == 429:
+                backoff = min(
+                    e.retry_after or _GNEWS_429_DEFAULT_BACKOFF_SECONDS,
+                    _GNEWS_BACKOFF_CAP_SECONDS,
+                )
+                logger.warning(
+                    "ingest: GNews rate-limited (429) — skipping cycle, backing off %ss (run_id=%s): %s",
+                    backoff, run.id, e,
+                )
+                time.sleep(backoff)
+            else:
+                logger.warning(
+                    "ingest: GNews fetch failed — skipping cycle (run_id=%s): %s",
+                    run.id, e,
+                )
 
         # 3) Insert into data.ingested_articles
         inserted_count = 0

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from core.api.router import router
 from core.api.middleware.security import SecurityMiddleware
+from core.api.worker_registry import register as register_worker
 
 from core.api.routes import audio
 
@@ -24,6 +25,7 @@ def _start_daemon(name: str, target) -> None:
     """
     thread = threading.Thread(target=target, name=name, daemon=True)
     thread.start()
+    register_worker(name, thread)  # so /health can report real liveness
     logger.info("in-process worker thread started: name=%s", name)
 
 
