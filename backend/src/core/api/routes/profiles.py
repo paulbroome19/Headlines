@@ -159,10 +159,6 @@ def get_profile_bulletin(profile_id: int, force: bool = False):
 
 # ── Manifest (streaming playback) ─────────────────────────────────────────────
 
-# Placed before the first bulletin, the sting plays immediately on tap.
-# Replace this text with a recorded asset by inserting a row in segment_audio.
-_STING_SCRIPT = "Headlines."
-
 
 class ManifestRequest(BaseModel):
     include_top_stories: bool = True
@@ -176,7 +172,8 @@ def get_manifest(
 ):
     """
     Return a bulletin manifest immediately, triggering background audio generation
-    for any uncached segments. iOS begins playing the sting while generation runs.
+    for any uncached segments. The bulletin opens directly with the greeting; iOS
+    begins playing the first segment as soon as its audio is ready.
 
     Flow:
       1. TTL cleanup  — delete stale queued rows (>24h) before assembly
@@ -238,8 +235,8 @@ def get_manifest(
         )
         db.commit()
 
-    # Step 4: Single batch cache check for all non-empty segments + sting.
-    all_texts = [_STING_SCRIPT] + [
+    # Step 4: Single batch cache check for all non-empty segments.
+    all_texts = [
         seg["text"] for seg in plan["segments"] if (seg.get("text") or "").strip()
     ]
     all_hashes = [compute_script_hash(t) for t in all_texts]
@@ -254,7 +251,7 @@ def get_manifest(
     # Step 5: Enqueue background TTS for every cache miss.
     for text_val, h in zip(all_texts, all_hashes):
         if h not in cached_map:
-            seg_type = "sting" if text_val == _STING_SCRIPT else next(
+            seg_type = next(
                 (s.get("type", "story") for s in plan["segments"] if (s.get("text") or "") == text_val),
                 "story",
             )
@@ -276,18 +273,10 @@ def get_manifest(
         for s in plan.get("stories_list", [])
     }
 
-    sting_hash = compute_script_hash(_STING_SCRIPT)
-    sting_row  = cached_map.get(sting_hash)
-    manifest_segments = [
-        {
-            "index":       0,
-            "type":        "sting",
-            "url":         f"{base_url}/data/segments/{sting_hash}.{ext}",
-            "duration_ms": round((sting_row["duration_seconds"] * 1000) if sting_row and sting_row.get("duration_seconds") else 3000),
-        }
-    ]
+    # The bulletin opens directly with the greeting — no "Headlines." sting.
+    manifest_segments: list[dict[str, Any]] = []
 
-    for i, seg in enumerate(plan["segments"], start=1):
+    for i, seg in enumerate(plan["segments"], start=0):
         text_val = seg.get("text") or ""
         if not text_val.strip():
             continue
