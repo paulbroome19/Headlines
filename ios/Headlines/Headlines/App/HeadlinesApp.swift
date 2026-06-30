@@ -54,9 +54,9 @@ struct HeadlinesApp: App {
                         .transition(.opacity)
 
                 case .home:
-                    // Greets with the stored name; "PAUL" only as a preview/empty
-                    // fallback that onboarding always overwrites.
-                    HomeView(userName: userName.isEmpty ? "PAUL" : userName)
+                    // Home + the now-playing player. HomeContainerView owns the
+                    // BulletinPlayer and wires Play → generate → playback.
+                    HomeContainerView()
                         .transition(.opacity)
                 }
             }

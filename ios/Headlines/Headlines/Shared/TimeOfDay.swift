@@ -39,7 +39,15 @@ enum TimeOfDay {
         }
     }
 
-    // Future: `var briefingEdition: String` (e.g. "MORNING BRIEFING" /
-    // "EVENING BRIEFING") will live here too, so the bulletin edition label and
-    // this greeting always share one source. Not built yet.
+    /// The bulletin edition label for this period (e.g. "MORNING BRIEFING") —
+    /// the masthead on the playback page. Same source as `greeting`, so the
+    /// edition and the home greeting can never drift out of sync.
+    var briefingEdition: String {
+        switch self {
+        case .morning:   return "MORNING BRIEFING"
+        case .afternoon: return "AFTERNOON BRIEFING"
+        case .evening:   return "EVENING BRIEFING"
+        case .night:     return "NIGHT BRIEFING"
+        }
+    }
 }
