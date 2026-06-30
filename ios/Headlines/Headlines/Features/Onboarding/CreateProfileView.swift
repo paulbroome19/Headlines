@@ -102,27 +102,7 @@ struct CreateProfileView: View {
         .padding(.horizontal, cardPadding)
         .padding(.vertical, cardPadding + 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground)
-    }
-
-    private var cardBackground: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: cardCorner, style: .continuous)
-                .fill(LinearGradient(
-                    colors: [BoardColors.topFlapTop, BoardColors.botFlapBottom],
-                    startPoint: .top, endPoint: .bottom))
-
-            Image(uiImage: BoardGrain.image)
-                .resizable(resizingMode: .tile)
-                .opacity(0.02)
-                .clipShape(RoundedRectangle(cornerRadius: cardCorner, style: .continuous))
-                .allowsHitTesting(false)
-
-            // Hairline top-edge highlight — the same raised material language.
-            RoundedRectangle(cornerRadius: cardCorner, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.05), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.22), radius: 22, y: 12)
+        .boardCard(cornerRadius: cardCorner)
     }
 
     // MARK: Heading flap cells

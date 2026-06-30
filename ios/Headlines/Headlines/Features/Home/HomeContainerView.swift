@@ -24,7 +24,8 @@ struct HomeContainerView: View {
         HomeView(
             userName: userName.isEmpty ? "PAUL" : userName,
             onGenerate: startBriefing,
-            onProfile: { showProfile = true }
+            onProfile: { showProfile = true },
+            onRefresh: refreshBriefing
         )
         .fullScreenCover(isPresented: $showPlayer) {
             NowPlayingView(player: player, onClose: closePlayer, onRetry: startBriefing)
@@ -57,5 +58,12 @@ struct HomeContainerView: View {
     private func closePlayer() {
         player.stop()
         showPlayer = false
+    }
+
+    /// Refresh = regenerate a fresh briefing, discarding already-heard stories.
+    /// Stubbed for now (the discard-heard behaviour is wired later); kept quiet
+    /// and secondary to the primary Assemble arrow.
+    private func refreshBriefing() {
+        // TODO: regenerate discarding already-heard stories.
     }
 }

@@ -32,15 +32,14 @@ final class HeadlinesUITests: XCTestCase {
         add(a)
     }
 
-    /// Tap the REAL Home Play button (centre, on the seam ~61% down) and check
-    /// whether the now-playing screen actually presents. Closes the prior gap
-    /// where only the player VIEW was tested, never the Home BUTTON.
+    /// Tap the REAL Home "Assemble your briefing" arrow (docked at the base of
+    /// the greeting card) and check the now-playing screen actually presents.
+    /// Taps by accessibility label so it's robust to the C6 layout.
     func testHomePlayButtonPresentsPlayer() throws {
         let app = launchToHome()
         attach("home-before-tap", app.debugDescription)
 
-        // The play button sits at screen centre-x, ~61% down (on the seam).
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.61)).tap()
+        app.buttons["Assemble your briefing"].firstMatch.tap()
 
         // The player (loading "PREPARING YOUR BRIEFING", failed "COULDN'T LOAD
         // BRIEFING", or the "… BRIEFING" masthead) should appear within a few s.
@@ -50,21 +49,25 @@ final class HeadlinesUITests: XCTestCase {
         let appeared = briefing.waitForExistence(timeout: 10)
 
         attach("home-after-play-tap", app.debugDescription)
-        XCTAssertTrue(appeared, "Play tap did NOT present the player. Screen after tap is attached.")
+        XCTAssertTrue(appeared, "Arrow tap did NOT present the player. Screen after tap is attached.")
     }
 
-    /// Tap the REAL Home Profile "P" (top-right) and record whether any profile
-    /// screen presents.
+    /// Tap the REAL Home Profile "P" (masthead, top-right) and check the light
+    /// settings filters screen (ProfileFiltersView) presents.
     func testHomeProfileButtonOpensProfile() throws {
         let app = launchToHome()
 
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.11)).tap()
-        sleep(2)
+        app.buttons["Profile"].firstMatch.tap()
+
+        // ProfileFiltersView shows "LOADING YOUR FILTERS", then the tree (CTA
+        // "DONE") or a "… CATEGORIES" / "… FILTERS" state — all light-register,
+        // no nav bar. Any of these means the settings filters opened.
+        let pred = NSPredicate(format: "label CONTAINS[c] %@ OR label CONTAINS[c] %@",
+                               "filters", "categories")
+        let opened = app.staticTexts.containing(pred).firstMatch.waitForExistence(timeout: 8)
+            || app.buttons["DONE"].waitForExistence(timeout: 1)
 
         attach("home-after-profile-tap", app.debugDescription)
-        // A profile/edit screen would contain a Save/Cancel button or a "Name" field.
-        let opened = app.navigationBars.firstMatch.waitForExistence(timeout: 4)
-            || app.buttons["Save"].exists || app.buttons["Cancel"].exists
-        XCTAssertTrue(opened, "Profile tap did NOT open any profile screen. Screen after tap is attached.")
+        XCTAssertTrue(opened, "Profile tap did NOT open the settings filters. Screen after tap is attached.")
     }
 }

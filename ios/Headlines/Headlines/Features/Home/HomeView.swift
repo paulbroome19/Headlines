@@ -2,16 +2,19 @@
 //  HomeView.swift
 //  Headlines
 //
-//  The dark "board at rest" the user lands on between briefings.
-//  Callbacks (onGenerate, onProfile) are stubbed — wire them up at the
-//  call-site when the generate flow and settings are built.
+//  Home in the locked LIGHT register (C6): a near-white page with the dark
+//  flap-board greeting as a contained hero instrument, the machined forward
+//  arrow docked into its base (the generate action), and a quiet masthead
+//  (HEADLINES · refresh · profile). Matches onboarding + playback exactly — one
+//  product. The arrow keeps the existing generate→play wiring; the "P" opens the
+//  settings filters (wired at the call-site in HomeContainerView).
 //
 
 import SwiftUI
 
-// The Play disc and its depth now live in the shared `MachinedDisc` /
-// `MachinedDiscButtonStyle` (Shared/Theme/MachinedDisc.swift) so the Home Play
-// button and the onboarding / filters forward arrow render identically.
+// The flap material is the shared `FlapCell` / `boardCard` (Board.swift); the
+// machined disc + its depth are the shared `MachinedDisc` /
+// `MachinedDiscButtonStyle` (MachinedDisc.swift) — identical to onboarding.
 
 // MARK: - HomeView
 
@@ -24,157 +27,180 @@ struct HomeView: View {
     var now: Date = Date()
     var onGenerate: () -> Void = {}
     var onProfile:  () -> Void = {}
+    /// Refresh = regenerate a fresh briefing, discarding already-heard stories.
+    /// Behaviour is wired later; quiet/secondary affordance for now.
+    var onRefresh:  () -> Void = {}
 
-    @AppStorage("hasSeenHomeHint") private var hasSeenHomeHint = false
-    /// Local flag so the hint stays visible for the whole first session
-    /// even though we set the AppStorage flag in onAppear.
-    @State private var showHint = false
+    // Layout constants — shared margins/disc size so Home reads as the same
+    // product as onboarding/playback.
+    private let pageMargin: CGFloat   = BottomActionBar.pageMargin
+    private let cardInnerPad: CGFloat = 24
+    private let cardCorner: CGFloat   = 18
+    private let arrowDiam: CGFloat    = 64    // the hero control
+    private let constantGap: CGFloat  = 24    // greeting → docked button (CONSTANT)
+    private let cellGap: CGFloat      = 3
+    private let maxCellW: CGFloat     = 40
+    private let minCellW: CGFloat     = 18
 
     // MARK: Body
 
     var body: some View {
         GeometryReader { geo in
-            // Kept in the safe area so the insets are real. We derive the true
-            // full-screen height from them; the seam is expressed in these
-            // safe-area coordinates so every layer lands on the same line.
-            let insets = geo.safeAreaInsets
             let w = geo.size.width
-            let h = geo.size.height                          // safe-area height
-            let fullH = h + insets.top + insets.bottom       // true screen height
+            let cardW  = w - pageMargin * 2
+            let innerW = cardW - cardInnerPad * 2
 
-            // The whole screen is ONE flap tile. The hinge seam sits LOWER than
-            // centre (61% of screen height) so the lighter top half is bigger,
-            // giving the greeting room. `seamScreenY` is in true full-screen
-            // coordinates; `seamY` is the same line in this safe-area space.
-            // The two-tone split, the seam line and the play button all live on
-            // this one line.
-            let seamFraction: CGFloat = 0.61
-            let seamScreenY = fullH * seamFraction
-            let seamY = seamScreenY - insets.top
-
-            let pinW: CGFloat = 14
-            let pinH: CGFloat = 6
-            let playDiam: CGFloat = min(w * 0.18, 72)
-
-            // Greeting sizing — auto-size the flap cells to the longest line so
-            // the greeting fills the top half confidently but stays premium. We
-            // pick the largest cell size (between min and max) at which every
-            // unbreakable line fits; a long name wraps across rows rather than
-            // shrinking the whole greeting below the floor.
-            let line1 = TimeOfDay.current(now).greeting + ","   // e.g. "GOOD AFTERNOON,"
-            let nameUpper = userName.uppercased()               // board world is caps
-            let boardW  = w * 0.96
-            let cellGap: CGFloat = 3
-            let maxCellW: CGFloat = 38                          // premium cap — never enormous
-            let minCellW: CGFloat = 18                          // floor before the name wraps
-
-            let layout = greetingLayout(greeting: line1, name: nameUpper,
-                                        boardW: boardW, gap: cellGap,
-                                        minCellW: minCellW, maxCellW: maxCellW)
-            let cellW = layout.cellW
-            let nameRows = layout.nameRows
+            // Greeting stacks ONE WORD PER LINE on flap cells (GOOD / MORNING /
+            // PAUL …), big and confident; the cell size is the largest (capped)
+            // at which the longest single word still fits the card. The card then
+            // hugs however many lines that is — no reserved max height.
+            let greetingWords = TimeOfDay.current(now).greeting
+                .split(separator: " ").map(String.init)
+            let nameWords = userName.uppercased()
+                .split(separator: " ").map { String($0) }
+            let rows = greetingWords + nameWords
+            let cellW = max(minCellW, min(maxCellW,
+                rows.map { fitCellW($0, boardW: innerW, gap: cellGap) }.min() ?? maxCellW))
             let cellSz = CGSize(width: cellW, height: cellW * 1.5)
 
+            VStack(spacing: 0) {
+                masthead
+
+                Spacer()
+
+                heroBlock(rows: rows, cellSz: cellSz, cardW: cardW)
+
+                Spacer()
+                Spacer()   // bias the hero a touch above centre
+            }
+            .frame(width: w)
+        }
+        .background(LightColors.page.ignoresSafeArea())
+    }
+
+    // MARK: - Masthead
+
+    private var masthead: some View {
+        VStack(spacing: 14) {
+            HStack(alignment: .center, spacing: 0) {
+                Text("HEADLINES")
+                    .font(.label(15))
+                    .tracking(3)
+                    .foregroundColor(LightColors.ink)
+
+                Spacer()
+
+                HStack(spacing: 14) {
+                    refreshButton
+                    profileButton
+                }
+            }
+            .padding(.horizontal, pageMargin)
+            .padding(.top, 6)
+
+            // Inset hairline rule — most of the width, side margins.
+            Rectangle()
+                .fill(LightColors.ink.opacity(0.15))
+                .frame(height: 1)
+                .padding(.horizontal, pageMargin)
+        }
+    }
+
+    private var refreshButton: some View {
+        Button(action: onRefresh) {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(LightColors.ink.opacity(0.4))
+                .frame(width: 34, height: 34)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Refresh")
+    }
+
+    private var profileButton: some View {
+        let initial = String(userName.prefix(1)).uppercased()
+        return Button(action: onProfile) {
             ZStack {
-
-                // ── Hinge seam line + notch pins — on the centre line, the same
-                //    y as the tone-change and the play-button centre.
-                ZStack {
-                    Rectangle()
-                        .fill(BoardColors.seam)
-                        .frame(height: 1.5)
-
-                    HStack {
-                        Capsule()
-                            .fill(BoardColors.seam)
-                            .frame(width: pinW, height: pinH)
-                            .padding(.leading, 20)
-                        Spacer()
-                        Capsule()
-                            .fill(BoardColors.seam)
-                            .frame(width: pinW, height: pinH)
-                            .padding(.trailing, 20)
-                    }
-                }
-                .frame(width: w)
-                .position(x: w / 2, y: seamY)
-
-                // ── Greeting + dateline — TOP half, vertically centred between
-                //    the status bar (safe-area top, y = 0 here) and the seam,
-                //    left-aligned.
-                VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: cellGap) {
-                        flapRow(text: line1, cellSz: cellSz, gap: cellGap)   // greeting word
-                        ForEach(Array(nameRows.enumerated()), id: \.offset) { _, row in
-                            flapRow(text: row, cellSz: cellSz, gap: cellGap) // name (may wrap)
-                        }
-                    }
-                    Spacer().frame(height: 16)
-                    Text(datelineText())
-                        .font(.board(11))
-                        .foregroundColor(BoardColors.character.opacity(0.55))
-                        .tracking(2.5)
-                        .padding(.leading, 2)
-                }
-                .frame(width: boardW, alignment: .leading)
-                .position(x: w / 2, y: seamY / 2)
-
-                // ── Play button — centred exactly on the seam (screen centre),
-                //    straddling the fold like the H in the app icon.
-                playButton(diameter: playDiam)
-                    .position(x: w / 2, y: seamY)
-
-                // ── First-run hint — BOTTOM half, just below the button.
-                if showHint {
-                    Text("PRESS PLAY TO GENERATE YOUR BRIEFING")
-                        .font(.board(9))
-                        .foregroundColor(BoardColors.character.opacity(0.35))
-                        .tracking(1.8)
-                        .multilineTextAlignment(.center)
-                        .fixedSize()
-                        .position(x: w / 2, y: seamY + playDiam * 0.5 + 26)
-                }
-
-                // ── Profile "P" — top-right, just below the status bar
-                //    (≈ standard nav-bar height: a clear gap under the inset).
-                profileButton()
-                    .position(x: w - 20 - 17, y: 16 + 17)
+                Circle()
+                    .strokeBorder(LightColors.ink.opacity(0.4), lineWidth: 1.2)
+                    .frame(width: 34, height: 34)
+                Text(initial)
+                    .font(.label(14))
+                    .foregroundColor(LightColors.ink)
             }
-            .frame(width: w, height: h)
-            // ── Two-tone board — ONE tile split at the centre seam. Drawn as a
-            //    full-bleed background (kept OUT of the positioned ZStack so its
-            //    safe-area bleed can't shift the seam/button) — it fills edge to
-            //    edge top to bottom with the split at the true screen centre,
-            //    coinciding with `seamY`. No third zone, no bottom band.
-            .background {
-                ZStack {
-                    VStack(spacing: 0) {
-                        BoardColors.panelTopGradient
-                            .frame(height: seamScreenY)
-                        LinearGradient(
-                            colors: [BoardColors.botFlapTop, BoardColors.botFlapBottom],
-                            startPoint: .top, endPoint: .bottom)
-                        .frame(height: fullH - seamScreenY)
-                    }
-                    Image(uiImage: BoardGrain.image)
-                        .resizable(resizingMode: .tile)
-                        .opacity(0.012)
-                        .allowsHitTesting(false)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Profile")
+        #if DEBUG
+        // DEBUG-only: long-press the P to clear first-run flags for testing.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.8).onEnded { _ in debugResetFirstRun() }
+        )
+        #endif
+    }
+
+    // MARK: - Hero (greeting card + docked arrow + caption)
+
+    private func heroBlock(rows: [String], cellSz: CGSize, cardW: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            greetingCard(rows: rows, cellSz: cellSz, cardW: cardW)
+                // Dock the machined arrow centred on the card's BASE — half on the
+                // card, half on the page, with its own soft depth (no ring).
+                .overlay(alignment: .bottom) {
+                    arrowButton.offset(y: arrowDiam / 2)
                 }
-                .frame(height: fullH)
-                .ignoresSafeArea()
+
+            // Room for the arrow's lower half, then the caption beneath it.
+            Spacer().frame(height: arrowDiam / 2 + 16)
+
+            Text("ASSEMBLE YOUR BRIEFING")
+                .font(.label(11))
+                .tracking(2.5)
+                .foregroundColor(LightColors.ink.opacity(0.45))
+        }
+        .frame(width: cardW)
+    }
+
+    private func greetingCard(rows: [String], cellSz: CGSize, cardW: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(datelineText())
+                .font(.label(11))
+                .tracking(2.5)
+                .foregroundColor(BoardColors.character.opacity(0.5))
+
+            Spacer().frame(height: 18)
+
+            VStack(alignment: .leading, spacing: cellGap) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, word in
+                    flapRow(text: word, cellSz: cellSz, gap: cellGap)
+                }
             }
         }
-        .background(BoardColors.background.ignoresSafeArea())
-        .onAppear {
-            // Mark as seen immediately (persisted) so the hint never shows
-            // again on a future launch; use local showHint so it stays
-            // visible for the rest of this session.
-            if !hasSeenHomeHint {
-                showHint = true
-                hasSeenHomeHint = true
+        .padding(.horizontal, cardInnerPad)
+        .padding(.top, cardInnerPad)
+        // CONSTANT gap above the docked button: the button's upper half (radius)
+        // plus a fixed gap — independent of how many greeting lines there are.
+        .padding(.bottom, arrowDiam / 2 + constantGap)
+        .frame(width: cardW, alignment: .leading)
+        .boardCard(cornerRadius: cardCorner)
+    }
+
+    private var arrowButton: some View {
+        Button(action: onGenerate) {
+            MachinedDisc(diameter: arrowDiam) {
+                ForwardArrow()
+                    .stroke(BoardColors.character,
+                            style: StrokeStyle(lineWidth: arrowDiam * 0.06,
+                                               lineCap: .round, lineJoin: .round))
+                    .frame(width: arrowDiam * 0.40, height: arrowDiam * 0.34)
+                    .offset(x: arrowDiam * 0.02)
             }
         }
+        .buttonStyle(MachinedDiscButtonStyle())
+        .frame(width: arrowDiam, height: arrowDiam)
+        .accessibilityLabel("Assemble your briefing")
     }
 
     // MARK: - Helpers
@@ -185,7 +211,6 @@ struct HomeView: View {
         HStack(spacing: gap) {
             ForEach(Array(text.enumerated()), id: \.offset) { _, ch in
                 if ch == " " {
-                    // Render a gap of the same width as a cell for readability.
                     Color.clear.frame(width: cellSz.width * 0.5, height: cellSz.height)
                 } else {
                     FlapCell(glyph: ch, size: cellSz)
@@ -197,14 +222,13 @@ struct HomeView: View {
     private func datelineText() -> String {
         let f = DateFormatter()
         f.dateFormat = "EEEE d MMMM"
-        return f.string(from: Date()).uppercased()
+        return f.string(from: now).uppercased()
     }
 
-    // MARK: - Greeting auto-sizing
+    // MARK: - Greeting cell sizing
 
     /// Rendered width of a string in "cell units": each glyph is one cell, each
-    /// space is half a cell — matching `flapRow`. Returns the unit total and the
-    /// item count (for inter-item gaps).
+    /// space is half a cell — matching `flapRow`.
     private func widthUnits(_ s: String) -> (units: CGFloat, count: Int) {
         let chars = Array(s)
         let spaces = chars.filter { $0 == " " }.count
@@ -219,102 +243,12 @@ struct HomeView: View {
         return (boardW - gap * CGFloat(max(0, c - 1))) / u
     }
 
-    /// Pick the cell size and name layout: the largest size (between min and
-    /// max) at which the greeting word and the whole name each fit one line;
-    /// if the name can't fit at the floor, size by the greeting + longest single
-    /// word and wrap the name across rows.
-    private func greetingLayout(greeting: String, name: String,
-                                boardW: CGFloat, gap: CGFloat,
-                                minCellW: CGFloat, maxCellW: CGFloat) -> (cellW: CGFloat, nameRows: [String]) {
-        let oneLineCellW = min(fitCellW(greeting, boardW: boardW, gap: gap),
-                               fitCellW(name, boardW: boardW, gap: gap))
-        if oneLineCellW >= minCellW {
-            return (min(maxCellW, oneLineCellW), [name])
-        }
-        // Long name: a single word can't break, so size by the greeting word +
-        // the longest name word, then wrap the name across rows.
-        let longestWordFit = name.split(separator: " ")
-            .map { fitCellW(String($0), boardW: boardW, gap: gap) }.min() ?? maxCellW
-        let cellW = max(minCellW, min(maxCellW, min(fitCellW(greeting, boardW: boardW, gap: gap), longestWordFit)))
-        return (cellW, wrapName(name, cellW: cellW, boardW: boardW, gap: gap))
-    }
-
-    /// Pack the name's words into as few rows as fit `boardW` at `cellW`, so a
-    /// long name uses the vertical room instead of shrinking the whole greeting.
-    private func wrapName(_ name: String, cellW: CGFloat, boardW: CGFloat, gap: CGFloat) -> [String] {
-        let words = name.split(separator: " ").map(String.init)
-        guard !words.isEmpty else { return [name] }
-        func rowWidth(_ s: String) -> CGFloat {
-            let (u, c) = widthUnits(s)
-            return u * cellW + gap * CGFloat(max(0, c - 1))
-        }
-        var rows: [String] = []
-        var current = ""
-        for word in words {
-            let candidate = current.isEmpty ? word : current + " " + word
-            if current.isEmpty || rowWidth(candidate) <= boardW {
-                current = candidate
-            } else {
-                rows.append(current)
-                current = word
-            }
-        }
-        if !current.isEmpty { rows.append(current) }
-        return rows
-    }
-
-    // MARK: - Play button
-
-    @ViewBuilder
-    private func playButton(diameter: CGFloat) -> some View {
-        Button(action: onGenerate) {
-            MachinedDisc(diameter: diameter) {
-                // Play triangle — bone off-white, slightly right of centre for
-                // optical balance.
-                Triangle()
-                    .fill(BoardColors.character)
-                    .frame(width: diameter * 0.28, height: diameter * 0.32)
-                    .offset(x: diameter * 0.03)
-            }
-        }
-        .buttonStyle(MachinedDiscButtonStyle())
-        .frame(width: diameter, height: diameter)
-    }
-
-    // MARK: - Profile button
-
-    @ViewBuilder
-    private func profileButton() -> some View {
-        let initial = String(userName.prefix(1)).uppercased()
-        Button(action: onProfile) {
-            ZStack {
-                Circle()
-                    .strokeBorder(BoardColors.character.opacity(0.45), lineWidth: 1.2)
-                    .frame(width: 34, height: 34)
-                Text(initial)
-                    .font(.board(14))
-                    .foregroundColor(BoardColors.character)
-            }
-        }
-        #if DEBUG
-        // DEBUG-only: long-press the P to re-trigger the first-run state for
-        // testing (clears the persisted flags + re-shows the hint live). The
-        // normal tap action (onProfile) is unaffected. Production gating is
-        // unchanged — real users still see the hint first-run only.
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.8).onEnded { _ in debugResetFirstRun() }
-        )
-        #endif
-    }
-
     #if DEBUG
     private func debugResetFirstRun() {
         let d = UserDefaults.standard
         d.removeObject(forKey: "userName")
         d.removeObject(forKey: "didOnboard")
         d.removeObject(forKey: "hasSeenHomeHint")
-        hasSeenHomeHint = false
-        withAnimation { showHint = true }   // re-show immediately, no relaunch
     }
     #endif
 }
@@ -328,18 +262,14 @@ private func atHour(_ hour: Int) -> Date {
     return Calendar.current.date(from: c) ?? Date()
 }
 
-#Preview("Now") {
-    HomeView()
+#Preview("Morning · PAUL") {
+    HomeView(userName: "PAUL", now: atHour(9))
 }
 
-#Preview("2pm · Afternoon") {
-    HomeView(now: atHour(14))
+#Preview("Afternoon · ISABELLA INDIA") {
+    HomeView(userName: "ISABELLA INDIA", now: atHour(14))
 }
 
-#Preview("8pm · Evening") {
-    HomeView(now: atHour(20))
-}
-
-#Preview("2am · Night") {
-    HomeView(now: atHour(2))
+#Preview("Evening · PAUL") {
+    HomeView(userName: "PAUL", now: atHour(20))
 }

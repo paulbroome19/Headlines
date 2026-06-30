@@ -9,6 +9,61 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-06-30 — Home rebuilt in the LIGHT register (C6) + cleanup)
+
+### Cleanup (committed separately, before the home work)
+- Removed superseded dark profile UI: `ProfileSheet` (private, in
+  HomeContainerView), `ProfileFormView.swift`, and the already-dead
+  `BriefingView.swift` (its only remaining consumer; never instantiated).
+- Broadened fresh-install onboarding defaults from World + Business to
+  **World, UK, Business, Technology** (`FiltersScreen`'s
+  `onboardingDefaultSelection`) so a no-tap user gets a fuller first briefing.
+
+### iOS — Home rebuilt to the locked light C6 design
+
+Replaced the old dark full-bleed Home (two-tone board + centred play disc) with
+the light register: a near-white page, the dark flap-board greeting as a
+contained hero, and the machined arrow docked into its base. Now matches
+onboarding + playback — one product.
+
+**`Shared/Theme/Board.swift`** — added a shared `.boardCard()` View modifier
+(charcoal gradient + grain + hairline highlight + soft shadow) so the Home hero
+card and the onboarding cards are the identical contained instrument.
+`CreateProfileView` refactored to use it (no visual change).
+
+**`Features/Home/HomeView.swift`** — full rewrite to C6:
+- Masthead: "HEADLINES" wordmark (`Font.label`, ink caps) top-left; quiet
+  refresh (↻) + the "P" profile circle top-right; an inset hairline rule beneath.
+- Hero greeting card (`.boardCard`): muted dateline ("TUESDAY 30 JUNE",
+  `Font.label`), then the time-of-day greeting + `userName` on `FlapCell`s,
+  stacked ONE WORD PER LINE (GOOD / AFTERNOON / PAUL), big and auto-sized — cell
+  size = largest (capped) at which the longest word fits the card. Card HUGS the
+  line count (3 lines short name, 4 lines long name) with a CONSTANT gap above
+  the docked button — no reserved max height.
+- Primary control: the shared `MachinedDisc` forward-arrow docked centred on the
+  card's base (half on card / half on page), full depth, no ring. Caption
+  "ASSEMBLE YOUR BRIEFING" beneath. Tap = the existing generate→play flow.
+- Dropped the old first-run hint + two-tone board scaffolding. Kept the
+  injectable `now` + the DEBUG long-press-P first-run reset.
+
+**`Features/Home/HomeContainerView.swift`** — pass `onRefresh` (stubbed
+`refreshBriefing` — regenerate-discarding-heard wired later; kept quiet). Play
+(arrow) + Profile (P → ProfileFiltersView) wiring unchanged.
+
+**`Tests/HeadlinesUITests`** — the two Home tests tapped the old play-button
+coordinate / expected the old profile form. Updated to tap the accessibility
+labels ("Assemble your briefing", "Profile") and assert the new screens. Both
+pass: arrow → player presents; P → light settings filters opens.
+
+### State
+- Builds with 0 errors; the two Home UI tests pass. Verified on sim: short name
+  ("PAUL", 3 lines) and long name ("ISABELLA INDIA", 4 lines) — card hugs
+  content, constant gap above the docked arrow, no collision/dead space;
+  masthead + docked arrow depth + caption read right and match onboarding.
+
+### Next Step
+- Wire the refresh action (regenerate discarding already-heard stories).
+
 ## Changes Made This Session (2026-06-30 — Build Your Briefing (filters) rebuilt in the LIGHT register + shared two contexts)
 
 ### iOS — Onboarding step 2 + settings filters rebuilt to the light world

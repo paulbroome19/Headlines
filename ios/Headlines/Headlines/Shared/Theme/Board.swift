@@ -53,6 +53,33 @@ enum LightColors {
     static let ink  = Color(hex: 0x141414)   // near-black ink for labels/rules
 }
 
+extension View {
+    /// The dark flap-board card surface that sits ON the light page — charcoal
+    /// gradient, matte grain, a hairline top-edge highlight and a soft drop
+    /// shadow. Shared by the Home greeting hero and the onboarding cards so the
+    /// contained instrument is identical everywhere.
+    func boardCard(cornerRadius: CGFloat = 18) -> some View {
+        background {
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(LinearGradient(
+                        colors: [BoardColors.topFlapTop, BoardColors.botFlapBottom],
+                        startPoint: .top, endPoint: .bottom))
+
+                Image(uiImage: BoardGrain.image)
+                    .resizable(resizingMode: .tile)
+                    .opacity(0.02)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    .allowsHitTesting(false)
+
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.05), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.22), radius: 22, y: 12)
+        }
+    }
+}
+
 // MARK: - Layout metrics
 
 enum BoardMetrics {
