@@ -60,46 +60,41 @@ struct HomeView: View {
 
     var body: some View {
         GeometryReader { geo in
+            // Kept in the safe area so the insets are real. We derive the true
+            // full-screen height from them; the seam is expressed in these
+            // safe-area coordinates so every layer lands on the same line.
+            let insets = geo.safeAreaInsets
             let w = geo.size.width
-            let h = geo.size.height
+            let h = geo.size.height                          // safe-area height
+            let fullH = h + insets.top + insets.bottom       // true screen height
 
-            // Layout constants
-            let seamY       = h * 0.60          // hinge seam position
-            let pinW: CGFloat  = 14
-            let pinH: CGFloat  = 6
+            // The whole screen is ONE flap tile: the hinge seam is the exact
+            // vertical CENTRE of the screen. In safe-area coordinates that point
+            // is fullH/2 measured from the true top, i.e. shifted up by the top
+            // inset. The two-tone split, the seam line and the play button are
+            // all drawn on this one line.
+            let seamY: CGFloat = fullH / 2 - insets.top
+
+            let pinW: CGFloat = 14
+            let pinH: CGFloat = 6
             let playDiam: CGFloat = min(w * 0.18, 72)
 
-            // Greeting cell sizing: fit the longer of the two lines
+            // Greeting sizing — as large as the longer line allows across the
+            // board width, so the greeting reads as the hero of the screen.
             let line1 = TimeOfDay.current(now).greeting + ","   // e.g. "GOOD AFTERNOON,"
             let line2 = userName.uppercased()                   // board world is caps
             let longerCount = max(line1.count, line2.count)
-            let boardW = w * 0.88
+            let boardW  = w * 0.94
             let cellGap: CGFloat = 3
-            let cellW  = (boardW - cellGap * CGFloat(longerCount - 1)) / CGFloat(longerCount)
-            let cellH  = cellW * 1.5
-            let cellSz = CGSize(width: cellW, height: cellH)
+            let maxCellW: CGFloat = 38
+            let fitW = (boardW - cellGap * CGFloat(longerCount - 1)) / CGFloat(longerCount)
+            let cellW = min(maxCellW, fitW)
+            let cellSz = CGSize(width: cellW, height: cellW * 1.5)
 
-            ZStack(alignment: .top) {
+            ZStack {
 
-                // ── Two-tone board background ───────────────────────────
-                VStack(spacing: 0) {
-                    BoardColors.panelTopGradient
-                        .frame(height: seamY)
-                    LinearGradient(
-                        colors: [BoardColors.botFlapTop, BoardColors.botFlapBottom],
-                        startPoint: .top, endPoint: .bottom)
-                    .frame(height: h - seamY)
-                }
-                .ignoresSafeArea()
-
-                // ── Grain overlay ───────────────────────────────────────
-                Image(uiImage: BoardGrain.image)
-                    .resizable(resizingMode: .tile)
-                    .opacity(0.012)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-
-                // ── Hinge seam line + notch pins ───────────────────────
+                // ── Hinge seam line + notch pins — on the centre line, the same
+                //    y as the tone-change and the play-button centre.
                 ZStack {
                     Rectangle()
                         .fill(BoardColors.seam)
@@ -120,41 +115,29 @@ struct HomeView: View {
                 .frame(width: w)
                 .position(x: w / 2, y: seamY)
 
-                // ── Main content column ─────────────────────────────────
+                // ── Greeting + dateline — TOP half, vertically centred between
+                //    the status bar (safe-area top, y = 0 here) and the seam,
+                //    left-aligned.
                 VStack(alignment: .leading, spacing: 0) {
-
-                    Spacer(minLength: h * 0.22) // calm empty top space
-
-                    // Greeting row 1: time-of-day greeting, e.g. "GOOD AFTERNOON,"
                     flapRow(text: line1, cellSz: cellSz, gap: cellGap)
-
                     Spacer().frame(height: cellGap)
-
-                    // Greeting row 2: user name
                     flapRow(text: line2, cellSz: cellSz, gap: cellGap)
-
-                    Spacer().frame(height: 14)
-
-                    // Dateline
+                    Spacer().frame(height: 16)
                     Text(datelineText())
                         .font(.board(11))
                         .foregroundColor(BoardColors.character.opacity(0.55))
                         .tracking(2.5)
                         .padding(.leading, 2)
-
-                    Spacer(minLength: 40)
                 }
-                .padding(.horizontal, (w - boardW) / 2)
+                .frame(width: boardW, alignment: .leading)
+                .position(x: w / 2, y: seamY / 2)
 
-                // ── Play button — pinned dead-centre on the hinge seam ──
-                // This is the signature element: it must straddle the seam
-                // identically on every device, so we anchor it explicitly to
-                // seamY rather than letting the greeting column flow it.
+                // ── Play button — centred exactly on the seam (screen centre),
+                //    straddling the fold like the H in the app icon.
                 playButton(diameter: playDiam)
                     .position(x: w / 2, y: seamY)
 
-                // First-run hint — hangs just beneath the button, also
-                // anchored to the seam so it tracks the button on every size.
+                // ── First-run hint — BOTTOM half, just below the button.
                 if showHint {
                     Text("PRESS PLAY TO GENERATE YOUR BRIEFING")
                         .font(.board(9))
@@ -162,21 +145,38 @@ struct HomeView: View {
                         .tracking(1.8)
                         .multilineTextAlignment(.center)
                         .fixedSize()
-                        .position(x: w / 2, y: seamY + playDiam * 0.5 + 22)
+                        .position(x: w / 2, y: seamY + playDiam * 0.5 + 26)
                 }
 
-                // ── Profile button — top-right ──────────────────────────
-                VStack {
-                    HStack {
-                        Spacer()
-                        profileButton()
-                            .padding(.top, geo.safeAreaInsets.top + 12)
-                            .padding(.trailing, 20)
-                    }
-                    Spacer()
-                }
+                // ── Profile "P" — top-right, just below the status bar
+                //    (≈ standard nav-bar height: a clear gap under the inset).
+                profileButton()
+                    .position(x: w - 20 - 17, y: 16 + 17)
             }
             .frame(width: w, height: h)
+            // ── Two-tone board — ONE tile split at the centre seam. Drawn as a
+            //    full-bleed background (kept OUT of the positioned ZStack so its
+            //    safe-area bleed can't shift the seam/button) — it fills edge to
+            //    edge top to bottom with the split at the true screen centre,
+            //    coinciding with `seamY`. No third zone, no bottom band.
+            .background {
+                ZStack {
+                    VStack(spacing: 0) {
+                        BoardColors.panelTopGradient
+                            .frame(height: fullH / 2)
+                        LinearGradient(
+                            colors: [BoardColors.botFlapTop, BoardColors.botFlapBottom],
+                            startPoint: .top, endPoint: .bottom)
+                        .frame(height: fullH / 2)
+                    }
+                    Image(uiImage: BoardGrain.image)
+                        .resizable(resizingMode: .tile)
+                        .opacity(0.012)
+                        .allowsHitTesting(false)
+                }
+                .frame(height: fullH)
+                .ignoresSafeArea()
+            }
         }
         .background(BoardColors.background.ignoresSafeArea())
         .onAppear {
