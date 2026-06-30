@@ -53,6 +53,12 @@ final class FilterTreeModel: ObservableObject {
         self.roots = roots
     }
 
+    /// Replace the whole tree — e.g. after fetching live categories from the
+    /// backend. Selection/expansion start fresh from the new nodes.
+    func replaceRoots(_ newRoots: [TopicNode]) {
+        roots = newRoots
+    }
+
     /// Rehydrate a seed tree from a previously-persisted set of selected leaf ids.
     convenience init(seed: [TopicNode], selectedLeafIDs: Set<String>) {
         func apply(_ node: TopicNode) -> TopicNode {
@@ -168,5 +174,25 @@ final class FilterTreeModel: ObservableObject {
         }
         walk(roots)
         return out
+    }
+}
+
+// MARK: - Backend categories → tree
+
+extension TopicNode {
+    /// Build a filter tree from the live backend taxonomy (`GET /data/categories`).
+    /// Each group becomes a parent; its subcategories become selectable leaves.
+    /// A group with no subcategories is itself a selectable leaf. The node ids ARE
+    /// the real backend slugs, so `selectedLeafIDs()` yields valid filter slugs.
+    static func tree(from groups: [CategoryGroup]) -> [TopicNode] {
+        groups.map { group in
+            group.subcategories.isEmpty
+                ? TopicNode(id: group.slug, label: group.label)
+                : TopicNode(
+                    id: group.slug,
+                    label: group.label,
+                    children: group.subcategories.map { TopicNode(id: $0.slug, label: $0.label) }
+                  )
+        }
     }
 }
