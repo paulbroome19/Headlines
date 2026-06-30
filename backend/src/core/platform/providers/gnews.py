@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -9,7 +10,27 @@ from core.platform.config.settings import settings
 
 
 class GNewsError(RuntimeError):
-    pass
+    """
+    Raised on any GNews failure (HTTP error incl. 429, network error, or an
+    error payload). Carries the HTTP status_code and a parsed Retry-After (when
+    GNews sends one on a 429) so callers can back off without killing ingestion.
+    Both default to None, so existing `except GNewsError` sites are unaffected.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(value: str | None) -> int | None:
+    """Retry-After as integer seconds; ignore the HTTP-date form (None)."""
+    if not value:
+        return None
+    try:
+        return max(0, int(value.strip()))
+    except (ValueError, AttributeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -158,6 +179,13 @@ class GNewsClient:
             with urlopen(req, timeout=self.timeout_seconds) as resp:
                 raw = resp.read().decode("utf-8")
                 data = json.loads(raw)
+        except HTTPError as e:
+            # Rate limits (429) and other HTTP errors — capture status + Retry-After
+            # so the ingest handler can back off instead of dying.
+            retry_after = _parse_retry_after(e.headers.get("Retry-After")) if e.headers else None
+            raise GNewsError(
+                f"GNews HTTP {e.code}: {e}", status_code=e.code, retry_after=retry_after
+            ) from e
         except Exception as e:
             raise GNewsError(f"GNews request failed: {e}") from e
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any
 
@@ -10,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from core.platform.queue.processed import ProcessedRepo
 from core.platform.queue.registry import HandlerRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class StreamConsumer:
@@ -67,7 +70,19 @@ class StreamConsumer:
                 continue
 
             for msg_id, fields in messages:
-                self._handle_message(msg_id, fields, db_factory)
+                # A handler (or DB) failure must NEVER kill the consumer thread.
+                # Previously _handle_message re-raised on error and the exception
+                # propagated straight out of run_forever, killing the thread and
+                # silently stopping ALL event processing forever. Catch here, log,
+                # and continue: the failed message stays unacked (pending) for
+                # retry/reclaim, while the consumer lives to process the next one.
+                try:
+                    self._handle_message(msg_id, fields, db_factory)
+                except Exception:
+                    logger.exception(
+                        "consumer: error handling message %s — surviving, message left pending",
+                        msg_id,
+                    )
 
             # tiny sleep to reduce tight-loop CPU
             time.sleep(0.01)
