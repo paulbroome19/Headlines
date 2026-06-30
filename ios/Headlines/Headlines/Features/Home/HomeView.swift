@@ -68,27 +68,37 @@ struct HomeView: View {
             let h = geo.size.height                          // safe-area height
             let fullH = h + insets.top + insets.bottom       // true screen height
 
-            // The whole screen is ONE flap tile: the hinge seam is the exact
-            // vertical CENTRE of the screen. In safe-area coordinates that point
-            // is fullH/2 measured from the true top, i.e. shifted up by the top
-            // inset. The two-tone split, the seam line and the play button are
-            // all drawn on this one line.
-            let seamY: CGFloat = fullH / 2 - insets.top
+            // The whole screen is ONE flap tile. The hinge seam sits LOWER than
+            // centre (61% of screen height) so the lighter top half is bigger,
+            // giving the greeting room. `seamScreenY` is in true full-screen
+            // coordinates; `seamY` is the same line in this safe-area space.
+            // The two-tone split, the seam line and the play button all live on
+            // this one line.
+            let seamFraction: CGFloat = 0.61
+            let seamScreenY = fullH * seamFraction
+            let seamY = seamScreenY - insets.top
 
             let pinW: CGFloat = 14
             let pinH: CGFloat = 6
             let playDiam: CGFloat = min(w * 0.18, 72)
 
-            // Greeting sizing — as large as the longer line allows across the
-            // board width, so the greeting reads as the hero of the screen.
+            // Greeting sizing — auto-size the flap cells to the longest line so
+            // the greeting fills the top half confidently but stays premium. We
+            // pick the largest cell size (between min and max) at which every
+            // unbreakable line fits; a long name wraps across rows rather than
+            // shrinking the whole greeting below the floor.
             let line1 = TimeOfDay.current(now).greeting + ","   // e.g. "GOOD AFTERNOON,"
-            let line2 = userName.uppercased()                   // board world is caps
-            let longerCount = max(line1.count, line2.count)
-            let boardW  = w * 0.94
+            let nameUpper = userName.uppercased()               // board world is caps
+            let boardW  = w * 0.96
             let cellGap: CGFloat = 3
-            let maxCellW: CGFloat = 38
-            let fitW = (boardW - cellGap * CGFloat(longerCount - 1)) / CGFloat(longerCount)
-            let cellW = min(maxCellW, fitW)
+            let maxCellW: CGFloat = 38                          // premium cap — never enormous
+            let minCellW: CGFloat = 18                          // floor before the name wraps
+
+            let layout = greetingLayout(greeting: line1, name: nameUpper,
+                                        boardW: boardW, gap: cellGap,
+                                        minCellW: minCellW, maxCellW: maxCellW)
+            let cellW = layout.cellW
+            let nameRows = layout.nameRows
             let cellSz = CGSize(width: cellW, height: cellW * 1.5)
 
             ZStack {
@@ -119,9 +129,12 @@ struct HomeView: View {
                 //    the status bar (safe-area top, y = 0 here) and the seam,
                 //    left-aligned.
                 VStack(alignment: .leading, spacing: 0) {
-                    flapRow(text: line1, cellSz: cellSz, gap: cellGap)
-                    Spacer().frame(height: cellGap)
-                    flapRow(text: line2, cellSz: cellSz, gap: cellGap)
+                    VStack(alignment: .leading, spacing: cellGap) {
+                        flapRow(text: line1, cellSz: cellSz, gap: cellGap)   // greeting word
+                        ForEach(Array(nameRows.enumerated()), id: \.offset) { _, row in
+                            flapRow(text: row, cellSz: cellSz, gap: cellGap) // name (may wrap)
+                        }
+                    }
                     Spacer().frame(height: 16)
                     Text(datelineText())
                         .font(.board(11))
@@ -163,11 +176,11 @@ struct HomeView: View {
                 ZStack {
                     VStack(spacing: 0) {
                         BoardColors.panelTopGradient
-                            .frame(height: fullH / 2)
+                            .frame(height: seamScreenY)
                         LinearGradient(
                             colors: [BoardColors.botFlapTop, BoardColors.botFlapBottom],
                             startPoint: .top, endPoint: .bottom)
-                        .frame(height: fullH / 2)
+                        .frame(height: fullH - seamScreenY)
                     }
                     Image(uiImage: BoardGrain.image)
                         .resizable(resizingMode: .tile)
@@ -211,6 +224,69 @@ struct HomeView: View {
         let f = DateFormatter()
         f.dateFormat = "EEEE d MMMM"
         return f.string(from: Date()).uppercased()
+    }
+
+    // MARK: - Greeting auto-sizing
+
+    /// Rendered width of a string in "cell units": each glyph is one cell, each
+    /// space is half a cell — matching `flapRow`. Returns the unit total and the
+    /// item count (for inter-item gaps).
+    private func widthUnits(_ s: String) -> (units: CGFloat, count: Int) {
+        let chars = Array(s)
+        let spaces = chars.filter { $0 == " " }.count
+        let nonSpace = chars.count - spaces
+        return (CGFloat(nonSpace) + 0.5 * CGFloat(spaces), chars.count)
+    }
+
+    /// The largest cell width at which `s` fits on one line within `boardW`.
+    private func fitCellW(_ s: String, boardW: CGFloat, gap: CGFloat) -> CGFloat {
+        let (u, c) = widthUnits(s)
+        guard u > 0 else { return .greatestFiniteMagnitude }
+        return (boardW - gap * CGFloat(max(0, c - 1))) / u
+    }
+
+    /// Pick the cell size and name layout: the largest size (between min and
+    /// max) at which the greeting word and the whole name each fit one line;
+    /// if the name can't fit at the floor, size by the greeting + longest single
+    /// word and wrap the name across rows.
+    private func greetingLayout(greeting: String, name: String,
+                                boardW: CGFloat, gap: CGFloat,
+                                minCellW: CGFloat, maxCellW: CGFloat) -> (cellW: CGFloat, nameRows: [String]) {
+        let oneLineCellW = min(fitCellW(greeting, boardW: boardW, gap: gap),
+                               fitCellW(name, boardW: boardW, gap: gap))
+        if oneLineCellW >= minCellW {
+            return (min(maxCellW, oneLineCellW), [name])
+        }
+        // Long name: a single word can't break, so size by the greeting word +
+        // the longest name word, then wrap the name across rows.
+        let longestWordFit = name.split(separator: " ")
+            .map { fitCellW(String($0), boardW: boardW, gap: gap) }.min() ?? maxCellW
+        let cellW = max(minCellW, min(maxCellW, min(fitCellW(greeting, boardW: boardW, gap: gap), longestWordFit)))
+        return (cellW, wrapName(name, cellW: cellW, boardW: boardW, gap: gap))
+    }
+
+    /// Pack the name's words into as few rows as fit `boardW` at `cellW`, so a
+    /// long name uses the vertical room instead of shrinking the whole greeting.
+    private func wrapName(_ name: String, cellW: CGFloat, boardW: CGFloat, gap: CGFloat) -> [String] {
+        let words = name.split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return [name] }
+        func rowWidth(_ s: String) -> CGFloat {
+            let (u, c) = widthUnits(s)
+            return u * cellW + gap * CGFloat(max(0, c - 1))
+        }
+        var rows: [String] = []
+        var current = ""
+        for word in words {
+            let candidate = current.isEmpty ? word : current + " " + word
+            if current.isEmpty || rowWidth(candidate) <= boardW {
+                current = candidate
+            } else {
+                rows.append(current)
+                current = word
+            }
+        }
+        if !current.isEmpty { rows.append(current) }
+        return rows
     }
 
     // MARK: - Play button
@@ -275,7 +351,27 @@ struct HomeView: View {
                     .foregroundColor(BoardColors.character)
             }
         }
+        #if DEBUG
+        // DEBUG-only: long-press the P to re-trigger the first-run state for
+        // testing (clears the persisted flags + re-shows the hint live). The
+        // normal tap action (onProfile) is unaffected. Production gating is
+        // unchanged — real users still see the hint first-run only.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.8).onEnded { _ in debugResetFirstRun() }
+        )
+        #endif
     }
+
+    #if DEBUG
+    private func debugResetFirstRun() {
+        let d = UserDefaults.standard
+        d.removeObject(forKey: "userName")
+        d.removeObject(forKey: "didOnboard")
+        d.removeObject(forKey: "hasSeenHomeHint")
+        hasSeenHomeHint = false
+        withAnimation { showHint = true }   // re-show immediately, no relaunch
+    }
+    #endif
 }
 
 // MARK: - Preview
