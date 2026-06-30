@@ -41,8 +41,11 @@ enum AppConfig {
         }
         return url
         #else
-        // 3) Release — set a real production URL here
-        guard let url = URL(string: "https://api.yourdomain.com") else {
+        // 3) Release fallback — only used if the API_BASE_URL build setting is
+        // empty/missing. The Release config DOES set it (to this same prod URL),
+        // so this is defence-in-depth: never silently fall back to a dead
+        // placeholder in a shipped build.
+        guard let url = URL(string: "https://headlines-production-5566.up.railway.app") else {
             fatalError("AppConfig: invalid release base URL")
         }
         return url
