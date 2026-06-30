@@ -9,6 +9,147 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-06-30 — Build Your Briefing (filters) rebuilt in the LIGHT register + shared two contexts)
+
+### iOS — Onboarding step 2 + settings filters rebuilt to the light world
+
+Rebuilt the **filters / Build Your Briefing** screen into the locked LIGHT
+register and made it ONE shared screen used in TWO contexts (onboarding +
+settings), so they can never drift apart. The tri-state tree LOGIC
+(`FilterTreeModel`) is reused verbatim — this was a re-skin + a shared-component
+extraction, not a logic rewrite.
+
+**Decision (with Paul):** the tree's data source is the REAL backend taxonomy
+(`GET /data/categories`), NOT the `TopicSeed` placeholder — the created profile
+must match what the user actually toggled. Onboarding finish still creates a
+backend profile (POST) + sets `didOnboard`, so Home Play keeps working.
+Selections also persist as leaf-id JSON for the settings-context rehydration.
+
+**Backend taxonomy shape (confirmed against prod):** 2-level — groups
+(Politics, World, Business, Technology, Entertainment, Sport) carry
+subcategories; some groups (Science, Climate, Health) are flat (empty
+subcategories) and render as single toggle rows. `TopicNode.tree(from:)` maps
+both cleanly. No 3rd-level nesting exists in the live data; the partial/half
+state still works (parent → partial when only some children are on).
+
+**New — `Shared/Components/BottomActionBar.swift`**
+- Extracted the locked footer (inset hairline rule + CTA label left + shared
+  `MachinedDisc` arrow right, `arrowDiam = 56`) into one component. Create
+  Profile + both filter contexts now use it, so the footer is identical.
+
+**New — `Features/Filters/LightFilterTree.swift`**
+- Light skin of the tri-state tree: `LightToggle` (filled dark = on, outline
+  grey = off, centred knob + dot = partial), `LightFilterRowView` (ink caps via
+  `Font.label`, hairline dividers, staggered indent, parent bolder/larger),
+  `LightFilterTreeView`. Drives the SAME `FilterTreeModel` (cascade/partial/
+  expand reused unchanged); the dark `FilterTreeView`/`BoardToggle` stay for the
+  board world.
+
+**New — `Features/Filters/FiltersScreen.swift`**
+- The shared light screen, parameterised by context: `ctaLabel`,
+  `showStepIndicator`, `initialSelection` (nil → onboarding defaults), and an
+  async `onComplete(leafIDs)`. Owns category load (real backend), the model,
+  loading/failed/ready states, optional "2 OF 2", the scrolling tree, and the
+  pinned footer (BottomActionBar + soft fade). Onboarding defaults pre-light the
+  `world` + `business` groups.
+- Also holds `ProfileFiltersView` — the SETTINGS-context wrapper: loads the
+  user's current profile, pre-lights its `includeCategories`, CTA "DONE", no
+  step indicator; saves edited categories back via `updateProfile` (preserving
+  name/duration/topStories), persists the JSON, dismisses. Falls back to the
+  saved leaf-id JSON if the profile can't be read.
+
+**`Features/Onboarding/BuildBriefingView.swift`** — rewritten as a thin
+onboarding wrapper over `FiltersScreen` (CTA "COMPLETE SETUP", defaults, step
+indicator). Finish = create profile (slugs from leaf-ids) → persist id + JSON →
+`didOnboard = true` → `onContinue()`. Struct name + signature unchanged, so the
+launch flow (createProfile → buildBriefing → home) is untouched.
+
+**`Features/Onboarding/CreateProfileView.swift`** — footer swapped to the shared
+`BottomActionBar` (no behaviour change; guarantees identical footer).
+
+**`Features/Home/HomeContainerView.swift`** — the "P" now presents
+`ProfileFiltersView` (settings context) via `fullScreenCover`, replacing the old
+`ProfileSheet`/`ProfileFormView` sheet. NOTE: the now-unused private
+`ProfileSheet` struct + the `ProfileFormView` file are left in place (dead code)
+pending confirmation before deletion.
+
+**`Headlines.xcodeproj/project.pbxproj`** — registered the 3 new files.
+
+### State
+- Builds with 0 errors. Verified on sim against the prod backend: onboarding
+  context (no heading, "2 OF 2", real categories, World+Business pre-lit,
+  "COMPLETE SETUP" + arrow); a parent (World) expanded showing nested children
+  with one child off → parent renders the partial half-toggle (cascade logic =
+  unchanged `FilterTreeModel`); and the settings context via the "P" — same
+  tree/toggles/footer, "DONE", no step indicator, pre-loaded with profile 1's
+  real selections (Politics on, Business + Sport partial).
+
+### Next Step
+- Decide whether to delete the dead `ProfileSheet`/`ProfileFormView` now that the
+  light filters screen owns profile editing. Wire real categories' default
+  pre-lit set once the taxonomy is finalised (currently world + business).
+
+## Changes Made This Session (2026-06-30 — Create Profile rebuilt in the LIGHT register)
+
+### iOS — Onboarding step 1 rebuilt to the locked light world
+
+Rebuilt the onboarding **Create Profile / name-entry** screen from the old
+dark full-screen world into the locked LIGHT register: a contained dark
+flap-board card on a near-white page, matching the home's material language.
+
+**New — `ios/Headlines/Headlines/Shared/Theme/MachinedDisc.swift`**
+- Extracted the Home Play button's machined-disc material into a shared
+  `MachinedDisc` view + `MachinedDiscButtonStyle` (radial charcoal gradient +
+  top-edge highlight + matte grain + soft drop shadow + press-in) so the Play
+  disc and the onboarding/filters forward arrow render pixel-identically.
+- Also holds the shared `Triangle` (play) and new `ForwardArrow` (→) shapes.
+- `MachinedDisc(dimmed:)` drops the whole control back for disabled states.
+
+**`ios/Headlines/Headlines/Shared/Theme/Board.swift`**
+- Added `LightColors` tokens — `page` `#F7F7F5`, `ink` `#141414` — the light
+  register shared by the new home, Create Profile, and (next) the filters screen.
+
+**`ios/Headlines/Headlines/Features/Home/HomeView.swift`**
+- Refactored `playButton` to compose the shared `MachinedDisc` /
+  `MachinedDiscButtonStyle`; removed its private `Triangle` + `PlayButtonStyle`.
+  Output is pixel-identical (verified on sim) — position/size unchanged so the
+  coordinate-based Home UI tests still pass.
+
+**`ios/Headlines/Headlines/Features/Onboarding/CreateProfileView.swift`**
+- Full rewrite to the light register: near-white page; a contained dark
+  flap-board card with "CREATE PROFILE" on shared `FlapCell` tiles (the one
+  flap moment) + a real `TextField` whose placeholder ("What is your name?")
+  sits ON the input line at the same size the typed name displays. Typed name
+  renders off-white plain text (NOT cells) with a visible caret.
+- Locked footer pattern: an inset hairline rule (margins both sides), a
+  "BUILD YOUR BRIEFING" CTA label (`Font.label`, ink caps) on the left, and the
+  machined forward-arrow disc bottom-right. Both lit only when a non-empty name
+  is entered, dim/disabled when empty.
+- Tap-outside dismisses the keyboard; arrow/`onSubmit` persists `userName` and
+  advances. `didOnboard` is still NOT set here (set after the filters step).
+- `StepDots` kept (used by the dark filters screen `BuildBriefingView`); Create
+  Profile uses its own light "1 OF 2" label instead.
+
+**`ios/Headlines/Headlines.xcodeproj/project.pbxproj`**
+- Registered `MachinedDisc.swift` in the Theme group + Sources build phase
+  (project lists files manually — not synchronized groups).
+
+### Routing
+- Launch flow unchanged: `HeadlinesApp` still routes
+  `.createProfile → CreateProfileView { phase = .buildBriefing }`. The struct
+  name + `onContinue` signature are preserved, so the new light version drops
+  straight into the existing loader → onboarding → home gating.
+
+### State
+- Builds with 0 errors. Verified on the iPhone 17 Pro sim: empty state
+  (placeholder on the line, arrow + CTA dimmed), typed state ("Paul" off-white
+  with caret, placeholder cleared, arrow + CTA lit), and Home Play button
+  unchanged after the disc extraction.
+
+### Next Step
+- Build the **filters screen** to the same light register using the locked
+  footer pattern + the same `MachinedDisc` arrow (same `arrowDiam = 56`).
+
 ## Changes Made This Session (2026-05-25 — iOS device fixes, TestFlight prep, cost model restructure)
 
 ### iOS — Build fixes

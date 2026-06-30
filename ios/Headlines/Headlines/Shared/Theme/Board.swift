@@ -43,6 +43,16 @@ enum BoardColors {
         colors: [botFlapTop, botFlapBottom], startPoint: .top, endPoint: .bottom)
 }
 
+// MARK: - Light register tokens
+
+/// The light "page" world the dark board sits ON — the locked register shared by
+/// the new home, onboarding (Create Profile) and the filters screen. The flap
+/// board is always a contained dark instrument on this near-white page.
+enum LightColors {
+    static let page = Color(hex: 0xF7F7F5)   // near-white page
+    static let ink  = Color(hex: 0x141414)   // near-black ink for labels/rules
+}
+
 // MARK: - Layout metrics
 
 enum BoardMetrics {

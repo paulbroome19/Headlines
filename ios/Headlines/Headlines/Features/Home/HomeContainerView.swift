@@ -5,9 +5,9 @@
 //  Wires BOTH Home buttons to the real app:
 //   • Play  (onGenerate) → load a bulletin for the persisted profile (POST
 //     manifest) and present the now-playing screen. Back/close stops + returns.
-//   • Profile (onProfile) → present the profile/filter editor for the current
-//     profile (the working ProfileFormView). Previously unwired (a stub), so
-//     tapping the P did nothing.
+//   • Profile (onProfile) → present the shared filters screen in its SETTINGS
+//     context (ProfileFiltersView) — the SAME light tri-state tree as onboarding,
+//     pre-loaded with the user's current selections, "DONE" saves + returns.
 //
 
 import SwiftUI
@@ -29,8 +29,8 @@ struct HomeContainerView: View {
         .fullScreenCover(isPresented: $showPlayer) {
             NowPlayingView(player: player, onClose: closePlayer, onRetry: startBriefing)
         }
-        .sheet(isPresented: $showProfile) {
-            ProfileSheet()
+        .fullScreenCover(isPresented: $showProfile) {
+            ProfileFiltersView()
         }
     }
 

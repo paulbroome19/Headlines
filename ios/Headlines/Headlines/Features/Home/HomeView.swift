@@ -9,35 +9,9 @@
 
 import SwiftUI
 
-// MARK: - Triangle shape for the play button
-
-private struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to:    CGPoint(x: rect.minX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
-        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        p.closeSubpath()
-        return p
-    }
-}
-
-// MARK: - Play button style
-
-private struct PlayButtonStyle: ButtonStyle {
-    let diameter: CGFloat
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
-            .shadow(
-                color: .black.opacity(configuration.isPressed ? 0.85 : 0.6),
-                radius: configuration.isPressed ? 6 : 10,
-                y: configuration.isPressed ? 2 : 5
-            )
-            .animation(.easeInOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
+// The Play disc and its depth now live in the shared `MachinedDisc` /
+// `MachinedDiscButtonStyle` (Shared/Theme/MachinedDisc.swift) so the Home Play
+// button and the onboarding / filters forward arrow render identically.
 
 // MARK: - HomeView
 
@@ -294,36 +268,7 @@ struct HomeView: View {
     @ViewBuilder
     private func playButton(diameter: CGFloat) -> some View {
         Button(action: onGenerate) {
-            ZStack {
-                // Board-material circle background
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [BoardColors.topFlapTop, BoardColors.botFlapBottom],
-                            center: .init(x: 0.5, y: 0.35),
-                            startRadius: 0,
-                            endRadius: diameter * 0.6
-                        )
-                    )
-                    .frame(width: diameter, height: diameter)
-
-                // Subtle top-edge highlight (raised feel)
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.white.opacity(0.08), .clear],
-                            startPoint: .top, endPoint: .center
-                        )
-                    )
-                    .frame(width: diameter, height: diameter)
-
-                // Grain on the button face
-                Image(uiImage: BoardGrain.image)
-                    .resizable(resizingMode: .tile)
-                    .opacity(0.018)
-                    .clipShape(Circle())
-                    .frame(width: diameter, height: diameter)
-
+            MachinedDisc(diameter: diameter) {
                 // Play triangle — bone off-white, slightly right of centre for
                 // optical balance.
                 Triangle()
@@ -332,7 +277,7 @@ struct HomeView: View {
                     .offset(x: diameter * 0.03)
             }
         }
-        .buttonStyle(PlayButtonStyle(diameter: diameter))
+        .buttonStyle(MachinedDiscButtonStyle())
         .frame(width: diameter, height: diameter)
     }
 
