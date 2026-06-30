@@ -94,8 +94,8 @@ struct CreateProfileView: View {
                 ZStack(alignment: .leading) {
                     TextField("", text: $draft)
                         .font(.board(17))
-                        .foregroundColor(.clear)
-                        .tint(.clear)                       // hide caret; the cells show the text
+                        .foregroundColor(.clear)            // text shown on the flap cells
+                        .tint(BoardColors.character)        // visible bone caret marks focus
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
                         .submitLabel(.go)
