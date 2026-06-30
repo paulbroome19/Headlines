@@ -12,7 +12,6 @@
 		3F6FEC2E65217568C2ECDC80 /* BulletinResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE95946FB918EF84D276AE81 /* BulletinResult.swift */; };
 		4234248EDFE0F21ED601ED32 /* BriefingLoadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FDB92AB662110703F529823 /* BriefingLoadingView.swift */; };
 		59739BCE2FC3AE59CA035A2B /* LoadingStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 330BD721715FAACE354BA709 /* LoadingStateView.swift */; };
-		5EAEE6754276C21B893A9EE2 /* BriefingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 631EADA0A119F1F8898B6F1E /* BriefingView.swift */; };
 		B2FF84569D170740B31174B5 /* SplitFlapLoadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E636183C39C5575969AF34C4 /* SplitFlapLoadingView.swift */; };
 		F37986372975A33AE9DC782A /* BoardFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = 098AB789F6EC577EAC5BB514 /* BoardFont.swift */; };
 		20A26E854E05EEF80D830F4B /* Board.swift in Sources */ = {isa = PBXBuildFile; fileRef = A505F4BA0B8230EE734B26BC /* Board.swift */; };
@@ -33,7 +32,6 @@
 		C1A2B3C4D5E6F70819203140 /* Newsreader.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C1A2B3C4D5E6F70819203141 /* Newsreader.ttf */; };
 		B1C3D5E7F9A2340678B12345 /* PlayingBarsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B4C6D8E0F1234567890ABC /* PlayingBarsView.swift */; };
 		C2D4E6F8A0B2345678901BCD /* MarqueeText.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C5D7E9F1A2345678902CDE /* MarqueeText.swift */; };
-		64065BC422C7069155D1A006 /* ProfileFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A87A10F41FD0052AA5499DA /* ProfileFormView.swift */; };
 		777920B5912DC74BFF767241 /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6225167F74C6415ACE7063D9 /* PlayerView.swift */; };
 		7F667102413085BEE81B496E /* ProfileListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2120BBFBCDA82442B6B99B50 /* ProfileListView.swift */; };
 		8A1F80F61D9C0534298CC348 /* PrimaryButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 415280BA40C80904084CFD18 /* PrimaryButton.swift */; };
@@ -97,7 +95,6 @@
 		480DECAC186ED4EDA4649016 /* BulletinService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BulletinService.swift; path = Headlines/Services/BulletinService.swift; sourceTree = "<group>"; };
 		4AB2E6C5C74C07EEAA7C9B12 /* ProfileServicing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProfileServicing.swift; path = Profiles/ProfileServicing.swift; sourceTree = "<group>"; };
 		6225167F74C6415ACE7063D9 /* PlayerView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PlayerView.swift; path = Headlines/Features/Briefing/PlayerView.swift; sourceTree = "<group>"; };
-		631EADA0A119F1F8898B6F1E /* BriefingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BriefingView.swift; path = Briefing/BriefingView.swift; sourceTree = "<group>"; };
 		E636183C39C5575969AF34C4 /* SplitFlapLoadingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SplitFlapLoadingView.swift; path = Headlines/Features/Loading/SplitFlapLoadingView.swift; sourceTree = SOURCE_ROOT; };
 		098AB789F6EC577EAC5BB514 /* BoardFont.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BoardFont.swift; path = Headlines/Shared/Theme/BoardFont.swift; sourceTree = SOURCE_ROOT; };
 		A505F4BA0B8230EE734B26BC /* Board.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Board.swift; path = Headlines/Shared/Theme/Board.swift; sourceTree = SOURCE_ROOT; };
@@ -118,7 +115,6 @@
 		C1A2B3C4D5E6F70819203141 /* Newsreader.ttf */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = file; name = "Newsreader.ttf"; path = "Resources/Fonts/Newsreader.ttf"; sourceTree = SOURCE_ROOT; };
 		A2B4C6D8E0F1234567890ABC /* PlayingBarsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PlayingBarsView.swift; path = Briefing/PlayingBarsView.swift; sourceTree = "<group>"; };
 		B3C5D7E9F1A2345678902CDE /* MarqueeText.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MarqueeText.swift; path = Briefing/MarqueeText.swift; sourceTree = "<group>"; };
-		6A87A10F41FD0052AA5499DA /* ProfileFormView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProfileFormView.swift; path = Profiles/ProfileFormView.swift; sourceTree = "<group>"; };
 		85F86AF224BC9C5F8092FA66 /* ErrorStateView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ErrorStateView.swift; path = Headlines/Shared/Components/ErrorStateView.swift; sourceTree = "<group>"; };
 		9777CBEE2F2E6A9600F52583 /* Headlines.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Headlines.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9777CBF12F2E6A9600F52583 /* HeadlinesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadlinesApp.swift; sourceTree = "<group>"; };
@@ -268,7 +264,6 @@
 		903B241D3144E84CB2F51574 /* Profiles */ = {
 			isa = PBXGroup;
 			children = (
-				6A87A10F41FD0052AA5499DA /* ProfileFormView.swift */,
 			);
 			name = Profiles;
 			sourceTree = "<group>";
@@ -455,7 +450,6 @@
 			isa = PBXGroup;
 			children = (
 				A0672F13BA0CE4B03CFAB1D8 /* BriefingViewModel.swift */,
-				631EADA0A119F1F8898B6F1E /* BriefingView.swift */,
 				A2B4C6D8E0F1234567890ABC /* PlayingBarsView.swift */,
 				B3C5D7E9F1A2345678902CDE /* MarqueeText.swift */,
 			);
@@ -617,7 +611,6 @@
 				C172F315C8977BF73140FB76 /* ProfileServicing.swift in Sources */,
 				EFAC78563EFA8F41048D98E3 /* ProfileService.swift in Sources */,
 				AE2E715F48E42C369922C648 /* BriefingViewModel.swift in Sources */,
-				5EAEE6754276C21B893A9EE2 /* BriefingView.swift in Sources */,
 				B2FF84569D170740B31174B5 /* SplitFlapLoadingView.swift in Sources */,
 				F37986372975A33AE9DC782A /* BoardFont.swift in Sources */,
 				20A26E854E05EEF80D830F4B /* Board.swift in Sources */,
@@ -636,7 +629,6 @@
 				A1B2C3D4E5F60718293A4B06 /* TimeOfDay.swift in Sources */,
 				B1C3D5E7F9A2340678B12345 /* PlayingBarsView.swift in Sources */,
 				C2D4E6F8A0B2345678901BCD /* MarqueeText.swift in Sources */,
-				64065BC422C7069155D1A006 /* ProfileFormView.swift in Sources */,
 				D664AA2EC9C9708CFA34072E /* AudioPlayer.swift in Sources */,
 				EBE4299527AD34AA5009B80B /* BulletinService.swift in Sources */,
 				7F667102413085BEE81B496E /* ProfileListView.swift in Sources */,

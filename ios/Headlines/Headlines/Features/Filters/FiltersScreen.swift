@@ -17,21 +17,33 @@ import SwiftUI
 
 // MARK: - Selection helpers (overlay a leaf-id set onto a freshly-loaded tree)
 
-/// Fresh-install defaults — a couple of top groups ship pre-lit so a user who
-/// taps nothing still gets a sensible briefing. These are real backend group
-/// slugs; turning a group on cascades to all its descendants.
-private let onboardingDefaultGroupSlugs: Set<String> = ["world", "business"]
+/// Fresh-install defaults — a few top topics ship pre-lit so a user who taps
+/// nothing still gets a fuller, varied first briefing. `groupSlugs` light a whole
+/// top group (cascades to all descendants); `leafSlugs` light a single child
+/// (e.g. UK under World). All are real backend slugs.
+private let onboardingDefaultGroupSlugs: Set<String> = ["world", "business", "technology"]
+private let onboardingDefaultLeafSlugs:  Set<String> = ["world.uk"]
 
 private func leafIDs(under node: TopicNode) -> [String] {
     node.isLeaf ? [node.id] : node.children.flatMap(leafIDs(under:))
 }
 
-/// The default selected leaf-ids for a fresh onboarding tree.
+/// The default selected leaf-ids for a fresh onboarding tree:
+/// World, UK, Business, Technology.
 func onboardingDefaultSelection(in roots: [TopicNode]) -> Set<String> {
     var out = Set<String>()
-    for node in roots where onboardingDefaultGroupSlugs.contains(node.id) {
-        out.formUnion(leafIDs(under: node))
+    func walk(_ nodes: [TopicNode]) {
+        for node in nodes {
+            if onboardingDefaultGroupSlugs.contains(node.id) {
+                out.formUnion(leafIDs(under: node))   // whole group on
+            } else if node.isLeaf, onboardingDefaultLeafSlugs.contains(node.id) {
+                out.insert(node.id)                    // single child on
+            } else {
+                walk(node.children)
+            }
+        }
     }
+    walk(roots)
     return out
 }
 
