@@ -3,10 +3,14 @@
 //  Headlines
 //
 //  The ONE shared light filters screen — built once, wrapped twice so the
-//  onboarding ("COMPLETE SETUP") and settings ("DONE") contexts are guaranteed
-//  pixel-identical and can never drift apart. Only the footer CTA, the finish
-//  action, the step indicator, and the initial selection differ; everything else
-//  (light page, the tri-state tree, the pinned bottom action bar) is shared.
+//  onboarding and settings contexts share the SAME tree, light styling, toggles
+//  and partial/cascade logic and can never drift apart. Only the navigation
+//  CHROME differs (parameterised via `Chrome`):
+//   • .onboarding — a forward step: the bottom action bar ("COMPLETE SETUP" +
+//     arrow) and the "2 OF 2" step indicator.
+//   • .settings — a detour: a top-left back chevron (matching playback), NO
+//     bottom bar, tree fills the screen. Back = save (the same updateProfile
+//     path the old "DONE" button used) + return Home.
 //
 //  Data source: the REAL backend taxonomy (GET /data/categories) → TopicNode
 //  tree. Selections persist as leaf-id JSON (see the wrappers) so the settings
@@ -63,10 +67,17 @@ func applyingSelection(_ roots: [TopicNode], selected: Set<String>) -> [TopicNod
 // MARK: - The shared screen
 
 struct FiltersScreen: View {
-    /// Footer CTA label — "COMPLETE SETUP" (onboarding) / "DONE" (settings).
-    let ctaLabel: String
-    /// Onboarding shows "2 OF 2" top-right; settings shows nothing up there.
-    let showStepIndicator: Bool
+    /// The navigation chrome — the ONLY thing that differs between contexts.
+    enum Chrome {
+        /// Forward setup step: bottom action bar + "2 OF 2".
+        case onboarding(ctaLabel: String)
+        /// Settings detour: top-left back chevron, no footer. `onClose` is the
+        /// plain return-to-Home used when leaving while there's nothing to save
+        /// (still loading / failed); a ready screen saves first (see `back()`).
+        case settings(onClose: () -> Void)
+    }
+
+    let chrome: Chrome
     /// Saved leaf-ids to pre-light (settings). `nil` → apply onboarding defaults.
     let initialSelection: Set<String>?
     /// Persist the chosen leaf-ids (create/update profile, save JSON, route).
@@ -80,29 +91,92 @@ struct FiltersScreen: View {
     @State private var isSaving = false
     @State private var saveError: String?
 
+    private var isOnboarding: Bool {
+        if case .onboarding = chrome { return true }
+        return false
+    }
+
     var body: some View {
         ZStack {
             LightColors.page.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                if showStepIndicator {
-                    HStack {
-                        Spacer()
-                        Text("2 OF 2")
-                            .font(.label(12))
-                            .tracking(2)
-                            .foregroundColor(LightColors.ink.opacity(0.4))
-                    }
-                    .padding(.horizontal, BottomActionBar.pageMargin + 4)
-                    .padding(.top, 8)
-                }
+                topChrome
 
                 content
 
-                footer
+                // Bottom action bar — onboarding only. Settings has no footer;
+                // the tree fills to the bottom and back-saves from the top.
+                if isOnboarding { footer }
             }
         }
         .task { await loadCategories() }
+    }
+
+    // MARK: Top chrome (step indicator OR back chevron)
+
+    @ViewBuilder
+    private var topChrome: some View {
+        switch chrome {
+        case .onboarding:
+            HStack {
+                Spacer()
+                Text("2 OF 2")
+                    .font(.label(12))
+                    .tracking(2)
+                    .foregroundColor(LightColors.ink.opacity(0.4))
+            }
+            .padding(.horizontal, BottomActionBar.pageMargin + 4)
+            .padding(.top, 8)
+
+        case .settings:
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    backButton
+                    Spacer()
+                }
+                .padding(.leading, BottomActionBar.pageMargin - 8)
+                .padding(.top, 6)
+
+                if let saveError {
+                    Text(saveError)
+                        .font(.label(10))
+                        .foregroundColor(Color(hex: 0xC85B5B))
+                        .tracking(0.5)
+                        .padding(.horizontal, BottomActionBar.pageMargin)
+                        .padding(.bottom, 4)
+                }
+            }
+        }
+    }
+
+    /// Back chevron — matches the playback screen. Saves-on-back when ready;
+    /// otherwise just returns. Shows a spinner while the save is in flight.
+    private var backButton: some View {
+        Button(action: back) {
+            Group {
+                if isSaving {
+                    ProgressView().tint(LightColors.ink)
+                } else {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(LightColors.ink)
+                }
+            }
+            .frame(width: 40, height: 40, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isSaving)
+        .accessibilityLabel("Back")
+    }
+
+    private func back() {
+        if loadState == .ready {
+            finish()                       // save (updateProfile) + dismiss
+        } else if case .settings(let onClose) = chrome {
+            onClose()                      // nothing to save — just return
+        }
     }
 
     // MARK: Body content — load state drives this
@@ -158,10 +232,15 @@ struct FiltersScreen: View {
         }
     }
 
-    // MARK: Pinned footer (shared action bar + a soft fade so it reads as pinned)
+    // MARK: Pinned footer (onboarding only — shared action bar + soft fade)
 
     private var footer: some View {
-        VStack(spacing: 0) {
+        // The CTA label lives on the onboarding chrome.
+        let ctaLabel: String = {
+            if case .onboarding(let label) = chrome { return label }
+            return ""
+        }()
+        return VStack(spacing: 0) {
             // Subtle fade so scrolling tree content dissolves under the footer.
             LinearGradient(colors: [LightColors.page.opacity(0), LightColors.page],
                            startPoint: .top, endPoint: .bottom)
@@ -223,8 +302,9 @@ struct FiltersScreen: View {
 // MARK: - Settings context wrapper (opened from the Home "P")
 
 /// The SAME filters screen, in its settings context: pre-loads the user's
-/// current selections, footer CTA "DONE", saves the edited selections back to
-/// the profile and returns to Home. No step indicator.
+/// current selections, shows a top-left back chevron (no footer), and on back
+/// saves the edited selections to the profile and returns to Home. No step
+/// indicator.
 struct ProfileFiltersView: View {
     var service: ProfileServicing = ProfileService()
 
@@ -277,8 +357,7 @@ struct ProfileFiltersView: View {
 
             case .ready(let profile, let selection):
                 FiltersScreen(
-                    ctaLabel: "DONE",
-                    showStepIndicator: false,
+                    chrome: .settings(onClose: { dismiss() }),
                     initialSelection: selection,
                     onComplete: { leafIDs in
                         try await save(leafIDs, profile: profile)

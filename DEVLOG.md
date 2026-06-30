@@ -9,6 +9,38 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-06-30 — Settings filters: top-left back chevron instead of a bottom bar)
+
+### iOS — Differentiate the two filter contexts' navigation chrome
+
+The shared `FiltersScreen` previously used the bottom `BottomActionBar` in BOTH
+contexts ("COMPLETE SETUP" / "DONE"). Settings is a detour, not a forward step,
+so it now uses a back chevron instead of a destination footer. The shared tree,
+light styling, toggles and partial/cascade logic are UNTOUCHED — only the
+navigation chrome is parameterised.
+
+**`Features/Filters/FiltersScreen.swift`**
+- Replaced `ctaLabel` + `showStepIndicator` with a `Chrome` enum:
+  - `.onboarding(ctaLabel:)` — UNCHANGED behaviour: bottom action bar
+    ("COMPLETE SETUP" + machined arrow) + "2 OF 2".
+  - `.settings(onClose:)` — top-left back chevron (matches the playback screen's
+    `chevron.left`, 18pt semibold ink, 40×40), NO bottom bar, tree fills the
+    screen.
+- Save-on-back: tapping back when the tree is ready runs `finish()` → the SAME
+  `onComplete` (updateProfile + persist JSON + dismiss) the old "DONE" button
+  used; if still loading/failed it routes through `onClose` (plain return). The
+  chevron shows a spinner while saving and surfaces any save error inline.
+- `ProfileFiltersView` passes `.settings(onClose: { dismiss() })`;
+  `BuildBriefingView` passes `.onboarding(ctaLabel: "COMPLETE SETUP")`.
+
+### State
+- Builds with 0 errors. Both committed Home UI tests still pass. Verified on sim:
+  settings (from "P") shows the top-left back chevron, no bottom bar, full-width
+  tree; onboarding still shows "2 OF 2" + "COMPLETE SETUP" + arrow unchanged. A
+  throwaway prod UI test confirmed save-on-back end-to-end — toggle → Back →
+  returns Home (only happens if `updateProfile` succeeded) → reopen shows the
+  tree (round trip). (Throwaway test not committed; needs the live backend.)
+
 ## Changes Made This Session (2026-06-30 — Home rebuilt in the LIGHT register (C6) + cleanup)
 
 ### Cleanup (committed separately, before the home work)

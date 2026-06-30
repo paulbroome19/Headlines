@@ -29,8 +29,7 @@ struct BuildBriefingView: View {
         // Onboarding context: defaults pre-lit (initialSelection nil), step
         // indicator shown, finish creates the profile and completes first-run.
         FiltersScreen(
-            ctaLabel: "COMPLETE SETUP",
-            showStepIndicator: true,
+            chrome: .onboarding(ctaLabel: "COMPLETE SETUP"),
             initialSelection: nil,
             onComplete: { leafIDs in try await createProfileAndFinish(leafIDs) }
         )
