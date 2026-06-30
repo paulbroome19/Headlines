@@ -208,7 +208,12 @@ def load_story_ranking_candidates(
             ON rep.story_id = sas.story_id
         LEFT JOIN primary_story_entities pse
             ON pse.story_id = sas.story_id
-        ORDER BY sas.last_seen_at DESC
+        -- story_id ASC is a deterministic tie-break: stories with equal
+        -- last_seen_at would otherwise order non-deterministically, so
+        -- regenerating a bulletin could reshuffle which stories appear.
+        -- story_id is unique per row here (one row per story), so the full
+        -- ordering is now fully reproducible; recency remains the primary key.
+        ORDER BY sas.last_seen_at DESC, sas.story_id ASC
         """
     )
 
