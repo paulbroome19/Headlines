@@ -16,6 +16,10 @@ class StoryRankingCandidate:
     primary_entity_name: str | None
     primary_entity_weight: float | None
     primary_topic_key: str | None
+    # Regional roll-up (Part 4): dominant geo_region + country of the story's
+    # coverage (from the pool stamp). None for legacy/un-stamped stories.
+    geo_region: str | None = None
+    pool_country: str | None = None
 
 
 @dataclass(slots=True)
