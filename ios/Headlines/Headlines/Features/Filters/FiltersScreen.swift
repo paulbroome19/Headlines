@@ -334,6 +334,7 @@ struct ProfileFiltersView: View {
     @AppStorage("profileId")      private var profileId = 0
     @AppStorage("userName")       private var userName = ""
     @AppStorage("selectedTopics") private var selectedTopicsJSON = ""
+    @AppStorage("briefingLength") private var briefingLengthRaw = BriefingLength.standard.rawValue
     @Environment(\.dismiss)       private var dismiss
 
     private enum Stage: Equatable {
@@ -342,6 +343,14 @@ struct ProfileFiltersView: View {
         case failed(String)
     }
     @State private var stage: Stage = .loading
+
+    // Editable preferences (name + length + filters), seeded from the profile.
+    @State private var editedName = ""
+    @State private var editedLength: BriefingLength = .standard
+    @State private var workingSelection: Set<String> = []
+    @State private var loadedProfile: Profile?
+    @State private var showFilters = false
+    @State private var isSaving = false
 
     var body: some View {
         ZStack {
@@ -378,17 +387,86 @@ struct ProfileFiltersView: View {
                     .buttonStyle(.plain).padding(.top, 4)
                 }
 
-            case .ready(let profile, let selection):
-                FiltersScreen(
-                    chrome: .settings(onClose: { dismiss() }),
-                    initialSelection: selection,
-                    onComplete: { leafIDs in
-                        try await save(leafIDs, profile: profile)
-                    }
-                )
+            case .ready:
+                settingsHub
             }
         }
         .task { if stage == .loading { await load() } }
+        .sheet(isPresented: $showFilters) {
+            FiltersScreen(
+                chrome: .settings(onClose: { showFilters = false }),
+                initialSelection: workingSelection,
+                onComplete: { leafIDs in
+                    workingSelection = Set(leafIDs)   // update working state; save on hub back
+                    showFilters = false
+                }
+            )
+        }
+    }
+
+    /// The settings hub — name, length and topics all editable (nothing write-once).
+    /// Back saves everything to the (device-keyed) profile and returns Home.
+    private var settingsHub: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: { Task { await saveAll() } }) {
+                    Group {
+                        if isSaving { ProgressView().tint(LightColors.ink) }
+                        else { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)) }
+                    }
+                    .foregroundColor(LightColors.ink)
+                    .frame(width: 40, height: 40, alignment: .leading).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(isSaving).accessibilityLabel("Save and close")
+                Spacer()
+                Text("SETTINGS").font(.label(12)).tracking(2).foregroundColor(LightColors.ink.opacity(0.4))
+                Spacer()
+                Color.clear.frame(width: 40, height: 40)
+            }
+            .padding(.horizontal, BottomActionBar.pageMargin - 8).padding(.top, 6)
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 26) {
+                    // NAME
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("YOUR NAME").font(.label(11)).tracking(2.5)
+                            .foregroundColor(LightColors.ink.opacity(0.45))
+                        TextField("Your name", text: $editedName)
+                            .font(.label(16)).foregroundColor(LightColors.ink)
+                            .textInputAutocapitalization(.words)
+                            .padding(.vertical, 12).padding(.horizontal, 16)
+                            .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(LightColors.ink.opacity(0.15), lineWidth: 1))
+                    }
+                    .padding(.horizontal, BottomActionBar.pageMargin)
+
+                    // LENGTH
+                    LengthPicker(selected: $editedLength)
+
+                    // TOPICS → filters sheet
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("TOPICS").font(.label(11)).tracking(2.5)
+                            .foregroundColor(LightColors.ink.opacity(0.45))
+                        Button(action: { showFilters = true }) {
+                            HStack {
+                                Text(workingSelection.isEmpty ? "Top Stories only" : "\(workingSelection.count) selected")
+                                    .font(.label(14)).foregroundColor(LightColors.ink)
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(LightColors.ink.opacity(0.35))
+                            }
+                            .padding(.vertical, 14).padding(.horizontal, 16)
+                            .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(LightColors.ink.opacity(0.15), lineWidth: 1))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, BottomActionBar.pageMargin)
+                }
+                .padding(.top, 20).padding(.bottom, 40)
+            }
+        }
     }
 
     /// Load the user's current profile so we can show — and preserve — what they
@@ -396,15 +474,18 @@ struct ProfileFiltersView: View {
     /// profile can't be read, so the screen still opens with the right state.
     private func load() async {
         stage = .loading
+        var profile: Profile?
         do {
             let profiles = try await service.fetchProfiles()
-            let profile = profiles.first(where: { $0.id == profileId }) ?? profiles.first
-            let selection = Set(profile?.includeCategories ?? decodedSavedTopics())
-            stage = .ready(profile: profile, selection: selection)
+            profile = profiles.first(where: { $0.id == profileId }) ?? profiles.first
         } catch {
-            // Offline / backend down — still let them edit against saved JSON.
-            stage = .ready(profile: nil, selection: Set(decodedSavedTopics()))
+            profile = nil   // offline — edit against locally-saved state
         }
+        loadedProfile = profile
+        editedName = profile?.name ?? userName
+        editedLength = BriefingLength.from(minutes: profile?.maxDurationMinutes ?? 6)
+        workingSelection = Set(profile?.includeCategories ?? decodedSavedTopics())
+        stage = .ready(profile: profile, selection: workingSelection)
     }
 
     private func decodedSavedTopics() -> [String] {
@@ -413,34 +494,35 @@ struct ProfileFiltersView: View {
         return ids
     }
 
-    /// Save the edited selections back to the profile, persist the JSON, dismiss.
-    private func save(_ leafIDs: [String], profile: Profile?) async throws {
+    /// Save name + length + filters to the profile (create if none), persist locally,
+    /// dismiss. A transient error keeps the user on the hub so edits aren't lost.
+    private func saveAll() async {
+        isSaving = true
+        let leafIDs = Array(workingSelection)
         let include: [String]? = leafIDs.isEmpty ? nil : leafIDs.sorted()
-        let trimmedName = userName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = profile?.name ?? (trimmedName.isEmpty ? "Listener" : trimmedName)
-
-        if let profile {
-            // Preserve the user's other settings; only the categories change.
-            _ = try await service.updateProfile(
-                id: profile.id,
-                name: name,
-                maxDurationMinutes: profile.maxDurationMinutes,
-                voice: profile.voice,
-                includeCategories: include,
-                excludeCategories: profile.excludeCategories,
-                includeTopStories: profile.includeTopStories
-            )
-        } else {
-            // No backend profile yet — create one so the edit isn't lost.
-            let created = try await service.createProfile(
-                name: name, maxDurationMinutes: 5, voice: nil,
-                includeCategories: include, excludeCategories: nil, includeTopStories: true
-            )
-            profileId = created.id
+        let trimmed = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmed.isEmpty ? "Listener" : trimmed
+        do {
+            if let profile = loadedProfile {
+                _ = try await service.updateProfile(
+                    id: profile.id, name: finalName,
+                    maxDurationMinutes: editedLength.minutes, voice: profile.voice,
+                    includeCategories: include, excludeCategories: profile.excludeCategories,
+                    includeTopStories: profile.includeTopStories)
+                profileId = profile.id
+            } else {
+                let created = try await service.createProfile(
+                    name: finalName, maxDurationMinutes: editedLength.minutes, voice: nil,
+                    includeCategories: include, excludeCategories: nil, includeTopStories: true)
+                profileId = created.id
+            }
+            userName = finalName
+            briefingLengthRaw = editedLength.rawValue
+            persistSelection(leafIDs)
+            dismiss()
+        } catch {
+            isSaving = false
         }
-
-        persistSelection(leafIDs)
-        dismiss()
     }
 
     private func persistSelection(_ leafIDs: [String]) {
