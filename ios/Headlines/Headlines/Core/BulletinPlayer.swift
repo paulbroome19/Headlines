@@ -96,6 +96,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
             #if DEBUG
             print("🎙 playerState: \(oldValue) → \(playerState)")
             #endif
+            // Keep the lock screen / Control Center in sync — MPNowPlayingInfo's
+            // playback rate (playing vs paused) is derived from playerState, so it
+            // must refresh whenever the state changes, not only on segment advance.
+            if playerState != oldValue { updateNowPlaying() }
         }
     }
     @Published private(set) var currentSegment: ManifestSegment?
@@ -250,8 +254,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
         playerState = .preparing
         var model = LoadProgressModel()
+        // Creep toward the pre-start ceiling from the outset. The first phase
+        // (manifest → assembled) is the long ~8s blocking one and reports no honest
+        // intermediate progress, so the bar must CREEP through it continuously (so the
+        // Solari status words advance and are readable) rather than stall just below
+        // the next milestone. The slow creep rate spreads that motion over the phase;
+        // real milestones still snap the bar forward as they arrive.
         model.reachedMilestone(floor: LoadProgressModel.manifestFloor,
-                               nextCap: LoadProgressModel.assembledFloor)
+                               nextCap: LoadProgressModel.preStartCap)
         loadProgress = model.progress
 
         let tickInterval = 0.05                  // 20 fps display cadence
@@ -277,7 +287,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
                     break
                 }
             }
-            model.tick(dt: tickInterval)          // smooth creep between milestones
+            // Slow continuous creep toward the ceiling — spreads motion across the
+            // whole blocking phase (~0.15→~0.57 over 8s, crossing several word bands)
+            // so it's never frozen; milestones snap it forward when they land.
+            model.tick(dt: tickInterval, ratePerSec: LoadProgressModel.creepRate)
             loadProgress = model.progress
             try? await Task.sleep(nanoseconds: UInt64(tickInterval * 1_000_000_000))
             t += 1
@@ -333,7 +346,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         case .buffering, .paused, .stalled:
             activateAudioSession()
             player?.play()
-            if playerState != .stalled { playerState = .playing }
+            playerState = .playing   // reflect immediately (incl. stall-resume) — don't wait for a KVO edge
         default:
             break
         }
@@ -436,27 +449,38 @@ final class BulletinPlayer: NSObject, ObservableObject {
         )
     }
 
+    // NotificationCenter delivers these on whatever thread AVAudioSession posts on
+    // (often a background thread). Extract the primitives, then hop to the main actor
+    // before touching @Published state — mutating it off-main silently breaks SwiftUI
+    // observation on device (the in-app play/pause icon stops reflecting state).
     @objc private func handleInterruption(_ note: Notification) {
         guard let ui = note.userInfo,
               let raw = ui[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-        switch type {
-        case .began:
-            if playerState == .playing { player?.pause(); playerState = .paused }
-        case .ended:
-            if let optRaw = ui[AVAudioSessionInterruptionOptionKey] as? UInt,
-               AVAudioSession.InterruptionOptions(rawValue: optRaw).contains(.shouldResume) { play() }
-        @unknown default: break
+        let shouldResume = (ui[AVAudioSessionInterruptionOptionKey] as? UInt).map {
+            AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume)
+        } ?? false
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            switch type {
+            case .began:
+                if self.playerState == .playing { self.player?.pause(); self.playerState = .paused }
+            case .ended:
+                if shouldResume { self.play() }
+            @unknown default: break
+            }
         }
     }
 
     @objc private func handleRouteChange(_ note: Notification) {
         guard let ui = note.userInfo,
               let raw = ui[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable,
-              playerState == .playing else { return }
-        player?.pause()
-        playerState = .paused
+              AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+        Task { @MainActor [weak self] in
+            guard let self, self.playerState == .playing else { return }
+            self.player?.pause()
+            self.playerState = .paused
+        }
     }
 
     // MARK: - Remote command center
@@ -951,19 +975,23 @@ struct LoadProgressModel {
     static let introReadyFloor: Double = 0.60   // greeting audio ready
     static let firstStoryFloor: Double = 0.85   // first story ready (safe_to_start imminent)
     static let preStartCap:     Double = 0.97   // hard ceiling before audio actually starts
+    /// Slow asymptotic creep rate for the blocking pre-readiness phase, tuned so the
+    /// bar spreads ~0.15→~0.57 over ~8s (crossing several Solari word bands) and keeps
+    /// inching up even on a long assembly — never frozen, never 1.0 until audio starts.
+    static let creepRate:       Double = 0.09
 
     private(set) var progress: Double = 0
     private var floor: Double = 0
     private var cap: Double = LoadProgressModel.manifestFloor
 
-    /// Snap up to a milestone `floor` and set the creep ceiling just below the next
-    /// milestone. Floors only ever move forward (monotonic); cap is clamped so the
-    /// bar can never reach 1.0 before `complete()`.
+    /// Snap up to a milestone `floor` and set the creep ceiling. Floors and progress
+    /// only ever move forward (monotonic); the cap is clamped ≤ preStartCap but never
+    /// below current progress, so a later milestone can only snap the bar FORWARD —
+    /// it can never yank it backward (which would read as a stutter).
     mutating func reachedMilestone(floor f: Double, nextCap c: Double) {
         floor = max(floor, f)
         progress = max(progress, floor)
-        cap = min(max(c, floor), LoadProgressModel.preStartCap)
-        if progress > cap { progress = cap }
+        cap = max(min(c, LoadProgressModel.preStartCap), progress)
     }
 
     /// Creep asymptotically toward the current cap. `dt` = seconds since last tick.
