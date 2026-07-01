@@ -189,6 +189,24 @@ extension TopicNode {
     }
 
     private static func node(from item: CategoryItem) -> TopicNode {
-        TopicNode(id: item.slug, label: item.label, children: item.subcategories.map(node(from:)))
+        TopicNode(id: item.slug,
+                  label: displayLabel(slug: item.slug, fallback: item.label),
+                  children: item.subcategories.map(node(from:)))
+    }
+
+    /// Display-only label overrides (the underlying slug is unchanged). Under the
+    /// Politics group the parent already reads "Politics", so each child shows just
+    /// its region (UK / US / Europe / World) rather than the redundant
+    /// "UK Politics / US Politics / European Politics" the backend labels carry.
+    private static func displayLabel(slug: String, fallback: String) -> String {
+        let parts = slug.split(separator: ".")
+        guard parts.count == 2, parts[0] == "politics" else { return fallback }
+        switch parts[1] {
+        case "uk":     return "UK"
+        case "us":     return "US"
+        case "europe": return "Europe"
+        case "world":  return "World"
+        default:       return String(parts[1]).capitalized
+        }
     }
 }

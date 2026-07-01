@@ -60,9 +60,9 @@ enum BriefingLength: String, CaseIterable, Identifiable {
     var title: String { switch self { case .quick: "QUICK"; case .standard: "STANDARD"; case .deep: "DEEP" } }
     var detail: String {
         switch self {
-        case .quick:    "About 5 minutes — just the essentials."
-        case .standard: "About 10 minutes — a fuller brief."
-        case .deep:     "About 15 minutes — the full picture."
+        case .quick:    "About 5 minutes — the essentials."
+        case .standard: "About 10 minutes — the full picture."
+        case .deep:     "About 15 minutes — the whole story."
         }
     }
     static func from(minutes: Int) -> BriefingLength {
