@@ -46,12 +46,16 @@ def summarise_story(
     representative_title: str,
     articles: list[dict],
     category: str | None = None,
+    depth_words: int | None = None,
+    depth_tier: str | None = None,
 ) -> SummaryResult | None:
     """
     Generate a structured summary for a story from its article titles and snippets.
 
     articles:  list of {"title": ..., "snippet": ...} dicts, most recent first.
     category:  top-level taxonomy slug (e.g. "sport", "politics.uk") — used for tone guidance.
+    depth_words / depth_tier: the audio_script length target (depth-by-rank). None
+               → the default full treatment (~120–180 words), for back-compat.
     Returns None on API failure or parse error (fail closed).
     """
     api_key = settings.anthropic_api_key
@@ -59,7 +63,10 @@ def summarise_story(
         logger.warning("llm_summariser: ANTHROPIC_API_KEY not set — skipping summarisation")
         return None
 
-    prompt = _build_prompt(representative_title, articles, category=category)
+    prompt = _build_prompt(
+        representative_title, articles, category=category,
+        depth_words=depth_words, depth_tier=depth_tier,
+    )
     body = json.dumps({
         "model": _model(),
         "max_tokens": _MAX_TOKENS,
@@ -130,10 +137,30 @@ _TONE_GUIDANCE: dict[str, str] = {
 }
 
 
+# Per-tier audio_script spec (depth-by-rank). Depth scales with the story's rank
+# in the bulletin: the lead gets a full treatment, the tail a sentence or two.
+_DEPTH_SPEC: dict[str, str] = {
+    "lead":
+        "  ~120 words, 4–6 sentences — the LEAD story: full treatment. Hook first "
+        "sentence, develop with specific facts, forward-looking close.",
+    "major":
+        "  ~80 words, 3–4 sentences. Hook, two or three key facts, one line of why "
+        "it matters. Tighter than the lead.",
+    "standard":
+        "  ~50 words, 2–3 sentences. The headline fact and its immediate significance. "
+        "No padding.",
+    "brief":
+        "  ~25 words, 1–2 sentences. A single essential fact, briskly — 'also today…'. "
+        "One crisp sentence is fine.",
+}
+
+
 def _build_prompt(
     representative_title: str,
     articles: list[dict],
     category: str | None = None,
+    depth_words: int | None = None,
+    depth_tier: str | None = None,
 ) -> str:
     article_lines = []
     for i, a in enumerate(articles[:5], 1):
@@ -146,6 +173,14 @@ def _build_prompt(
     top_cat = (category or "").split(".")[0].lower()
     tone_line = _TONE_GUIDANCE.get(top_cat, "Calm, authoritative, conversational.")
     tone_block = f"Category: {top_cat or 'general'}\nTone for this story: {tone_line}"
+
+    # Depth-by-rank: the audio_script length target for this story's tier.
+    if depth_tier and depth_tier in _DEPTH_SPEC:
+        depth_spec = _DEPTH_SPEC[depth_tier]
+    elif depth_words:
+        depth_spec = f"  ~{depth_words} words — match length to importance; concise, no padding."
+    else:
+        depth_spec = "  4–6 sentences, 120–180 words. Written to be heard, not read."
 
     return (
         "You are a senior producer at a national radio news station — the kind whose bulletins "
@@ -170,7 +205,9 @@ def _build_prompt(
         "'amid concerns', 'underscores', 'it remains to be seen', or any phrase that fits every story.\n\n"
 
         "audio_script:\n"
-        "  4–6 sentences, 120–180 words. Written to be heard, not read.\n\n"
+        f"{depth_spec}\n"
+        "  Written to be heard, not read. Match the word target above — it scales with the\n"
+        "  story's importance in this bulletin (lead deep, tail brisk).\n\n"
 
         "  FIRST SENTENCE — this is the bulletin hook. It must:\n"
         "    - Name something specific: a person, a number, a place, a concrete fact\n"
@@ -179,13 +216,13 @@ def _build_prompt(
         "    - NEVER start with: 'Authorities', 'Officials', 'The government', 'Sources say',\n"
         "      'It has been', 'There has been', 'A man has', 'A woman has', or any passive opener\n\n"
 
-        "  BODY (sentences 2–5): develop the story with at least one specific fact per two sentences.\n"
-        "    A specific fact = a name, a number, a date, a place, a direct quote, a concrete consequence.\n"
-        "    Vary sentence length. Short punchy sentences next to longer ones. No two sentences same structure.\n"
-        "    Contractions are required — it's, they've, here's, won't, didn't. No broadcast stiffness.\n\n"
+        "  BODY (only if the word target allows — a brief has no body): develop with at least one\n"
+        "    specific fact per two sentences. A specific fact = a name, a number, a date, a place, a\n"
+        "    direct quote, a concrete consequence. Vary sentence length. Contractions required — it's,\n"
+        "    they've, here's, won't. No broadcast stiffness.\n\n"
 
-        "  LAST SENTENCE: forward-looking close. What happens next? Who's affected? What's the stake?\n"
-        "    NOT: vague implications, rhetorical questions, or anything that 'the story is developing'.\n\n"
+        "  CLOSE (longer treatments): forward-looking — what happens next, who's affected, the stake.\n"
+        "    NOT: vague implications, rhetorical questions, or 'the story is developing'.\n\n"
 
         "  BANNED PHRASES (never use in audio_script):\n"
         "    'officials are considering', 'raises questions about', 'ongoing concerns',\n"

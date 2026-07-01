@@ -32,6 +32,9 @@ class ScoredStory:
     entity_weight: float
     source_weight: float
     cluster_weight: float
+    # Day-level importance model (coverage-driven; see docs/ranking-depth-design.md).
+    importance: float = 0.0        # coverage · prominence · freshness · category_tiebreak
+    normalized_score: float = 0.0  # importance mapped to 0–10 (the threshold axis)
 
 
 @dataclass(slots=True)
@@ -57,6 +60,9 @@ class RankedStory:
     entity_weight: float
     source_weight: float
     cluster_weight: float
+    # Day-level importance model (coverage-driven).
+    importance: float = 0.0
+    normalized_score: float = 0.0   # 0–10 — the axis thresholds/depth work on
 
 
 @dataclass
