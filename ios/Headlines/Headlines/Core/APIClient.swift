@@ -1,4 +1,51 @@
 import Foundation
+import Security
+
+// MARK: - Device identity
+
+/// A stable per-device id sent as `X-Device-Id` so the backend can scope profiles to
+/// this device. Stored in the Keychain (not UserDefaults) so it SURVIVES app
+/// reinstall — reinstalling recovers the same backend profile instead of orphaning it
+/// or adopting someone else's. Generated once on first access.
+enum DeviceIdentity {
+    private static let service = "com.headlines.identity"
+    private static let account = "device-id"
+
+    static let id: String = load() ?? generateAndStore()
+
+    private static func load() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String:  true,
+            kSecMatchLimit as String:  kSecMatchLimitOne,
+        ]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
+              let data = out as? Data, let s = String(data: data, encoding: .utf8),
+              !s.isEmpty else { return nil }
+        return s
+    }
+
+    private static func generateAndStore() -> String {
+        let value = UUID().uuidString
+        let data = Data(value.utf8)
+        // Delete any stale item, then add. AfterFirstUnlock so a background launch can
+        // read it; not synced to iCloud (per-device identity).
+        let base: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(base as CFDictionary)
+        var add = base
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        SecItemAdd(add as CFDictionary, nil)
+        return value
+    }
+}
 
 // MARK: - Errors
 
@@ -51,6 +98,7 @@ struct APIClient {
         var req = URLRequest(url: try buildURL(path: path, queryItems: queryItems))
         req.httpMethod = "GET"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(DeviceIdentity.id, forHTTPHeaderField: "X-Device-Id")
         return try await send(req)
     }
 
@@ -75,6 +123,7 @@ struct APIClient {
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(DeviceIdentity.id, forHTTPHeaderField: "X-Device-Id")
         req.httpBody = bodyData
         return try await send(req)
     }

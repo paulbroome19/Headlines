@@ -7,8 +7,10 @@ struct HeadlinesApp: App {
     /// hands off depends on whether the user has completed onboarding.
     private enum Phase { case loading, createProfile, buildBriefing, home }
 
-    @AppStorage("didOnboard") private var didOnboard = false
-    @AppStorage("userName")   private var userName   = ""
+    @AppStorage("didOnboard")     private var didOnboard = false
+    @AppStorage("userName")       private var userName   = ""
+    @AppStorage("profileId")      private var profileId  = 0
+    @AppStorage("selectedTopics") private var selectedTopicsJSON = ""
 
     @State private var phase: Phase = .loading
 
@@ -39,7 +41,15 @@ struct HeadlinesApp: App {
                     // lands straight on Home.
                     SplitFlapLoadingView {
                         guard phase == .loading else { return }   // fire once
-                        phase = didOnboard ? .home : .createProfile
+                        if didOnboard {
+                            phase = .home
+                        } else {
+                            // Not onboarded on THIS install — but a reinstall keeps its
+                            // Keychain device id, so the backend may still have this
+                            // device's profile. Recover it (skipping onboarding) before
+                            // showing first-run.
+                            Task { await recoverDeviceProfileOrOnboard() }
+                        }
                     }
                     .transition(.opacity)
 
@@ -63,6 +73,27 @@ struct HeadlinesApp: App {
                 }
             }
             .animation(.easeInOut(duration: 0.45), value: phase)
+        }
+    }
+
+    /// Reinstall recovery: the backend scopes profiles to this device's Keychain id,
+    /// so a returning device gets its OWN profile back (never another tester's). If
+    /// found, restore local state and skip straight to Home; otherwise onboard.
+    @MainActor
+    private func recoverDeviceProfileOrOnboard() async {
+        guard phase == .loading else { return }
+        if let profile = try? await ProfileService().fetchProfiles().first {
+            profileId = profile.id
+            userName  = profile.name
+            if let cats = profile.includeCategories,
+               let data = try? JSONEncoder().encode(cats),
+               let json = String(data: data, encoding: .utf8) {
+                selectedTopicsJSON = json
+            }
+            didOnboard = true
+            phase = .home
+        } else {
+            phase = .createProfile
         }
     }
 }
