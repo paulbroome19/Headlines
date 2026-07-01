@@ -26,6 +26,11 @@ struct NowPlayingView: View {
     private let ink     = Color(hex: 0x141414)
     private var inkMuted: Color { ink.opacity(0.45) }
 
+    // Generation loader: five cosmetic status lines (one picked per band, per
+    // generation → 5⁵ combos). Purely visual; NOT tied to backend stages.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var loaderLines: [String] = []
+
     var body: some View {
         ZStack {
             pageBG.ignoresSafeArea()
@@ -104,20 +109,80 @@ struct NowPlayingView: View {
     /// (smooth, asymptotic — never full until audio starts). Generic UI for now;
     /// the mechanism is what matters. The `.animation` smooths the ~20fps updates
     /// so the fill reads as continuous and never "stuck".
+    /// Generation loader — mirrors the Playback layout: the dark Solari board sits
+    /// in the now-playing card's position (churning through status lines), and a
+    /// continuous 0→100% bar sits in the scrubber's position. Driven by
+    /// `player.loadProgress`; dismissal is the player leaving `.preparing` on
+    /// `safe_to_start`. The bar holds at ≤~97% (LoadProgressModel.preStartCap)
+    /// until audio actually starts — it never finishes-and-waits in silence.
     private var preparingState: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Text("PREPARING YOUR BRIEFING")
-                .font(.label(12)).tracking(2.5)
-                .foregroundColor(inkMuted)
-            ProgressView(value: player.loadProgress)
-                .progressViewStyle(.linear)
-                .tint(ink)
-                .frame(maxWidth: 240)
-                .animation(.easeOut(duration: 0.15), value: player.loadProgress)
-            Spacer()
+        // Advance the status line as the bar crosses each of the 5 bands.
+        let bandCount = LoaderStatusBoard.loaderWordSets.count   // 5
+        let line = min(bandCount - 1, max(0, Int(player.loadProgress * Double(bandCount))))
+        return VStack(spacing: 0) {
+            Spacer(minLength: 16)
+            loaderBoard(lineIndex: line)
+            Spacer(minLength: 20)
+            loaderProgressBar
+            Spacer(minLength: 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            if loaderLines.isEmpty { loaderLines = LoaderStatusBoard.pickWords() }
+        }
+    }
+
+    /// The dark Solari board — same position/material as `nowPlayingBoard`.
+    private func loaderBoard(lineIndex: Int) -> some View {
+        let text = loaderLines.indices.contains(lineIndex) ? loaderLines[lineIndex] : "PREPARING"
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(BoardColors.character.opacity(0.75))
+                    .frame(width: 6, height: 6)
+                Text("ASSEMBLING")
+                    .font(.label(11)).tracking(2)
+                    .foregroundColor(BoardColors.character.opacity(0.65))
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 16)
+            .padding(.bottom, 14)
+
+            LoaderStatusBoard(text: text, band: lineIndex, reduceMotion: reduceMotion)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 18)
+        }
+        .background(boardMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+    }
+
+    /// Continuous progress bar in the scrubber's position.
+    private var loaderProgressBar: some View {
+        let pct = Int((player.loadProgress * 100).rounded())
+        return VStack(spacing: 10) {
+            HStack {
+                Text("ASSEMBLING YOUR BRIEFING")
+                    .font(.label(11)).tracking(2)
+                    .foregroundColor(inkMuted)
+                Spacer()
+                Text("\(pct)%")
+                    .font(.label(11)).tracking(1)
+                    .foregroundColor(ink)
+                    .monospacedDigit()
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(ink.opacity(0.12))
+                    Capsule().fill(ink)
+                        .frame(width: max(0, geo.size.width * player.loadProgress))
+                        .animation(.easeOut(duration: 0.25), value: player.loadProgress)
+                }
+            }
+            .frame(height: 4)
+        }
+        .padding(.horizontal, 4)
     }
 
     private func failedState(_ msg: String) -> some View {
@@ -518,5 +583,103 @@ private struct PlayTriangle: Shape {
         p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         p.closeSubpath()
         return p
+    }
+}
+
+// MARK: - Generation loader Solari board
+
+/// A ~4-row split-flap board that churns through random glyphs and settles on a
+/// status line, reshuffling the whole board whenever `band` changes. Built from
+/// the shared `FlapCell` / `BoardColors` tokens so it's identical material to the
+/// playback board. Driven by one TimelineView clock — cell glyph is a pure
+/// function of elapsed time since the last churn, so it's cheap and stateless.
+/// Reduce-motion → the target text is shown immediately, no flicker.
+private struct LoaderStatusBoard: View {
+    let text: String
+    let band: Int
+    let reduceMotion: Bool
+
+    private let rows = 4
+    private let cols = 15
+    private let gap: CGFloat = 3
+    private let cellAspect: CGFloat = 1.4   // height / width
+
+    @State private var churnStart: Date = Date()
+
+    // The five cosmetic status-line groups (one shown per progress band).
+    static let loaderWordSets: [[String]] = [
+        ["ON THE BEAT", "SCANNING THE WIRES", "WORKING THE SOURCES", "COMBING THE HEADLINES", "CHASING THE STORIES"],
+        ["READING THE ROOM", "TAKING THE TEMPERATURE", "GAUGING THE MOOD", "SIZING IT UP", "WEIGHING IT UP"],
+        ["CONNECTING THE DOTS", "JOINING THE THREADS", "SEPARATING THE NOISE", "FOLLOWING THE THREAD", "PIECING IT TOGETHER"],
+        ["PUTTING PEN TO PAPER", "SETTING THE TYPE", "FINDING THE WORDS", "GOING TO PRESS", "INK IS FLOWING"],
+        ["ALMOST READY", "NEARLY THERE", "FINAL CHECKS", "TIDYING UP", "ANY SECOND NOW"],
+    ]
+    /// Pick one line per band at load, held for the whole generation.
+    static func pickWords() -> [String] { loaderWordSets.map { $0.randomElement() ?? "" } }
+
+    private static let flicker = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&")
+
+    var body: some View {
+        let grid = Self.layout(text, rows: rows, cols: cols)
+        GeometryReader { geo in
+            let cW = (geo.size.width - CGFloat(cols - 1) * gap) / CGFloat(cols)
+            let cH = (geo.size.height - CGFloat(rows - 1) * gap) / CGFloat(rows)
+            let size = CGSize(width: cW, height: cH)
+            TimelineView(.animation(minimumInterval: 0.055, paused: reduceMotion)) { ctx in
+                let elapsed = reduceMotion ? 999.0 : ctx.date.timeIntervalSince(churnStart)
+                VStack(spacing: gap) {
+                    ForEach(0..<rows, id: \.self) { r in
+                        HStack(spacing: gap) {
+                            ForEach(0..<cols, id: \.self) { c in
+                                FlapCell(glyph: Self.glyph(target: grid[r][c], col: c, elapsed: elapsed),
+                                         size: size)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Fixed aspect so the board fits the card width without a circular layout.
+        .aspectRatio(CGFloat(cols) / (CGFloat(rows) * cellAspect), contentMode: .fit)
+        .onAppear { churnStart = Date() }
+        .onChange(of: band) { _ in churnStart = Date() }   // reshuffle whole board on stage change
+    }
+
+    /// Glyph for a cell at `elapsed` seconds into the churn. Every cell flickers
+    /// (the whole board reshuffles) then settles on its target — staggered by
+    /// column for a left→right ripple. `nil` target settles to a blank flap.
+    private static func glyph(target: Character?, col: Int, elapsed: Double) -> Character? {
+        let settle = 0.34 + Double(col) * 0.028   // ~0.34–0.73s, ripples left→right
+        if elapsed >= settle { return target }
+        let step = Int(elapsed / 0.055)
+        let idx = abs((col &* 31) &+ (step &* 17) &+ 7) % flicker.count
+        return flicker[idx]
+    }
+
+    /// Word-wrap `text` into ≤`cols`-wide lines (max `rows`), centred both ways.
+    static func layout(_ text: String, rows: Int, cols: Int) -> [[Character?]] {
+        var lines: [String] = []
+        var cur = ""
+        for word in text.split(separator: " ") {
+            let w = String(word)
+            if cur.isEmpty { cur = w }
+            else if cur.count + 1 + w.count <= cols { cur += " " + w }
+            else { lines.append(cur); cur = w }
+        }
+        if !cur.isEmpty { lines.append(cur) }
+        lines = Array(lines.prefix(rows))
+
+        var grid = Array(repeating: Array(repeating: Character?.none, count: cols), count: rows)
+        let topPad = max(0, (rows - lines.count) / 2)
+        for (i, ln) in lines.enumerated() {
+            let r = topPad + i
+            guard r < rows else { break }
+            let chars = Array(ln.prefix(cols))
+            let left = max(0, (cols - chars.count) / 2)
+            for (j, ch) in chars.enumerated() where left + j < cols {
+                grid[r][left + j] = ch
+            }
+        }
+        return grid
     }
 }

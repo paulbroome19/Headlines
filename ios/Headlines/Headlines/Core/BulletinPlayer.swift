@@ -256,6 +256,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
             // Poll readiness immediately on the first tick, then ~every 0.5s.
             if t % pollEveryTicks == 0 {
                 if let r: BulletinReadiness = try? await client.get("data/bulletins/\(bid)/readiness") {
+                    // A critical segment failed → safe_to_start can never fire. Stop
+                    // and surface an error instead of holding the loader at ~95%.
+                    if r.isBlocked {
+                        playerState = .failed("This briefing was delayed — a segment couldn't be prepared.")
+                        return
+                    }
                     applyReadinessMilestones(&model, r)
                     loadProgress = model.progress
                     if r.safeToStart { break }
@@ -292,6 +298,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
         if r.introReady && r.firstStoryReady {
             model.reachedMilestone(floor: LoadProgressModel.firstStoryFloor,
+                                   nextCap: LoadProgressModel.preStartCap)
+        }
+        // Prefer the server's honest 0–100 progress as a floor (PR #70), clamped
+        // below preStartCap so the bar still never reaches 1.0 before audio starts.
+        if let pf = r.progressFraction {
+            model.reachedMilestone(floor: min(pf, LoadProgressModel.preStartCap),
                                    nextCap: LoadProgressModel.preStartCap)
         }
     }
