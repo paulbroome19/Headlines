@@ -40,6 +40,21 @@ class UserStoryStateRepo:
         ).all()
         return {r[0] for r in rows}
 
+    def get_consumed_story_ids(self, profile_id: int) -> set[int]:
+        """
+        Story_ids the user has actually HEARD (state='consumed'). The daily edition
+        drops these on refresh; UNHEARD stories (queued) deliberately persist across
+        regenerations — so a story you haven't heard doesn't vanish on a re-roll.
+        """
+        rows = self.db.execute(
+            text("""
+                SELECT story_id FROM data.user_story_state
+                WHERE profile_id = :pid AND state = 'consumed'
+            """),
+            {"pid": profile_id},
+        ).all()
+        return {r[0] for r in rows}
+
     def insert_queued_batch(
         self,
         *,
