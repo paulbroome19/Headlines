@@ -86,16 +86,21 @@ def select_by_thresholds(
     include_top_stories: bool,
     include_categories: list[str] | None,
     preset: str = DEFAULT_PRESET,
+    target_count: int | None = None,
 ) -> list[ScoredStory]:
     """
     Return the stories that clear any of their sources' thresholds for this preset,
-    deduped across buckets and ordered by importance.
+    deduped, ordered by importance, and capped/backfilled to `target_count` (the
+    preset's length control — Quick/Standard/Deep). The result is the top-N by score;
+    length is a target, not an unstable by-product of where the bar lands.
 
     include_top_stories — the bare front-page source (high bar, all topics).
     include_categories  — ticked slugs. `top-stories` → front page; `top-stories.
                           <region>` → that region's bucket (geo-filtered, country-
                           weighted); anything else → a topic category (lower bar).
+    target_count        — desired bulletin length; defaults to the front-page floor.
     """
+    target = target_count if target_count is not None else _FRONT_PAGE_MIN
     bars = THRESHOLDS.get(preset) or THRESHOLDS[DEFAULT_PRESET]
     ts_bar = bars["top_stories"]
     cat_bar = bars["category"]
@@ -134,14 +139,14 @@ def select_by_thresholds(
     # EVERY briefing gets this floor and is never empty while stories exist — an empty
     # briefing reads as broken. A truly empty candidate set still yields nothing.
     top_stories_selected = include_top_stories or ("top-stories" in cats) or bool(regions)
-    if top_stories_selected and len(qualifying) < _FRONT_PAGE_MIN:
+    if top_stories_selected and len(qualifying) < target:
         for s in sorted(scored, key=lambda x: x.normalized_score, reverse=True):
             sid = s.candidate.story_id
             if sid in seen:
                 continue
             qualifying.append(s)
             seen.add(sid)
-            if len(qualifying) >= _FRONT_PAGE_MIN:
+            if len(qualifying) >= target:
                 break
 
     # Coverage-primary order (so a hugely-covered story leads regardless of country);
@@ -150,4 +155,7 @@ def select_by_thresholds(
         key=lambda s: (s.normalized_score, region_adjusted_score(s), s.candidate.story_id),
         reverse=True,
     )
+    # Cap to the preset's target length — the top-N by score. (Topic-only briefings that
+    # genuinely have fewer qualifiers stay short; a truly empty set stays empty.)
+    qualifying = qualifying[:target]
     return qualifying

@@ -93,22 +93,33 @@ SOURCE_AUTHORITY_STRENGTH = 0.10
 TIER_AUTHORITY_BONUS: dict[int, float] = {1: 1.0, 2: 0.6, 3: 0.3}  # else 0.0
 
 # 0–10 normalisation: score10 = 10 · importance / (importance + IMPORTANCE_HALF).
-# IMPORTANCE_HALF is the importance value that maps to 5/10. ⚑ CALIBRATE on the
-# live source-count distribution so typical big stories land ~8–10, minor ~3–5.
-IMPORTANCE_HALF = 2.2
+# IMPORTANCE_HALF is the importance value that maps to 5/10. Calibrated against the
+# live importance distribution (max raw importance ~6): 0.9 maps the biggest stories
+# to ~8.7 and the bulk to ~6.5, so the front/top-stories bar is actually reachable
+# (was 2.2 → max score 7.34, BELOW the 7.5 bar, so via_front never fired). ⚑ recalibrate
+# as coverage richens (the raw ceiling rises on multi-source days).
+IMPORTANCE_HALF = 0.9
 
 # ── Threshold-per-source selection (personalisation lives HERE, not in ranking) ──
-# Each preset slides ALL bars together. A story qualifies if its 0–10 score clears
-# the bar of ANY source it belongs to (Top Stories = high universal bar across all
-# topics; each ticked topic category = its own lower bar). Union, dedup, rank.
-# ⚑ TUNE these against the normalised-score distribution.
+# A story qualifies if its 0–10 score clears the bar of ANY source it belongs to
+# (Top Stories = high universal bar; each ticked topic category = its own lower bar).
+# The bar is now REACHABLE (see IMPORTANCE_HALF) so via_front actually fires. LENGTH is
+# not driven by the bar (thin data makes bar-counts unstable) — it's PRESET_TARGET_STORIES.
 THRESHOLDS: dict[str, dict[str, float]] = {
     #            Top Stories (front page, all topics)   ticked topic category
-    "short":    {"top_stories": 8.5,                    "category": 7.5},
-    "medium":   {"top_stories": 7.5,                    "category": 6.0},
-    "detailed": {"top_stories": 6.0,                    "category": 4.5},
+    "short":    {"top_stories": 8.0,                    "category": 7.0},
+    "medium":   {"top_stories": 7.5,                    "category": 6.5},
+    "detailed": {"top_stories": 7.0,                    "category": 6.0},
 }
 DEFAULT_PRESET = "medium"
+
+# Per-preset TARGET story count — the real "length" control (time-anchored: Quick≈5m /
+# Standard≈10m / Deep≈15m). Selection returns the top-N by score (qualifiers first,
+# backfilled to the target), so the three presets are DISTINCT lengths and never empty
+# while stories exist. Flexes honestly: a thin day still fills to the target from the
+# next-best; a rich day caps at it.
+PRESET_TARGET_STORIES: dict[str, int] = {"short": 6, "medium": 10, "detailed": 16}
+DEFAULT_TARGET_STORIES = 10
 
 # ── Top-Stories-by-region roll-up (Part 4) ───────────────────────────────────
 # Regions with a dedicated top-stories.<region> bucket (the taxonomy geo axis).

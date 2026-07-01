@@ -21,7 +21,7 @@ from core.pipeline.ranking.scorer import score_story
 from core.pipeline.ranking.category_ranker import get_category_weight
 from core.pipeline.ranking.thresholds import select_by_thresholds
 from core.pipeline.ranking.depth import depth_for_rank
-from core.pipeline.ranking.config import DEFAULT_PRESET
+from core.pipeline.ranking.config import DEFAULT_PRESET, DEFAULT_TARGET_STORIES, PRESET_TARGET_STORIES
 from core.pipeline.data.summarise.repos.story_summary_repo import StorySummaryRepo
 from core.pipeline.data.bulletin.repos.bulletin_repo import BulletinRepo
 from core.pipeline.data.bulletin.repos.user_story_state_repo import (
@@ -71,7 +71,7 @@ _SAFE_START_LEAD_SEGMENTS = 2
 
 # Maximum ranked stories to summarise on-demand per Generate press.
 # Covers a 5-min bulletin (typically 5–6 stories) with headroom for category filtering.
-_SUMMARISE_BUDGET = 12
+_SUMMARISE_BUDGET = 16   # ≥ max PRESET_TARGET_STORIES (Deep=16) so long briefings aren't truncated
 
 
 @router.get("/categories")
@@ -535,11 +535,13 @@ def _threshold_select_with_depth(
     """
     candidates = load_story_ranking_candidates(db)
     scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
+    target = PRESET_TARGET_STORIES.get(preset, DEFAULT_TARGET_STORIES)
     qualifying = select_by_thresholds(
         scored,
         include_top_stories=include_top_stories,
         include_categories=include_categories,
         preset=preset,
+        target_count=target,
     )
 
     excludes = list(exclude_categories or [])
