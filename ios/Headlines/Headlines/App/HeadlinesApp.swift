@@ -5,7 +5,7 @@ struct HeadlinesApp: App {
 
     /// Drives the cold-launch flow. The loader always plays first; where it
     /// hands off depends on whether the user has completed onboarding.
-    private enum Phase { case loading, createProfile, buildBriefing, home }
+    private enum Phase { case loading, createProfile, buildBriefing, length, home }
 
     @AppStorage("didOnboard") private var didOnboard = false
     @AppStorage("userName")   private var userName   = ""
@@ -49,10 +49,17 @@ struct HeadlinesApp: App {
                         .transition(.opacity)
 
                 case .buildBriefing:
-                    // Step 2 — persists topics + sets `didOnboard`, then Home.
+                    // Step 2 — pick topics (persisted); advance to the length step.
                     // Back returns to the name step (name persists via @AppStorage).
-                    BuildBriefingView(onContinue: { phase = .home },
+                    BuildBriefingView(onContinue: { phase = .length },
                                       onBack: { phase = .createProfile })
+                        .transition(.opacity)
+
+                case .length:
+                    // Step 3 — pick briefing length; this CREATES the profile
+                    // (name + topics + length), sets `didOnboard`, then Home.
+                    LengthStepView(onDone: { phase = .home },
+                                   onBack: { phase = .buildBriefing })
                         .transition(.opacity)
 
                 case .home:
