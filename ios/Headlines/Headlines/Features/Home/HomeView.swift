@@ -172,11 +172,9 @@ struct HomeView: View {
 
             Spacer().frame(height: 18)
 
-            VStack(alignment: .leading, spacing: cellGap) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, word in
-                    flapRow(text: word, cellSz: cellSz, gap: cellGap)
-                }
-            }
+            // Solari flip-open on app launch: the greeting churns split-flap glyphs
+            // and settles in a top→bottom, left→right ripple (reduce-motion → static).
+            SolariGreeting(rows: rows, cellSz: cellSz, gap: cellGap)
         }
         .padding(.horizontal, cardInnerPad)
         .padding(.top, cardInnerPad)
@@ -204,20 +202,6 @@ struct HomeView: View {
     }
 
     // MARK: - Helpers
-
-    /// A horizontal row of FlapCells, one per non-space character.
-    @ViewBuilder
-    private func flapRow(text: String, cellSz: CGSize, gap: CGFloat) -> some View {
-        HStack(spacing: gap) {
-            ForEach(Array(text.enumerated()), id: \.offset) { _, ch in
-                if ch == " " {
-                    Color.clear.frame(width: cellSz.width * 0.5, height: cellSz.height)
-                } else {
-                    FlapCell(glyph: ch, size: cellSz)
-                }
-            }
-        }
-    }
 
     private func datelineText() -> String {
         let f = DateFormatter()
@@ -251,6 +235,78 @@ struct HomeView: View {
         d.removeObject(forKey: "hasSeenHomeHint")
     }
     #endif
+}
+
+// MARK: - Solari greeting (flip-open on launch)
+
+/// The greeting rendered on split-flap cells that "flip open" once when Home
+/// appears: every cell churns random glyphs then settles on its target in a
+/// top→bottom, left→right ripple — the same Solari aesthetic as the loader board.
+/// The animation is bounded (~0.9s): after it settles we swap to a static render
+/// so the persistent Home screen isn't redrawing every frame. Reduce-motion shows
+/// the final greeting immediately.
+private struct SolariGreeting: View {
+    let rows: [String]
+    let cellSz: CGSize
+    let gap: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var start = Date()
+    @State private var settled = false
+
+    private static let flick = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    private static let stepInterval = 0.05
+    /// Per-cell settle time: base + row (top→bottom) + column (left→right) stagger.
+    private func settleAt(row: Int, col: Int) -> Double {
+        0.18 + Double(row) * 0.11 + Double(col) * 0.03
+    }
+    private var totalSettle: Double {
+        let maxCols = rows.map { $0.count }.max() ?? 0
+        return settleAt(row: max(0, rows.count - 1), col: max(0, maxCols - 1)) + 0.12
+    }
+
+    /// Glyph for a cell at `elapsed` seconds: flickers until its stagger point, then target.
+    private func glyph(_ target: Character, row: Int, col: Int, elapsed: Double) -> Character {
+        if elapsed >= settleAt(row: row, col: col) { return target }
+        let step = Int(elapsed / Self.stepInterval)
+        let idx = abs((row &* 53) &+ (col &* 31) &+ (step &* 17) &+ 7) % Self.flick.count
+        return Self.flick[idx]
+    }
+
+    var body: some View {
+        Group {
+            if reduceMotion || settled {
+                grid { _, _, ch in ch }
+            } else {
+                TimelineView(.animation) { ctx in
+                    let elapsed = ctx.date.timeIntervalSince(start)
+                    grid { row, col, ch in glyph(ch, row: row, col: col, elapsed: elapsed) }
+                }
+            }
+        }
+        .onAppear {
+            start = Date()
+            settled = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + totalSettle + 0.05) { settled = true }
+        }
+    }
+
+    /// Lay the rows out as flap-cell lines, transforming each glyph via `transform`.
+    private func grid(_ transform: @escaping (_ row: Int, _ col: Int, _ ch: Character) -> Character) -> some View {
+        VStack(alignment: .leading, spacing: gap) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { r, word in
+                HStack(spacing: gap) {
+                    ForEach(Array(word.enumerated()), id: \.offset) { c, ch in
+                        if ch == " " {
+                            Color.clear.frame(width: cellSz.width * 0.5, height: cellSz.height)
+                        } else {
+                            FlapCell(glyph: transform(r, c, ch), size: cellSz)
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Preview
