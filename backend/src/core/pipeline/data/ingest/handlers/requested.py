@@ -58,18 +58,27 @@ def handle_ingest_requested(event: dict) -> None:
     trace_id = event.get("trace_id")
 
     query = payload.get("query")          # e.g. "Manchester United"
-    topic = payload.get("topic")          # e.g. "sports"
     country = payload.get("country") or "gb"
     lang = payload.get("lang") or "en"
     max_results = int(payload.get("max_results") or 10)
+
+    # Pool-aware ingestion: a pool = one (category, country) GNews request. The
+    # pool's `category` is the coarse-label stamp (general/business/nation/world/
+    # technology/sports/science/health/entertainment). We map it to the GNews
+    # `topic` query param — "general" means no topic (breaking-news / top). An
+    # explicit `topic` in the payload still overrides (back-compat).
+    category = payload.get("category")
+    topic = payload.get("topic")
+    if topic is None and category and category != "general":
+        topic = category
 
     with SessionLocal() as db:
         runs = IngestionRunRepo(db)
         ingested = IngestedArticleRepo(db)
         outbox = OutboxRepo(db)
 
-        # 1) Create run
-        run = runs.create(source=source)
+        # 1) Create run — stamped with the pool it fetched (Part 2).
+        run = runs.create(source=source, pool_category=category, pool_country=country)
 
         # 2) Fetch from GNews (gated on settings.gnews_enabled)
         #
