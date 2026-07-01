@@ -33,6 +33,48 @@ struct BulletinManifest: Decodable {
     }
 }
 
+// MARK: - Readiness (GET /data/bulletins/{id}/readiness)
+
+/// Per-segment audio readiness reported by the backend.
+/// state ∈ "ready" | "pending" | "failed".
+struct ReadinessSegment: Decodable {
+    let index: Int
+    let type: String
+    let state: String
+
+    var isReady: Bool { state == "ready" }
+}
+
+/// Honest readiness signal the loader gate polls after requesting the manifest.
+/// `safeToStart` = intro + first story audio are ready, so the greeting is never
+/// skipped when playback begins.
+struct BulletinReadiness: Decodable {
+    let bulletinId: Int
+    let assembled: Bool
+    let totalSegments: Int
+    let readySegments: Int
+    let failedSegments: Int
+    let safeToStart: Bool
+    let segments: [ReadinessSegment]
+
+    var introReady: Bool {
+        segments.first(where: { $0.type == "intro" })?.isReady ?? false
+    }
+    var firstStoryReady: Bool {
+        segments.first(where: { $0.type == "story" })?.isReady ?? false
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case bulletinId     = "bulletin_id"
+        case assembled
+        case totalSegments  = "total_segments"
+        case readySegments  = "ready_segments"
+        case failedSegments = "failed_segments"
+        case safeToStart    = "safe_to_start"
+        case segments
+    }
+}
+
 /// One navigable chapter in the bulletin: an optional transition followed by a story segment.
 /// The scrubber timeline spans all story units only; wrappers (sting/intro/outro) are excluded.
 struct StoryUnit: Identifiable {
