@@ -308,6 +308,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
     }
 
+    /// Seek to a story unit's start and begin playing it. Used by the tracklist so
+    /// any row — including already-played ones — is replayable on tap, even when the
+    /// player is paused (plain `seekToStoryUnit` only resumes if it was already playing).
+    func playStoryUnit(at index: Int) {
+        seekToStoryUnit(at: index)
+        play()
+    }
+
     func play() {
         switch playerState {
         case .buffering, .paused, .stalled:
