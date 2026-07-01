@@ -80,8 +80,9 @@ func applyingSelection(_ roots: [TopicNode], selected: Set<String>) -> [TopicNod
 struct FiltersScreen: View {
     /// The navigation chrome — the ONLY thing that differs between contexts.
     enum Chrome {
-        /// Forward setup step: bottom action bar + "2 OF 2".
-        case onboarding(ctaLabel: String)
+        /// Forward setup step: bottom action bar + "2 OF 2". `onBack` (when set)
+        /// shows a top-left chevron to return to the previous onboarding step (name).
+        case onboarding(ctaLabel: String, onBack: (() -> Void)?)
         /// Settings detour: top-left back chevron, no footer. `onClose` is the
         /// plain return-to-Home used when leaving while there's nothing to save
         /// (still loading / failed); a ready screen saves first (see `back()`).
@@ -129,8 +130,19 @@ struct FiltersScreen: View {
     @ViewBuilder
     private var topChrome: some View {
         switch chrome {
-        case .onboarding:
+        case .onboarding(_, let onBack):
             HStack {
+                if let onBack {
+                    Button(action: onBack) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(LightColors.ink)
+                            .frame(width: 40, height: 40, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Back to name")
+                }
                 Spacer()
                 Text("2 OF 2")
                     .font(.label(12))
@@ -248,7 +260,7 @@ struct FiltersScreen: View {
     private var footer: some View {
         // The CTA label lives on the onboarding chrome.
         let ctaLabel: String = {
-            if case .onboarding(let label) = chrome { return label }
+            if case .onboarding(let label, _) = chrome { return label }
             return ""
         }()
         return VStack(spacing: 0) {
