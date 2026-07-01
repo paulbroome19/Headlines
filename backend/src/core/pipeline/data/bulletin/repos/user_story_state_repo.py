@@ -55,6 +55,22 @@ class UserStoryStateRepo:
         ).all()
         return {r[0] for r in rows}
 
+    def get_dropped_story_ids(self, profile_id: int) -> set[int]:
+        """
+        Story_ids the user is DONE with — heard (consumed) OR actively skipped early
+        (rejected). The daily edition drops BOTH so a heard story never comes back and
+        an early-skipped one doesn't keep recurring; only genuinely unheard (queued)
+        stories persist. Terminal states, so this is stable across the day/boundary.
+        """
+        rows = self.db.execute(
+            text("""
+                SELECT story_id FROM data.user_story_state
+                WHERE profile_id = :pid AND state IN ('consumed', 'rejected')
+            """),
+            {"pid": profile_id},
+        ).all()
+        return {r[0] for r in rows}
+
     def insert_queued_batch(
         self,
         *,
