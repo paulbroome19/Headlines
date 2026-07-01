@@ -8,13 +8,14 @@ struct ManifestSegment: Decodable, Identifiable {
     let storyHash: String?
     let storyId: String?
     let title: String?
+    let sources: [String]?   // top ranked outlets for this story (credibility-ordered)
 
     var id: Int { index }
     var isStory: Bool { type == "story" }
     var durationSeconds: Double { Double(durationMs) / 1000.0 }
 
     enum CodingKeys: String, CodingKey {
-        case index, type, url, title
+        case index, type, url, title, sources
         case durationMs  = "duration_ms"
         case storyHash   = "story_hash"
         case storyId     = "story_id"

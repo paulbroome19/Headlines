@@ -492,7 +492,12 @@ struct NowPlayingView: View {
 
     /// Phase-B degradation: not in the manifest yet.
     private var category: String? { nil }
-    private var sources: [String] { [] }
+
+    /// The current story's ranked outlets (credibility-ordered by the backend).
+    private var sources: [String] {
+        guard !player.storyUnits.isEmpty else { return [] }
+        return player.storyUnits[currentUnitIndexClamped].storySegment.sources ?? []
+    }
 
     private var bulletinElapsedSeconds: Double {
         player.globalPositionPct * player.totalStoryDurationSeconds

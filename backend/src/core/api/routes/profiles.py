@@ -21,6 +21,10 @@ from core.pipeline.data.bulletin.audio.tts_client import (
 from core.pipeline.data.bulletin.audio.segment_synth import synthesize_segment
 from core.pipeline.data.bulletin.audio.repos.segment_audio_repo import SegmentAudioRepo
 from core.api.routes.data import _do_assemble_and_audio, _get_or_assemble_bulletin
+from core.platform.config.source_credibility import rank_sources
+
+# How many ranked outlets to surface under the now-playing card (no "+N").
+_SOURCE_ATTRIBUTION_LIMIT = 3
 
 router = APIRouter(prefix="/data/profiles", tags=["profiles"])
 
@@ -324,6 +328,30 @@ def get_manifest(
         for s in plan.get("stories_list", [])
     }
 
+    # Source attribution: rank each story's outlets by curated credibility and
+    # surface the top 2–3 under the now-playing card (BBC before a minor blog).
+    story_ids_for_sources = [
+        str(seg["story_id"])
+        for seg in plan["segments"]
+        if seg.get("type") == "story" and seg.get("story_id")
+    ]
+    sources_by_story_id: dict[str, list[str]] = {}
+    if story_ids_for_sources:
+        with SessionLocal() as db:
+            src_rows = db.execute(text("""
+                SELECT story_id::text AS sid, source
+                FROM data.normalisation_articles
+                WHERE story_id::text = ANY(:ids)
+                  AND source IS NOT NULL AND source <> '' AND source <> 'unknown'
+            """), {"ids": story_ids_for_sources}).fetchall()
+        raw_by_story: dict[str, list[str]] = {}
+        for sid, src in src_rows:
+            raw_by_story.setdefault(sid, []).append(src)
+        sources_by_story_id = {
+            sid: rank_sources(srcs, limit=_SOURCE_ATTRIBUTION_LIMIT)
+            for sid, srcs in raw_by_story.items()
+        }
+
     # The bulletin opens directly with the greeting — no "Headlines." sting.
     manifest_segments: list[dict[str, Any]] = []
 
@@ -348,6 +376,7 @@ def get_manifest(
             item["story_hash"] = h
             item["story_id"]   = seg["story_id"]
             item["title"]      = titles_by_story_id.get(str(seg["story_id"]), "")
+            item["sources"]    = sources_by_story_id.get(str(seg["story_id"]), [])
         manifest_segments.append(item)
 
     return {
