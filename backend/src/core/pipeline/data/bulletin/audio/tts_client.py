@@ -4,7 +4,7 @@ Uses stdlib urllib — no new dependencies.
 
 Configuration (environment variables):
   TTS_PROVIDER         elevenlabs | openai   (default: elevenlabs)
-  TTS_VOICE            voice id / name       (default: JBFqnCBsd6RMkjVDRZzb — ElevenLabs "George", British male)
+  TTS_VOICE            voice id / name       (default: 19STyYD15bswVz51nqLf — ElevenLabs voice)
   TTS_MODEL            model id              (default: eleven_turbo_v2_5)
   TTS_AUDIO_FORMAT     format string         (default: mp3_44100_128)
   ELEVENLABS_API_KEY   required when provider=elevenlabs
@@ -29,7 +29,7 @@ _OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech"
 
 # Defaults
 _DEFAULT_PROVIDER = "elevenlabs"
-_DEFAULT_VOICE_ELEVENLABS = "JBFqnCBsd6RMkjVDRZzb"   # George — British male, professional
+_DEFAULT_VOICE_ELEVENLABS = "19STyYD15bswVz51nqLf"   # keep in sync with settings.tts_voice
 _DEFAULT_VOICE_OPENAI = "onyx"
 _DEFAULT_MODEL_ELEVENLABS = "eleven_turbo_v2_5"
 _DEFAULT_MODEL_OPENAI = "tts-1"
