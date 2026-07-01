@@ -116,7 +116,7 @@ def derive_primary_topic_key(
 def load_story_ranking_candidates(
     session: Session,
     *,
-    hours: int = 48,
+    hours: int = 36,   # rolling ~36h window: a fresh user's "important stories today"
 ) -> list[StoryRankingCandidate]:
     """
     Load recent story candidates for ranking directly from normalisation_articles,

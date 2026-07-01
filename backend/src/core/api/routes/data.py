@@ -30,6 +30,7 @@ from core.pipeline.data.bulletin.repos.user_story_state_repo import (
 )
 from core.pipeline.data.bulletin.assembler import assemble
 from core.pipeline.data.bulletin.connective import generate_connective, uk_now
+from core.pipeline.data.bulletin.edition import resolve_daily_edition
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
@@ -665,10 +666,20 @@ def _get_or_assemble_bulletin(
             )
 
             if profile_id is not None:
-                excluded_ids = UserStoryStateRepo(db).get_excluded_story_ids(profile_id)
-                if excluded_ids:
-                    ordered = [o for o in ordered if int(o["story_id"]) not in excluded_ids]
-                    depths = {o["story_id"]: depths[o["story_id"]] for o in ordered}
+                # Stable EDITION OF THE DAY: reuse the persisted per-(profile, day,
+                # filters) set instead of re-rolling from scratch on every new ranking
+                # run. Drops only HEARD stories (unheard persist — the old
+                # get_excluded_story_ids excluded queued-but-unheard too, which made
+                # unheard stories vanish on regenerate); refills freed slots + splices
+                # a genuinely bigger new lead. See bulletin/edition.py.
+                ordered, depths = resolve_daily_edition(
+                    db,
+                    profile_id=profile_id,
+                    request_hash=request_hash,
+                    fresh_ordered=ordered,
+                    fresh_depths=depths,
+                )
+                db.commit()
 
             candidate_ids = [o["story_id"] for o in ordered[:_SUMMARISE_BUDGET]]
 
