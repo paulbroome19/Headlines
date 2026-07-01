@@ -180,19 +180,15 @@ final class FilterTreeModel: ObservableObject {
 // MARK: - Backend categories → tree
 
 extension TopicNode {
-    /// Build a filter tree from the live backend taxonomy (`GET /data/categories`).
-    /// Each group becomes a parent; its subcategories become selectable leaves.
-    /// A group with no subcategories is itself a selectable leaf. The node ids ARE
-    /// the real backend slugs, so `selectedLeafIDs()` yields valid filter slugs.
+    /// Build a filter tree from the live backend taxonomy (`GET /data/categories`),
+    /// recursing to the FULL depth (sport → football → premier-league → arsenal).
+    /// Any node with no subcategories is a selectable leaf. The node ids ARE the
+    /// real backend slugs, so `selectedLeafIDs()` yields valid filter slugs.
     static func tree(from groups: [CategoryGroup]) -> [TopicNode] {
-        groups.map { group in
-            group.subcategories.isEmpty
-                ? TopicNode(id: group.slug, label: group.label)
-                : TopicNode(
-                    id: group.slug,
-                    label: group.label,
-                    children: group.subcategories.map { TopicNode(id: $0.slug, label: $0.label) }
-                  )
-        }
+        groups.map { TopicNode(id: $0.slug, label: $0.label, children: $0.subcategories.map(node(from:))) }
+    }
+
+    private static func node(from item: CategoryItem) -> TopicNode {
+        TopicNode(id: item.slug, label: item.label, children: item.subcategories.map(node(from:)))
     }
 }

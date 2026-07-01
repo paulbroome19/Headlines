@@ -51,12 +51,23 @@ func onboardingDefaultSelection(in roots: [TopicNode]) -> Set<String> {
     return out
 }
 
-/// Apply a selected-leaf-id set onto a tree (leaves on/off; parents derive).
+/// Apply a selected-id set onto a tree (leaves on/off; parents derive).
+/// A saved id that matches a PARENT lights that whole subtree — this both honours
+/// "select the group" and gracefully migrates selections saved before the taxonomy
+/// gained depth (e.g. an old `sport.football` leaf is now a parent of the teams).
 func applyingSelection(_ roots: [TopicNode], selected: Set<String>) -> [TopicNode] {
-    roots.map { node in
+    func lightSubtree(_ node: TopicNode) -> TopicNode {
         var n = node
+        if n.isLeaf { n.isOn = true } else { n.children = n.children.map(lightSubtree) }
+        return n
+    }
+    return roots.map { node in
+        var n = node
+        if selected.contains(n.id) {
+            return lightSubtree(n)          // saved id matches this node → whole subtree on
+        }
         if n.isLeaf {
-            n.isOn = selected.contains(n.id)
+            n.isOn = false
         } else {
             n.children = applyingSelection(n.children, selected: selected)
         }

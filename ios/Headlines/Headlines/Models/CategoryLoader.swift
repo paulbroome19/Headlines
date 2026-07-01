@@ -12,7 +12,19 @@ struct CategoryGroup: Decodable, Identifiable {
 struct CategoryItem: Decodable, Identifiable {
     let slug: String
     let label: String
+    /// Nested taxonomy depth (competitions → teams, rugby sub-levels, …). Empty at
+    /// a leaf. Optional/defaulted so a leaf that omits the key still decodes.
+    let subcategories: [CategoryItem]
     var id: String { slug }
+
+    enum CodingKeys: String, CodingKey { case slug, label, subcategories }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        slug = try c.decode(String.self, forKey: .slug)
+        label = try c.decode(String.self, forKey: .label)
+        subcategories = try c.decodeIfPresent([CategoryItem].self, forKey: .subcategories) ?? []
+    }
 }
 
 // MARK: - Result type

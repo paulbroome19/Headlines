@@ -97,32 +97,34 @@ def _item_label(full_slug: str, part: str) -> str:
     return _PART_LABELS.get(part, part.replace("-", " ").title())
 
 
+def _build_group(full_slug: str, part: str, children: dict | None) -> dict:
+    """One taxonomy node → UI dict, recursing to arbitrary depth. `subcategories`
+    is the (possibly empty) list of child nodes; a leaf has `subcategories == []`.
+    Slugs are the full dotted path (e.g. sport.football.premier-league.arsenal) so
+    they remain valid backend filter slugs at every level."""
+    subs: list[dict] = []
+    for child_part, grandchildren in (children or {}).items():
+        subs.append(_build_group(f"{full_slug}.{child_part}", child_part, grandchildren))
+    return {
+        "slug":          full_slug,
+        "label":         _item_label(full_slug, part),
+        "subcategories": subs,
+    }
+
+
 @lru_cache(maxsize=1)
 def load_category_groups() -> list[dict]:
-    """Return two-level category hierarchy for UI display.
-
-    Top-level keys become group headers; their direct children become
-    selectable items.  Three-level nesting (e.g. sport.football.premier-league)
-    is collapsed — only the second level is exposed.
+    """Return the FULL category hierarchy for UI display — arbitrary depth
+    (e.g. sport → football → premier-league → arsenal), not collapsed. The picker
+    renders every level; leaf nodes carry an empty `subcategories` list. The full
+    fixed taxonomy is always returned regardless of current story coverage.
     """
     cats_path = Path(__file__).parent.parent / "taxonomy" / "categories.yml"
     with open(cats_path, "r") as f:
         data = yaml.safe_load(f) or {}
     raw: dict[str, Any] = data.get("categories", {}) or {}
 
-    groups: list[dict] = []
-    for top_slug, children in raw.items():
-        items: list[dict] = []
-        if children:
-            for child_slug in children:
-                full = f"{top_slug}.{child_slug}"
-                items.append({"slug": full, "label": _item_label(full, child_slug)})
-        groups.append({
-            "slug":           top_slug,
-            "label":          _item_label(top_slug, top_slug),
-            "subcategories":  items,
-        })
-    return groups
+    return [_build_group(top_slug, top_slug, children) for top_slug, children in raw.items()]
 
 
 @lru_cache(maxsize=1)
