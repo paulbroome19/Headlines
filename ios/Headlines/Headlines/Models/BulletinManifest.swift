@@ -57,12 +57,22 @@ struct BulletinReadiness: Decodable {
     let safeToStart: Bool
     let segments: [ReadinessSegment]
 
+    // Ordered generation milestones (PR #70). Optional so a pre-#70 backend still
+    // decodes — the loader falls back to the milestone bools / segment counts.
+    let stage: String?       // assembled → audio_generating → buffered → ready | failed
+    let progress: Int?       // 0–100 hint; never the dismissal trigger (safeToStart is)
+    let blocked: Bool?       // a critical segment failed → safeToStart unreachable
+    let allReady: Bool?
+
     var introReady: Bool {
         segments.first(where: { $0.type == "intro" })?.isReady ?? false
     }
     var firstStoryReady: Bool {
         segments.first(where: { $0.type == "story" })?.isReady ?? false
     }
+    var isBlocked: Bool { (blocked ?? false) || stage == "failed" }
+    /// 0–1 hint from the server progress, if present.
+    var progressFraction: Double? { progress.map { Double($0) / 100.0 } }
 
     enum CodingKeys: String, CodingKey {
         case bulletinId     = "bulletin_id"
@@ -72,6 +82,10 @@ struct BulletinReadiness: Decodable {
         case failedSegments = "failed_segments"
         case safeToStart    = "safe_to_start"
         case segments
+        case stage
+        case progress
+        case blocked
+        case allReady       = "all_ready"
     }
 }
 

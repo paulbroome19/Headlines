@@ -254,6 +254,10 @@ final class BriefingViewModel: ObservableObject {
             break
         case .loadingManifest:
             state = .generating
+        case .preparing:
+            // Readiness gate (added in #64): manifest received, audio generating —
+            // the generation loader is shown. Maps to the existing loader state.
+            state = .downloadingAudio
         case .buffering:
             // Show PlayerView immediately so the user can see stories and tap play
             // while the first audio segment finishes loading.
