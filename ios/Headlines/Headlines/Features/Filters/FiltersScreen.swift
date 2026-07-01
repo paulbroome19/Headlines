@@ -351,6 +351,7 @@ struct ProfileFiltersView: View {
     @State private var loadedProfile: Profile?
     @State private var showFilters = false
     @State private var isSaving = false
+    @State private var saveError: String?
 
     var body: some View {
         ZStack {
@@ -425,6 +426,15 @@ struct ProfileFiltersView: View {
             }
             .padding(.horizontal, BottomActionBar.pageMargin - 8).padding(.top, 6)
 
+            if let saveError {
+                Text(saveError)
+                    .font(.label(11)).tracking(0.5)
+                    .foregroundColor(Color(hex: 0xC85B5B))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, BottomActionBar.pageMargin)
+                    .padding(.top, 4)
+            }
+
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 26) {
                     // NAME
@@ -498,6 +508,7 @@ struct ProfileFiltersView: View {
     /// dismiss. A transient error keeps the user on the hub so edits aren't lost.
     private func saveAll() async {
         isSaving = true
+        saveError = nil
         let leafIDs = Array(workingSelection)
         let include: [String]? = leafIDs.isEmpty ? nil : leafIDs.sorted()
         let trimmed = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -521,6 +532,9 @@ struct ProfileFiltersView: View {
             persistSelection(leafIDs)
             dismiss()
         } catch {
+            // Surface the failure instead of silently stopping the spinner — the user
+            // must know the save didn't land (they stay on the hub to retry).
+            saveError = "Couldn't save your changes. Check your connection and try again."
             isSaving = false
         }
     }
