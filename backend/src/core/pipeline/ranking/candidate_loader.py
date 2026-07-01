@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from core.platform.config.source_credibility import best_tier
+
 from .config import ENTITY_TYPE_WEIGHTS
 from .models import StoryRankingCandidate
 
@@ -145,6 +147,7 @@ def load_story_ranking_candidates(
                 ra.story_id,
                 COUNT(*) AS article_count,
                 COUNT(DISTINCT ra.source) AS source_count,
+                array_agg(DISTINCT ra.source) FILTER (WHERE ra.source IS NOT NULL) AS sources,
                 MAX(ra.published_at) AS last_seen_at,
                 -- Regional roll-up (Part 4): the dominant region/country of the
                 -- story's coverage. mode() ignores NULLs (legacy/un-stamped rows).
@@ -205,6 +208,7 @@ def load_story_ranking_candidates(
             sas.last_seen_at,
             sas.article_count,
             sas.source_count,
+            sas.sources,
             rep.category_primary AS primary_category,
             pse.entity_id AS primary_entity_id,
             pse.display_name AS primary_entity_name,
@@ -256,6 +260,7 @@ def load_story_ranking_candidates(
                 ),
                 geo_region=row.get("geo_region"),
                 pool_country=row.get("pool_country"),
+                top_source_tier=best_tier(list(row.get("sources") or [])),
             )
         )
 

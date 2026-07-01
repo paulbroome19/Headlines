@@ -14,8 +14,10 @@ from .config import (
     IMPORTANCE_HALF,
     PROMINENCE_K,
     RECENCY_DECAY_LAMBDA,
+    SOURCE_AUTHORITY_STRENGTH,
     SOURCE_WEIGHT_CAP,
     SOURCE_WEIGHT_MULTIPLIER,
+    TIER_AUTHORITY_BONUS,
 )
 from .models import ScoredStory, StoryRankingCandidate
 
@@ -64,11 +66,13 @@ def compute_importance(
     """
     Coverage-driven day-level importance and its 0–10 normalisation.
 
-    importance = coverage · prominence · freshness · category_tiebreak
+    importance = coverage · prominence · freshness · category_tiebreak · source_authority
       coverage         — 1 + COVERAGE_K·log1p(source_count)   (UNCAPPED, dominant)
       prominence       — 1 + PROMINENCE_K·log1p(article_count) + entity heft
       freshness        — bounded [FRESHNESS_MIN, 1]
-      category_tiebreak— LIGHT: category_weight rescaled to ≈ ±10% (never a thumb)
+      category_tiebreak— LIGHT: category_weight rescaled to ≈ ±14% (never a thumb)
+      source_authority — LIGHT: lift by the best outlet's credibility tier (breaks
+                         ties in the single-source tail; never overrides coverage)
 
     Returns (importance, normalized_score_0_to_10).
     """
@@ -76,10 +80,14 @@ def compute_importance(
     entity_heft = max(_entity_weight(candidate.primary_entity_weight) - 1.0, 0.0)
     prominence = 1.0 + PROMINENCE_K * math.log1p(max(candidate.article_count, 0)) + entity_heft
     freshness = _freshness(candidate.last_seen_at, now=now)
-    # Rescale the audience category weight (0.30–1.70) into a light ±~10% nudge.
+    # Rescale the audience category weight (0.30–1.70) into a light nudge.
     category_tiebreak = 1.0 + CATEGORY_TIEBREAK_STRENGTH * (category_weight - 1.0)
+    # Light lift by the most-credible outlet on the story (tier 1 wire/flagship →
+    # full bonus, unknown → none). Sorts the equal-coverage tail sensibly.
+    authority_bonus = TIER_AUTHORITY_BONUS.get(candidate.top_source_tier, 0.0)
+    source_authority = 1.0 + SOURCE_AUTHORITY_STRENGTH * authority_bonus
 
-    importance = coverage * prominence * freshness * category_tiebreak
+    importance = coverage * prominence * freshness * category_tiebreak * source_authority
     normalized = 10.0 * importance / (importance + IMPORTANCE_HALF)
     return importance, normalized
 

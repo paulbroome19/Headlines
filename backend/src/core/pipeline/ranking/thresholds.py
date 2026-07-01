@@ -127,13 +127,13 @@ def select_by_thresholds(
             qualifying.append(s)
             seen.add(sid)
 
-    # Top Stories guarantee: when the user explicitly selected Top Stories (bare
-    # front page or any region bucket), never return it empty/thin just because
-    # nothing cleared the high universal bar — backfill with the highest-scored
-    # stories (which ARE the top stories) up to a full-bulletin floor. Topic-only
-    # briefings are deliberately NOT backfilled, so their graceful "no stories match"
-    # empty state still fires when a topic genuinely has nothing.
-    top_stories_selected = ("top-stories" in cats) or bool(regions)
+    # Top Stories guarantee: never return a briefing empty/thin just because nothing
+    # cleared the high universal bar — backfill with the highest-scored stories (which
+    # ARE the top stories) up to a full-bulletin floor. The app sends
+    # include_top_stories=true on every request, so honouring the flag here means
+    # EVERY briefing gets this floor and is never empty while stories exist — an empty
+    # briefing reads as broken. A truly empty candidate set still yields nothing.
+    top_stories_selected = include_top_stories or ("top-stories" in cats) or bool(regions)
     if top_stories_selected and len(qualifying) < _FRONT_PAGE_MIN:
         for s in sorted(scored, key=lambda x: x.normalized_score, reverse=True):
             sid = s.candidate.story_id

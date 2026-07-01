@@ -1,27 +1,38 @@
 from __future__ import annotations
 
 CATEGORY_WEIGHTS: dict[str, float] = {
-    # Business — highest priority for business-professional audience
+    # Business — a real audience lean, kept high.
     "business.markets": 1.70,
     "business.economy": 1.55,
     "business.companies": 1.35,
     "business.personal-finance": 0.60,  # deliberate: not core for this audience
 
-    # Politics
-    "politics.uk": 1.20,
-    "politics.us": 1.15,
-    "politics.europe": 1.10,  # ECB, EU trade policy, European elections are market-moving
-    "politics.global": 1.10,  # G7/G20, UN, major diplomatic events
+    # Front-page axis.
+    "top-stories": 1.20,
 
-    # Technology
+    # World / geopolitics / conflict — a general front page LEADS with these, so
+    # they sit ABOVE tech-product news (previously 'world' was 1.00, below tech —
+    # which let a product update outrank a war story on category).
+    "world": 1.35,
+    "politics.global": 1.35,  # G7/UN/war/diplomacy
+    "politics.uk": 1.25,
+    "politics.us": 1.20,
+    "politics.europe": 1.20,
+
+    # Technology — AI stays newsy; company/product news moderated below world/
+    # politics; gaming is soft product news, not front-page hard news.
     "technology.ai": 1.15,
-    "technology.companies": 1.10,  # Apple/Google/Microsoft earnings and antitrust
-    "technology": 1.05,            # prefix fallback for unspecified tech subcategories
+    "technology.companies": 0.95,  # product/earnings — shouldn't beat world/politics
+    "technology": 1.00,            # prefix fallback for unspecified tech subcategories
+    "technology.gaming": 0.40,     # PlayStation/Xbox/Warhammer product news
 
-    # World (geopolitical events) — neutral baseline
-    "world": 1.00,
+    # Science / health / environment — legitimate news (were falling to the 0.75 default).
+    "science": 1.00,
+    "health": 1.10,
+    "environment": 1.10,
 
-    # Lower priority for business-professional audience
+    # Soft news.
+    "culture": 0.40,          # celebrity / tv-film / music / soap
     "sport": 0.55,
     "entertainment": 0.30,
 }
@@ -66,10 +77,20 @@ PROMINENCE_K = 0.25
 # factor, not the driver. ⚑ tune (window is the candidate loader's, ~24-48h).
 FRESHNESS_MIN = 0.60
 FRESHNESS_LAMBDA = 0.03
-# Category as a LIGHT tiebreak only: rescales the CATEGORY_WEIGHTS (0.30–1.70)
-# range down to ≈ ±10%. e.g. business.markets 1.70 → ×1.105; entertainment 0.30
-# → ×0.895. Coverage dominates; category breaks near-ties. ⚑ tune.
-CATEGORY_TIEBREAK_STRENGTH = 0.15
+# Category as a LIGHT tiebreak: rescales the CATEGORY_WEIGHTS range to ≈ ±14%.
+# Coverage still dominates ACROSS coverage levels, but among EQUAL-coverage stories
+# (the single-source tail that dominates thin/early data) this is the main
+# differentiator — so it must be enough to sort a war story above a soap-award or a
+# gaming blog post. Nudged 0.15→0.20 for that separation. ⚑ tune.
+CATEGORY_TIEBREAK_STRENGTH = 0.20
+
+# Source authority: a LIGHT lift by the best (most credible) outlet covering the
+# story, reusing the curated source_credibility tiers. This breaks ties in the
+# single-source tail — a lone Reuters/BBC/AP story outranks a lone gaming-blog one.
+# Bonus by tier (1 = wire/flagship … default = unknown); scaled by the strength.
+# Coverage still dominates; this only sorts near-ties. ⚑ tune.
+SOURCE_AUTHORITY_STRENGTH = 0.10
+TIER_AUTHORITY_BONUS: dict[int, float] = {1: 1.0, 2: 0.6, 3: 0.3}  # else 0.0
 
 # 0–10 normalisation: score10 = 10 · importance / (importance + IMPORTANCE_HALF).
 # IMPORTANCE_HALF is the importance value that maps to 5/10. ⚑ CALIBRATE on the
