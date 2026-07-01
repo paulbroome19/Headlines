@@ -79,6 +79,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
     enum PlayerState: Equatable {
         case idle
         case loadingManifest
+        case preparing        // manifest received; gating on readiness (loader shown)
         case buffering        // manifest received; items loading; waiting for play tap
         case playing
         case paused
@@ -107,6 +108,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     @Published private(set) var consumedStoryHashes: Set<String> = []
     /// Index of the story unit the playhead is currently in (updated on transition entry too).
     @Published private(set) var currentUnitIndex: Int = 0
+    /// Loader fill (0–1) shown while `playerState == .preparing`. Smooth + asymptotic;
+    /// only reaches 1.0 when audio actually starts. See LoadProgressModel.
+    @Published private(set) var loadProgress: Double = 0
 
     // MARK: Accessors
 
@@ -186,6 +190,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         stopInternal(sendEvents: true)
 
         _profileId = profileId
+        loadProgress = 0
         playerState = .loadingManifest
 
         do {
@@ -211,17 +216,83 @@ final class BulletinPlayer: NSObject, ObservableObject {
             }
             #endif
 
-            setupQueuePlayer()
-            #if DEBUG
-            print("🎙 BulletinPlayer: setupQueuePlayer done — setting .buffering")
-            #endif
-            playerState = .buffering
+            // Readiness gate (the real "no-greeting" fix): don't enqueue/play until
+            // the intro (greeting) + first story audio are ready, so the greeting is
+            // never reached-before-ready and skipped. Drives the loader meanwhile.
+            await gateOnReadinessThenPlay()
 
         } catch {
             #if DEBUG
             print("🎙 BulletinPlayer: load failed — \(error)")
             #endif
             playerState = .failed(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Readiness gate + loader (Parts 2 & 3)
+
+    /// After the manifest, poll the readiness signal (~every 0.5s), drive the smooth
+    /// loader, and begin playback only once `safe_to_start` (intro + first story
+    /// audio ready) — so the greeting is never reached-before-ready and skipped.
+    /// Falls back to best-effort playback if readiness is unavailable or slow, so it
+    /// never hangs. Stays in `.preparing` (loader visible) until audio actually starts.
+    private func gateOnReadinessThenPlay() async {
+        guard let bid = _bulletinId else {
+            setupQueuePlayer(); playerState = .buffering; play(); return
+        }
+
+        playerState = .preparing
+        var model = LoadProgressModel()
+        model.reachedMilestone(floor: LoadProgressModel.manifestFloor,
+                               nextCap: LoadProgressModel.assembledFloor)
+        loadProgress = model.progress
+
+        let tickInterval = 0.05                  // 20 fps display cadence
+        let pollEveryTicks = 10                  // 10 × 0.05s ≈ poll every 0.5s
+        let maxTicks = Int(60.0 / tickInterval)  // 60s hard cap → never hang
+
+        var t = 0
+        while t < maxTicks {
+            // Poll readiness immediately on the first tick, then ~every 0.5s.
+            if t % pollEveryTicks == 0 {
+                if let r: BulletinReadiness = try? await client.get("data/bulletins/\(bid)/readiness") {
+                    applyReadinessMilestones(&model, r)
+                    loadProgress = model.progress
+                    if r.safeToStart { break }
+                } else if t == 0 {
+                    // Readiness unavailable (e.g. older backend) — don't gate; best effort.
+                    break
+                }
+            }
+            model.tick(dt: tickInterval)          // smooth creep between milestones
+            loadProgress = model.progress
+            try? await Task.sleep(nanoseconds: UInt64(tickInterval * 1_000_000_000))
+            t += 1
+        }
+
+        // Ready (or gave up): enqueue and start. Hold near-complete but < 1.0 — audio
+        // actually starting is what snaps loadProgress to 1.0 (handleTimeControlStatus).
+        model.reachedMilestone(floor: LoadProgressModel.firstStoryFloor,
+                               nextCap: LoadProgressModel.preStartCap)
+        loadProgress = model.progress
+        setupQueuePlayer()
+        activateAudioSession()
+        player?.play()
+        // Stay in .preparing; timeControlStatus(.playing) flips to .playing + snaps to 100%.
+    }
+
+    private func applyReadinessMilestones(_ model: inout LoadProgressModel, _ r: BulletinReadiness) {
+        if r.assembled {
+            model.reachedMilestone(floor: LoadProgressModel.assembledFloor,
+                                   nextCap: LoadProgressModel.introReadyFloor)
+        }
+        if r.introReady {
+            model.reachedMilestone(floor: LoadProgressModel.introReadyFloor,
+                                   nextCap: LoadProgressModel.firstStoryFloor)
+        }
+        if r.introReady && r.firstStoryReady {
+            model.reachedMilestone(floor: LoadProgressModel.firstStoryFloor,
+                                   nextCap: LoadProgressModel.preStartCap)
         }
     }
 
@@ -540,7 +611,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
         case .playing:
             cancelStallTimer()
             stallCount = 0
-            if playerState == .buffering || playerState == .stalled { playerState = .playing }
+            if playerState == .preparing {
+                // Audio actually started — snap the loader to complete and dismiss it.
+                loadProgress = 1.0
+                playerState = .playing
+            } else if playerState == .buffering || playerState == .stalled {
+                playerState = .playing
+            }
         case .waitingToPlayAtSpecifiedRate:
             // Only start stall detection during active playback (not initial buffering).
             if playerState == .playing {
@@ -719,6 +796,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
     }
 
     private func handleStallTimeout() {
+        // Never stall-skip the intro (greeting). It's unique per user and can take a
+        // few seconds to generate; skipping it is exactly the "no-greeting" bug. Wait
+        // for it instead. (The readiness gate makes this rare, but this is the belt.)
+        if currentSegment?.type == "intro" {
+            stallCount = 0
+            startStallTimer()   // keep waiting; do not skip
+            return
+        }
         stallCount += 1
         if stallCount >= stallMaxCount {
             stallCount  = 0
@@ -801,5 +886,58 @@ final class BulletinPlayer: NSObject, ObservableObject {
             info[MPNowPlayingInfoPropertyChapterCount]  = storyCount
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+}
+
+// MARK: - Loader progress model
+
+/// Smooth, honest loader progress for the first-play readiness gate (Part 3).
+///
+///  - Readiness milestones set a **floor** the bar snaps up to (manifest assembled,
+///    intro ready, first-story ready).
+///  - Between milestones the bar **creeps** via `tick`, easing asymptotically toward
+///    a **cap** just below the next milestone — always moving, never overtaking reality.
+///  - It **never reaches 1.0** until `complete()` (called only when audio actually
+///    starts), so the bar never sits "finished" in silence.
+///
+/// Pure value type, no timers/IO — unit-testable in isolation. Kept in this file
+/// (rather than a new file) so it needs no Xcode target/pbxproj change.
+struct LoadProgressModel {
+
+    // Milestone floors (0–1). Tunable; ordered.
+    static let manifestFloor:   Double = 0.15   // manifest received
+    static let assembledFloor:  Double = 0.25   // bulletin assembled
+    static let introReadyFloor: Double = 0.60   // greeting audio ready
+    static let firstStoryFloor: Double = 0.85   // first story ready (safe_to_start imminent)
+    static let preStartCap:     Double = 0.97   // hard ceiling before audio actually starts
+
+    private(set) var progress: Double = 0
+    private var floor: Double = 0
+    private var cap: Double = LoadProgressModel.manifestFloor
+
+    /// Snap up to a milestone `floor` and set the creep ceiling just below the next
+    /// milestone. Floors only ever move forward (monotonic); cap is clamped so the
+    /// bar can never reach 1.0 before `complete()`.
+    mutating func reachedMilestone(floor f: Double, nextCap c: Double) {
+        floor = max(floor, f)
+        progress = max(progress, floor)
+        cap = min(max(c, floor), LoadProgressModel.preStartCap)
+        if progress > cap { progress = cap }
+    }
+
+    /// Creep asymptotically toward the current cap. `dt` = seconds since last tick.
+    /// Covers a fraction `1 - e^(-rate·dt)` of the remaining gap each tick, so it
+    /// approaches the cap smoothly and never overshoots it.
+    mutating func tick(dt: Double, ratePerSec: Double = 0.6) {
+        guard dt > 0, progress < cap else { return }
+        let remaining = cap - progress
+        progress = min(cap, progress + remaining * (1 - exp(-ratePerSec * dt)))
+    }
+
+    /// Audio has actually started — snap to 100% and dismiss the loader.
+    mutating func complete() {
+        floor = 1.0
+        cap = 1.0
+        progress = 1.0
     }
 }

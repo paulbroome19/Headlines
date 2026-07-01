@@ -36,6 +36,8 @@ struct NowPlayingView: View {
                     switch player.playerState {
                     case .idle, .loadingManifest:
                         loadingState
+                    case .preparing:
+                        preparingState
                     case .failed(let msg):
                         failedState(msg)
                     default:
@@ -93,6 +95,26 @@ struct NowPlayingView: View {
             Text("PREPARING YOUR BRIEFING")
                 .font(.label(12)).tracking(2.5)
                 .foregroundColor(inkMuted)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Readiness-gated loader: a determinate bar driven by `player.loadProgress`
+    /// (smooth, asymptotic — never full until audio starts). Generic UI for now;
+    /// the mechanism is what matters. The `.animation` smooths the ~20fps updates
+    /// so the fill reads as continuous and never "stuck".
+    private var preparingState: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Text("PREPARING YOUR BRIEFING")
+                .font(.label(12)).tracking(2.5)
+                .foregroundColor(inkMuted)
+            ProgressView(value: player.loadProgress)
+                .progressViewStyle(.linear)
+                .tint(ink)
+                .frame(maxWidth: 240)
+                .animation(.easeOut(duration: 0.15), value: player.loadProgress)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
