@@ -11,10 +11,14 @@ CATEGORY_WEIGHTS: dict[str, float] = {
     "top-stories": 1.20,
 
     # World / geopolitics / conflict — a general front page LEADS with these, so
-    # they sit ABOVE tech-product news (previously 'world' was 1.00, below tech —
-    # which let a product update outrank a war story on category).
+    # they sit ABOVE tech-product news. NOTE: the taxonomy + categoriser use
+    # `politics.world` (a real picker leaf: politics → uk/us/europe/world), NOT
+    # `politics.global` — the old key here matched nothing produced, so geopolitics
+    # (~50 stories/day) silently fell to the 0.75 default. `world` is kept for stray
+    # top-level world.* tags.
     "world": 1.35,
-    "politics.global": 1.35,  # G7/UN/war/diplomacy
+    "politics.world": 1.35,   # geopolitics / G7 / UN / war / diplomacy (the produced slug)
+    "politics.global": 1.35,  # legacy alias — kept in case anything still emits it
     "politics.uk": 1.25,
     "politics.us": 1.20,
     "politics.europe": 1.20,
