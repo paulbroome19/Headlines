@@ -131,6 +131,21 @@ def _classify(name: str) -> tuple[int, str]:
     return (_DEFAULT_TIER, _clean_display(name))
 
 
+def best_tier(names: list[str]) -> int:
+    """The best (lowest-numbered = most credible) curated tier among a story's
+    source names, or _DEFAULT_TIER if none are recognised. Used as a light
+    source-authority signal in ranking (a lone wire/flagship story outranks a lone
+    unknown-blog one when coverage is equal)."""
+    best = _DEFAULT_TIER
+    for name in names or []:
+        if not name or not name.strip():
+            continue
+        tier, _ = _classify(name)
+        if tier < best:
+            best = tier
+    return best
+
+
 def rank_sources(names: list[str], *, limit: int = 3) -> list[str]:
     """
     Rank a story's outlet names by curated credibility tier and return the top

@@ -20,6 +20,9 @@ class StoryRankingCandidate:
     # coverage (from the pool stamp). None for legacy/un-stamped stories.
     geo_region: str | None = None
     pool_country: str | None = None
+    # Best (lowest-numbered = most credible) source tier among this story's outlets
+    # (curated source_credibility tiers). Default = unknown. Light ranking tiebreak.
+    top_source_tier: int = 9
 
 
 @dataclass(slots=True)
