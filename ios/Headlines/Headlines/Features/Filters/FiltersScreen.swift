@@ -21,12 +21,12 @@ import SwiftUI
 
 // MARK: - Selection helpers (overlay a leaf-id set onto a freshly-loaded tree)
 
-/// Fresh-install defaults — a few top topics ship pre-lit so a user who taps
-/// nothing still gets a fuller, varied first briefing. `groupSlugs` light a whole
-/// top group (cascades to all descendants); `leafSlugs` light a single child
-/// (e.g. UK under World). All are real backend slugs.
-private let onboardingDefaultGroupSlugs: Set<String> = ["world", "business", "technology"]
-private let onboardingDefaultLeafSlugs:  Set<String> = ["world.uk"]
+/// Fresh-install default — a new user starts with TOP STORIES only (nothing else).
+/// It's the highest-coverage "best across everything" front page, so it always fills
+/// (the backend guarantees it). `groupSlugs` light a whole top group (cascades to all
+/// its region descendants); `leafSlugs` would light individual children. Real slugs.
+private let onboardingDefaultGroupSlugs: Set<String> = ["top-stories"]
+private let onboardingDefaultLeafSlugs:  Set<String> = []
 
 private func leafIDs(under node: TopicNode) -> [String] {
     node.isLeaf ? [node.id] : node.children.flatMap(leafIDs(under:))
