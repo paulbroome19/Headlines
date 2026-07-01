@@ -219,8 +219,7 @@ struct NowPlayingView: View {
             Spacer(minLength: 20)
             transport
             Spacer(minLength: 18)
-            upNext
-            Spacer(minLength: 8)
+            tracklist
         }
     }
 
@@ -250,31 +249,25 @@ struct NowPlayingView: View {
             // Hinge seam + notch pins.
             seam.padding(.vertical, 2)
 
-            // Bottom flap: SOURCES (left, degraded→hidden) | STORY LEFT (right)
-            HStack(alignment: .top) {
-                if !sources.isEmpty {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("SOURCES")
-                            .font(.label(9)).tracking(2)
-                            .foregroundColor(BoardColors.character.opacity(0.4))
-                        Text(sources.prefix(3).joined(separator: " · "))
-                            .font(.board(13))
-                            .foregroundColor(BoardColors.character.opacity(0.85))
-                    }
+            // Bottom flap: SOURCES (ranked top 3) — the whole-bulletin timer in the
+            // scrubber replaces the old per-story "STORY LEFT" that lived here.
+            // Hidden gracefully (no placeholder) until the backend surfaces sources.
+            if !sources.isEmpty {
+                HStack(spacing: 0) {
+                    Text("SOURCES — \(sources.prefix(3).joined(separator: " · "))".uppercased())
+                        .font(.label(11)).tracking(1.5)
+                        .foregroundColor(BoardColors.character.opacity(0.55))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Spacer(minLength: 0)
                 }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 5) {
-                    Text("STORY LEFT")
-                        .font(.label(9)).tracking(2)
-                        .foregroundColor(BoardColors.character.opacity(0.4))
-                    Text(timeString(storyLeftSeconds))
-                        .font(.board(15))
-                        .foregroundColor(BoardColors.character)
-                }
+                .padding(.horizontal, 18)
+                .padding(.top, 14)
+                .padding(.bottom, 18)
+            } else {
+                // No sources yet — keep a slim inset so the board stays balanced.
+                Color.clear.frame(height: 16)
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 14)
-            .padding(.bottom, 18)
         }
         .background(boardMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -446,26 +439,72 @@ struct NowPlayingView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Up Next
+    // MARK: - Running order (full interactive tracklist)
 
-    @ViewBuilder
-    private var upNext: some View {
-        if let next = upNextStory {
-            VStack(alignment: .leading, spacing: 10) {
-                Rectangle().fill(ink.opacity(0.12)).frame(height: 1)
-                Text("UP NEXT")
-                    .font(.label(11)).tracking(2.5)
-                    .foregroundColor(inkMuted)
-                Text("\(String(format: "%02d", next.number)) — \(next.title)")
-                    .font(.editorial(19))
-                    .foregroundColor(ink)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        } else {
-            // Last story — keep the rule for visual stability.
+    /// The whole bulletin as a tappable list. The playing story lives IN the list
+    /// (highlighted + animated), played stories are dimmed but still replayable,
+    /// upcoming stories are normal. Tapping any row seeks to its start and plays.
+    private var tracklist: some View {
+        VStack(alignment: .leading, spacing: 0) {
             Rectangle().fill(ink.opacity(0.12)).frame(height: 1)
+            Text("RUNNING ORDER")
+                .font(.label(11)).tracking(2.5)
+                .foregroundColor(inkMuted)
+                .padding(.top, 14)
+                .padding(.bottom, 4)
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    ForEach(Array(player.storyUnits.enumerated()), id: \.offset) { idx, unit in
+                        trackRow(idx: idx, unit: unit)
+                        if idx < player.storyUnits.count - 1 {
+                            Rectangle().fill(ink.opacity(0.06)).frame(height: 1)
+                                .padding(.horizontal, 10)
+                        }
+                    }
+                }
+                .padding(.bottom, 8)
+            }
         }
+        .frame(maxHeight: .infinity)
+    }
+
+    private func trackRow(idx: Int, unit: StoryUnit) -> some View {
+        let isCurrent = idx == currentUnitIndexClamped
+        let isPlayed = !isCurrent && (unit.storyHash.map { player.consumedStoryHashes.contains($0) } ?? false)
+        // Grey = "you've heard this" (still tappable), NOT disabled.
+        let titleColor = isPlayed ? ink.opacity(0.32) : ink
+        let numColor = isCurrent ? ink : inkMuted
+        return Button {
+            player.playStoryUnit(at: idx)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Text(String(format: "%02d", idx + 1))
+                    .font(.label(12)).tracking(1)
+                    .foregroundColor(numColor)
+                    .frame(width: 22, alignment: .leading)
+                    .padding(.top, 3)
+                Text(unit.title ?? "")
+                    .font(.editorial(18))
+                    .foregroundColor(titleColor)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if isCurrent {
+                    EqualizerIndicator(color: ink)
+                        .frame(width: 15, height: 13)
+                        .padding(.top, 4)
+                }
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isCurrent ? ink.opacity(0.05) : Color.clear)  // subtle now-playing highlight
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Derived now-playing state (from BulletinPlayer)
@@ -504,17 +543,6 @@ struct NowPlayingView: View {
     }
     private var bulletinLeftSeconds: Double {
         max(0, player.totalStoryDurationSeconds - bulletinElapsedSeconds)
-    }
-    private var storyLeftSeconds: Double {
-        guard !player.storyUnits.isEmpty else { return 0 }
-        let unit = player.storyUnits[currentUnitIndexClamped]
-        let unitEnd = unit.cumulativeStartSeconds + unit.totalDurationSeconds
-        return max(0, unitEnd - bulletinElapsedSeconds)
-    }
-    private var upNextStory: (number: Int, title: String)? {
-        let next = currentUnitIndexClamped + 1
-        guard next < player.storyUnits.count else { return nil }
-        return (next + 1, player.storyUnits[next].title ?? "")
     }
 
     private func timeString(_ seconds: Double) -> String {
@@ -572,6 +600,42 @@ private struct SegmentedScrubber: View {
                     Capsule().fill(ink.opacity(0.15))                       // not-yet
                     Capsule().fill(ink)                                     // played portion
                         .frame(width: g.size.width * CGFloat(progress))
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Equalizer indicator (now-playing row)
+
+/// Small animated equalizer beside the currently-playing track — the bars
+/// oscillate on a shared TimelineView clock (pure UI, no audio taps). Under
+/// reduce-motion it collapses to a static `waveform` glyph.
+private struct EqualizerIndicator: View {
+    let color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let bars = 4
+
+    var body: some View {
+        if reduceMotion {
+            Image(systemName: "waveform")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(color)
+        } else {
+            TimelineView(.animation) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate
+                GeometryReader { geo in
+                    let barW = (geo.size.width - CGFloat(bars - 1) * 2) / CGFloat(bars)
+                    HStack(alignment: .bottom, spacing: 2) {
+                        ForEach(0..<bars, id: \.self) { i in
+                            // Each bar on its own phase so they never move in lockstep.
+                            let n = 0.30 + 0.70 * (0.5 + 0.5 * sin(t * 5.5 + Double(i) * 1.3))
+                            Capsule()
+                                .fill(color)
+                                .frame(width: max(1.5, barW), height: max(2, geo.size.height * CGFloat(n)))
+                        }
+                    }
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
                 }
             }
         }
