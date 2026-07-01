@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import text
+
 from core.platform.config.settings import settings
 from core.platform.db.session import SessionLocal
 from core.platform.queue.event import Event
@@ -119,6 +121,81 @@ def _emit_pool(pool: Pool, slot: datetime) -> None:
         db.commit()
 
 
+def _utc_midnight(now: datetime) -> datetime:
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _scheduler_requests_today(now: datetime) -> int:
+    """Restart-safe count of scheduler-emitted GNews requests since UTC midnight,
+    read from the authoritative data.ingestion_runs rows. Seeds the burst budget
+    counter so a mid-day restart can't re-burst past the daily hard cap."""
+    try:
+        with SessionLocal() as db:
+            n = db.execute(
+                text(
+                    "SELECT count(*) FROM data.ingestion_runs "
+                    "WHERE source = 'scheduler' AND created_at >= :m"
+                ),
+                {"m": _utc_midnight(now)},
+            ).scalar()
+        return int(n or 0)
+    except Exception:
+        logger.exception("scheduler: failed to read ingestion_runs count — assuming 0")
+        return 0
+
+
+def _run_burst(burst_day) -> None:
+    """One-day aggressive fill: fire the full pool grid in fast rotation until the
+    daily hard cap is spent, then idle until UTC midnight. One-shot — only the UTC
+    day the burst was enabled; after midnight main() falls back to the normal tiers.
+
+    The budget counter is seeded from the DB (restart-safe) and incremented locally
+    per emit, so it never blows past ingest_daily_hard_cap even across restarts."""
+    cap = settings.ingest_daily_hard_cap
+    batch = max(1, settings.ingest_burst_batch)
+    interval = max(1, settings.ingest_burst_interval_sec)
+    logger.warning(
+        "scheduler: BURST MODE active for %s UTC — full grid (%d pools), %d/tick every %ds, hard cap %d req/day",
+        burst_day, len(POOLS), batch, interval, cap,
+    )
+
+    burst_idx = 0
+    emitted = _scheduler_requests_today(datetime.now(timezone.utc))
+
+    while True:
+        now = datetime.now(timezone.utc)
+
+        # One-shot: once the calendar day rolls over, stop bursting and hand back
+        # to the normal tiered scheduler (even if the flag is still set).
+        if now.date() != burst_day:
+            logger.warning("scheduler: burst day %s elapsed — reverting to normal tiered schedule", burst_day)
+            return
+
+        if emitted >= cap:
+            nxt = _utc_midnight(now) + timedelta(days=1)
+            secs = (nxt - now).total_seconds()
+            logger.warning(
+                "scheduler: burst cap reached (%d/%d today) — idling %.1fh until %s UTC, then normal tiers",
+                emitted, cap, secs / 3600.0, nxt.strftime("%Y-%m-%d %H:%M"),
+            )
+            time.sleep(min(secs, 900))   # cap the sleep so a restart/rollover re-checks promptly
+            continue
+
+        # Fire a batch across the full grid, never exceeding the remaining budget.
+        slot = now.replace(second=0, microsecond=0)
+        n = min(batch, cap - emitted)
+        for _ in range(n):
+            pool = POOLS[burst_idx % len(POOLS)]
+            burst_idx += 1
+            try:
+                _emit_pool(pool, slot)   # minute-stamped key; distinct pools ⇒ distinct keys
+                emitted += 1
+            except Exception:
+                logger.exception("scheduler: burst emit failed for %s/%s", pool.category, pool.country)
+        logger.info("scheduler: burst fired %d pools  (%d/%d today)", n, emitted, cap)
+        time.sleep(interval)
+
+
 def main() -> None:
     if not settings.enable_scheduled_ingest:
         logger.info("scheduler: ENABLE_SCHEDULED_INGEST not set — exiting")
@@ -128,6 +205,11 @@ def main() -> None:
         "scheduler: started  pools=%d  budget=%d req/day (< 1000)",
         len(POOLS), daily_request_budget(),
     )
+
+    # One-day burst override: run the aggressive fill for today, then fall through
+    # to the normal tiered loop below (which resumes at the next UTC midnight).
+    if settings.ingest_burst_mode:
+        _run_burst(datetime.now(timezone.utc).date())
 
     while True:
         now = datetime.now(timezone.utc)

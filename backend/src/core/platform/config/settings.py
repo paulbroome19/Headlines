@@ -55,6 +55,19 @@ class Settings(BaseSettings):
     # Scheduled ingest
     enable_scheduled_ingest: bool = False
 
+    # ── One-day ingest BURST override (temporary; docs/ingestion-burst.md) ──────
+    # When INGEST_BURST_MODE=true, the scheduler ignores the tiered grid and fires
+    # the full pool grid in fast rotation (~ingest_burst_batch pools every
+    # ingest_burst_interval_sec) until the daily hard cap is spent, then idles until
+    # UTC midnight. One-shot: the burst only applies on the UTC day it was enabled;
+    # after midnight it auto-reverts to the normal tiered schedule even if the flag
+    # is left on. ingest_daily_hard_cap is the restart-safe ceiling on scheduler
+    # requests per UTC day (guards against blowing past the paid GNews budget).
+    ingest_burst_mode: bool = False
+    ingest_burst_batch: int = 5           # pools fired per tick (~5/min → fast fill)
+    ingest_burst_interval_sec: int = 60   # seconds between ticks
+    ingest_daily_hard_cap: int = 1000     # hard ceiling on scheduler requests / UTC day
+
     # Public API base URL — used to construct absolute URLs in manifest responses
     public_api_base_url: str = "http://localhost:8000"
 
