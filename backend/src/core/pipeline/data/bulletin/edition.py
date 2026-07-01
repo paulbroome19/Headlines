@@ -143,12 +143,16 @@ def resolve_daily_edition(
     existing = repo.get_story_ids(profile_id, edition_date, request_hash)
 
     fresh_ids = [o["story_id"] for o in fresh_ordered]
+    # "Done with" = heard (consumed) OR skipped-early (rejected). Filter these EVERYWHERE
+    # — including the first edition of a new day — so a story the user has genuinely dealt
+    # with never comes back (across regenerations AND across the day boundary), while
+    # unheard (queued) stories still persist.
+    dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
 
     if existing is None:
-        final_ids = fresh_ids[:EDITION_MAX]
+        final_ids = [sid for sid in fresh_ids if sid not in dropped][:EDITION_MAX]
     else:
-        heard = {str(x) for x in UserStoryStateRepo(db).get_consumed_story_ids(profile_id)}
-        final_ids = reconcile_edition(existing, fresh_ids, heard, max_size=EDITION_MAX)
+        final_ids = reconcile_edition(existing, fresh_ids, dropped, max_size=EDITION_MAX)
 
     repo.upsert(profile_id, edition_date, request_hash, final_ids)
 
