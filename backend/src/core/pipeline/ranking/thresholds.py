@@ -32,6 +32,14 @@ from .config import (
 from .models import ScoredStory
 
 
+# Top Stories is the "best across everything" front page — it must never come back
+# empty just because nothing cleared the (deliberately high) universal bar on a
+# thin/low-coverage day. When Top Stories is explicitly selected, guarantee the
+# front page fills up to this many highest-scored stories regardless of the bar.
+# Aligned with the summarise budget so a full bulletin can always be assembled.
+_FRONT_PAGE_MIN = 12
+
+
 def _matches_category(primary_category: str | None, ticked: str) -> bool:
     if not primary_category:
         return False
@@ -118,6 +126,23 @@ def select_by_thresholds(
         if via_front or via_region or via_category:
             qualifying.append(s)
             seen.add(sid)
+
+    # Top Stories guarantee: when the user explicitly selected Top Stories (bare
+    # front page or any region bucket), never return it empty/thin just because
+    # nothing cleared the high universal bar — backfill with the highest-scored
+    # stories (which ARE the top stories) up to a full-bulletin floor. Topic-only
+    # briefings are deliberately NOT backfilled, so their graceful "no stories match"
+    # empty state still fires when a topic genuinely has nothing.
+    top_stories_selected = ("top-stories" in cats) or bool(regions)
+    if top_stories_selected and len(qualifying) < _FRONT_PAGE_MIN:
+        for s in sorted(scored, key=lambda x: x.normalized_score, reverse=True):
+            sid = s.candidate.story_id
+            if sid in seen:
+                continue
+            qualifying.append(s)
+            seen.add(sid)
+            if len(qualifying) >= _FRONT_PAGE_MIN:
+                break
 
     # Coverage-primary order (so a hugely-covered story leads regardless of country);
     # country_weight is the secondary tiebreak; story_id keeps it deterministic.
