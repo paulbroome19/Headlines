@@ -91,7 +91,9 @@ struct HomeView: View {
                 Spacer()
 
                 HStack(spacing: 14) {
-                    refreshButton
+                    // Refresh hidden until it does something (refreshBriefing is a
+                    // stub) — a visible no-op button shouldn't ship. onRefresh +
+                    // refreshBriefing() stay wired for when refresh lands.
                     profileButton
                 }
             }
@@ -104,18 +106,6 @@ struct HomeView: View {
                 .frame(height: 1)
                 .padding(.horizontal, pageMargin)
         }
-    }
-
-    private var refreshButton: some View {
-        Button(action: onRefresh) {
-            Image(systemName: "arrow.clockwise")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(LightColors.ink.opacity(0.4))
-                .frame(width: 34, height: 34)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Refresh")
     }
 
     private var profileButton: some View {

@@ -487,9 +487,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     private func setupRemoteCommands() {
         let cc = MPRemoteCommandCenter.shared()
-        cc.playCommand.addTarget  { [weak self] _ in self?.play();  return .success }
-        cc.pauseCommand.addTarget { [weak self] _ in self?.pause(); return .success }
-        cc.nextTrackCommand.addTarget { [weak self] _ in self?.skip(); return .success }
+        // MPRemoteCommandCenter may deliver these off the main thread. Hop to the main
+        // actor before touching @Published playerState — otherwise a lock-screen /
+        // Control Center tap mutates it off-main and the in-app icon strands/desyncs
+        // (same fix already applied to the AVAudioSession notification handlers above).
+        cc.playCommand.addTarget  { [weak self] _ in Task { @MainActor [weak self] in self?.play() };  return .success }
+        cc.pauseCommand.addTarget { [weak self] _ in Task { @MainActor [weak self] in self?.pause() }; return .success }
+        cc.nextTrackCommand.addTarget { [weak self] _ in Task { @MainActor [weak self] in self?.skip() }; return .success }
         cc.nextTrackCommand.isEnabled      = true
         cc.previousTrackCommand.isEnabled  = false
         cc.changePlaybackPositionCommand.isEnabled = false
