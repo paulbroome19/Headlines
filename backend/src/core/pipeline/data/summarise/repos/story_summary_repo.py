@@ -27,23 +27,26 @@ class StorySummaryRepo:
         story_id: str,
         content_hash: str,
         model: str,
+        depth_tier: str = "lead",
     ) -> dict[str, Any] | None:
         """
-        Look up a summary from a previous run with the same story content and model.
-        Returns the most recent matching row, or None.
+        Look up a summary from a previous run with the same story content, model AND
+        depth tier. Depth is part of the cache key: the same story at a different
+        depth is a different summary. Returns the most recent match, or None.
         """
         row = self.db.execute(
             text("""
                 SELECT headline, summary_text, why_it_matters, audio_script,
                        model, summary_version, confidence
                 FROM data.story_summaries
-                WHERE story_id    = :story_id
+                WHERE story_id     = :story_id
                   AND content_hash = :content_hash
                   AND model        = :model
+                  AND depth_tier   = :depth_tier
                 ORDER BY created_at DESC
                 LIMIT 1
             """),
-            {"story_id": story_id, "content_hash": content_hash, "model": model},
+            {"story_id": story_id, "content_hash": content_hash, "model": model, "depth_tier": depth_tier},
         ).mappings().first()
         return dict(row) if row else None
 

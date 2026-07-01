@@ -49,6 +49,58 @@ SOURCE_WEIGHT_CAP = 0.30
 CLUSTER_WEIGHT_MULTIPLIER = 0.10
 CLUSTER_WEIGHT_CAP = 0.20
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DAY-LEVEL IMPORTANCE MODEL (coverage-driven; see docs/ranking-depth-design.md)
+# ══════════════════════════════════════════════════════════════════════════════
+# importance = coverage · prominence · freshness · category_tiebreak
+# Coverage (how many outlets run the story) is the dominant, UNCAPPED driver —
+# "how big is this story". Category is only a LIGHT tiebreak; it must never
+# promote a smaller story over a genuinely bigger one.
+
+# Coverage: 1 + COVERAGE_K · log1p(source_count). Uncapped. ⚑ tune.
+COVERAGE_K = 0.80
+# Prominence (secondary bigness): 1 + PROMINENCE_K · log1p(article_count) + entity heft.
+PROMINENCE_K = 0.25
+# Freshness: bounded floor — FRESHNESS_MIN + (1-FRESHNESS_MIN)·exp(-λ·hours_ago).
+# A big morning story still scores FRESHNESS_MIN by evening, so recency is a
+# factor, not the driver. ⚑ tune (window is the candidate loader's, ~24-48h).
+FRESHNESS_MIN = 0.60
+FRESHNESS_LAMBDA = 0.03
+# Category as a LIGHT tiebreak only: rescales the CATEGORY_WEIGHTS (0.30–1.70)
+# range down to ≈ ±10%. e.g. business.markets 1.70 → ×1.105; entertainment 0.30
+# → ×0.895. Coverage dominates; category breaks near-ties. ⚑ tune.
+CATEGORY_TIEBREAK_STRENGTH = 0.15
+
+# 0–10 normalisation: score10 = 10 · importance / (importance + IMPORTANCE_HALF).
+# IMPORTANCE_HALF is the importance value that maps to 5/10. ⚑ CALIBRATE on the
+# live source-count distribution so typical big stories land ~8–10, minor ~3–5.
+IMPORTANCE_HALF = 2.2
+
+# ── Threshold-per-source selection (personalisation lives HERE, not in ranking) ──
+# Each preset slides ALL bars together. A story qualifies if its 0–10 score clears
+# the bar of ANY source it belongs to (Top Stories = high universal bar across all
+# topics; each ticked topic category = its own lower bar). Union, dedup, rank.
+# ⚑ TUNE these against the normalised-score distribution.
+THRESHOLDS: dict[str, dict[str, float]] = {
+    #            Top Stories (front page, all topics)   ticked topic category
+    "short":    {"top_stories": 8.5,                    "category": 7.5},
+    "medium":   {"top_stories": 7.5,                    "category": 6.0},
+    "detailed": {"top_stories": 6.0,                    "category": 4.5},
+}
+DEFAULT_PRESET = "medium"
+
+# ── Depth by rank (four coarse tiers; word target feeds the summariser prompt) ──
+# Assigned by a story's position in the final ordered bulletin. Lead deep, tail
+# brisk. Coarse tiers keep the summary cache to ≤4 rows/story. ⚑ tune word targets.
+DEPTH_TIERS: list[tuple[str, int]] = [   # (tier name, target words) — ordered by rank band
+    ("lead", 120),      # rank 1
+    ("major", 80),      # ranks 2–3
+    ("standard", 50),   # ranks 4–7
+    ("brief", 25),      # ranks 8+
+]
+# Rank (0-based) → tier index boundaries. rank 0 → lead; 1–2 → major; 3–6 → standard; 7+ → brief.
+_DEPTH_RANK_BANDS = (1, 3, 7)  # exclusive upper bounds for lead/major/standard
+
 MIN_ADJUSTED_SCORE = 0.20
 
 BUCKET_MAX_STORIES: dict[str, int] = {

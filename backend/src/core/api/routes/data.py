@@ -16,6 +16,12 @@ from core.platform.queue.event import Event
 from core.platform.queue.outbox import OutboxRepo
 from core.pipeline.data.ingest.events import DATA_INGEST_REQUESTED
 from core.pipeline.ranking.repos.ranking_run_repo import RankingRunRepo
+from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
+from core.pipeline.ranking.scorer import score_story
+from core.pipeline.ranking.category_ranker import get_category_weight
+from core.pipeline.ranking.thresholds import select_by_thresholds
+from core.pipeline.ranking.depth import depth_for_rank
+from core.pipeline.ranking.config import DEFAULT_PRESET
 from core.pipeline.data.summarise.repos.story_summary_repo import StorySummaryRepo
 from core.pipeline.data.bulletin.repos.bulletin_repo import BulletinRepo
 from core.pipeline.data.bulletin.repos.user_story_state_repo import (
@@ -496,6 +502,61 @@ def _story_timings(segments: list[dict], script: str, duration: float) -> dict[s
     return timings
 
 
+def _preset_from_minutes(max_duration_minutes: float | None) -> str:
+    """Map the legacy duration control to a preset (threshold slider). The preset
+    is the real control now; an explicit profile `preset` field is the clean
+    follow-on. Length is an OUTPUT of what clears the bars, not a target."""
+    m = max_duration_minutes or 6
+    if m <= 3:
+        return "short"
+    if m <= 7:
+        return "medium"
+    return "detailed"
+
+
+def _threshold_select_with_depth(
+    db,
+    *,
+    include_top_stories: bool,
+    include_categories: list[str] | None,
+    exclude_categories: list[str] | None,
+    preset: str,
+) -> tuple[list[dict], dict[str, tuple[str, int]]]:
+    """
+    The new day-level selection: score fresh candidates (coverage-driven), then keep
+    everything that clears its source's threshold for this preset (Top Stories at the
+    high universal bar + each ticked category at its lower bar), ordered by importance.
+    Depth is assigned by rank. Returns (ordered_story_dicts, depths_map).
+    """
+    candidates = load_story_ranking_candidates(db)
+    scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
+    qualifying = select_by_thresholds(
+        scored,
+        include_top_stories=include_top_stories,
+        include_categories=include_categories,
+        preset=preset,
+    )
+
+    excludes = list(exclude_categories or [])
+
+    def _excluded(cat: str | None) -> bool:
+        if not cat:
+            return False
+        return any(cat == e or cat.startswith(e + ".") for e in excludes)
+
+    ordered: list[dict] = []
+    depths: dict[str, tuple[str, int]] = {}
+    for s in qualifying:
+        cat = s.candidate.primary_category
+        if _excluded(cat):
+            continue
+        sid = s.candidate.story_id
+        tier, words = depth_for_rank(len(ordered))  # rank by position after exclusions
+        ordered.append({"story_id": sid, "primary_category": cat})
+        depths[sid] = (tier, words)
+    return ordered, depths
+
+
 def _get_or_assemble_bulletin(
     *,
     profile_id: int | None = None,
@@ -515,7 +576,8 @@ def _get_or_assemble_bulletin(
     Returns: bulletin_id, ranking_run_id, request_hash, story_count, script,
              segments, stories_list, bulletin_cached, is_first_bulletin.
     """
-    filters: dict = {"max_duration_minutes": max_duration_minutes, "include_top_stories": include_top_stories}
+    preset = _preset_from_minutes(max_duration_minutes)
+    filters: dict = {"preset": preset, "include_top_stories": include_top_stories}
     if include_categories:
         filters["include_categories"] = sorted(include_categories)
     if exclude_categories:
@@ -536,6 +598,7 @@ def _get_or_assemble_bulletin(
     ordered: list[dict] = []
     top_story_ids_set: set[str] = set()
     candidate_ids: list[str] = []
+    depths: dict[str, tuple[str, int]] = {}
 
     # ── Session 1: ranking run lookup + cache check + candidate extraction ────
     with SessionLocal() as db:
@@ -585,23 +648,24 @@ def _get_or_assemble_bulletin(
                     for sid in story_ids_cached
                 ]
         else:
-            # ── Non-cached: extract candidate list before session closes ──────
-            # Summaries don't exist yet — they will be generated after this session.
-            top = run["top_stories"] if isinstance(run["top_stories"], list) else _json.loads(run["top_stories"])
-            briefing = run["briefing"] if isinstance(run["briefing"], list) else _json.loads(run["briefing"])
-            seen: set[str] = set()
-            for s in top + briefing:
-                sid = str(s["story_id"])
-                if sid not in seen:
-                    seen.add(sid)
-                    ordered.append({"story_id": sid, "primary_category": s.get("primary_category")})
+            # ── Non-cached: day-level threshold selection + depth-by-rank ──────
+            # Score fresh candidates (coverage-driven), keep everything that clears
+            # its source's threshold for this preset, ordered by importance; depth
+            # scales with rank. Length is an OUTPUT of what qualifies, not a target.
+            ordered, depths = _threshold_select_with_depth(
+                db,
+                include_top_stories=include_top_stories,
+                include_categories=include_categories,
+                exclude_categories=exclude_categories,
+                preset=preset,
+            )
 
             if profile_id is not None:
                 excluded_ids = UserStoryStateRepo(db).get_excluded_story_ids(profile_id)
                 if excluded_ids:
                     ordered = [o for o in ordered if int(o["story_id"]) not in excluded_ids]
+                    depths = {o["story_id"]: depths[o["story_id"]] for o in ordered}
 
-            top_story_ids_set = {str(s["story_id"]) for s in top}
             candidate_ids = [o["story_id"] for o in ordered[:_SUMMARISE_BUDGET]]
 
     # ── On-demand summarisation (non-cached path only) ────────────────────────
@@ -609,7 +673,7 @@ def _get_or_assemble_bulletin(
     # Cache-first: only stories with no matching (story_id, content_hash, model)
     # row from any previous run will trigger a paid LLM call.
     if not bulletin_cached:
-        ensure_story_summaries(ranking_run_id, candidate_ids)
+        ensure_story_summaries(ranking_run_id, candidate_ids, depths)
 
         # ── Session 2: read summaries, select, assemble, persist ─────────────
         with SessionLocal() as db:
@@ -632,47 +696,10 @@ def _get_or_assemble_bulletin(
                     "primary_category": o["primary_category"],
                 })
 
-            if include_top_stories:
-                top_pool = [s for s in all_stories if s["story_id"] in top_story_ids_set]
-                top_picked = select_stories_by_duration(
-                    top_pool,
-                    max_duration_minutes=max_duration_minutes,
-                )
-                top_used = sum(
-                    estimate_duration_seconds(
-                        (s.get("audio_script") or "").strip() or (s.get("summary_text") or "")
-                    )
-                    for s in top_picked
-                )
-                remaining_minutes = max_duration_minutes - top_used / 60
-                if remaining_minutes > 0:
-                    briefing_pool = [s for s in all_stories if s["story_id"] not in top_story_ids_set]
-                    briefing_picked = select_stories_by_duration(
-                        briefing_pool,
-                        include_categories=include_categories or None,
-                        exclude_categories=exclude_categories or None,
-                        max_duration_minutes=remaining_minutes,
-                    )
-                    stories = top_picked + briefing_picked
-                else:
-                    stories = top_picked
-            else:
-                stories = select_stories_by_duration(
-                    all_stories,
-                    include_categories=include_categories or None,
-                    exclude_categories=exclude_categories or None,
-                    max_duration_minutes=max_duration_minutes,
-                )
-
-            if not stories and all_stories and (include_categories or exclude_categories):
-                logger.warning(
-                    "_get_or_assemble_bulletin: no stories matched category filter "
-                    "(include=%s, exclude=%s, profile=%s) — falling back to all eligible stories",
-                    include_categories, exclude_categories, profile_id,
-                )
-                stories = select_stories_by_duration(
-                    all_stories, max_duration_minutes=max_duration_minutes
-                )
+            # Threshold selection already chose + ordered the qualifying stories by
+            # importance and assigned each a depth; there is no separate time-budget
+            # cut (length is an output of what cleared the bars). Keep them in order.
+            stories = all_stories
 
             if not stories:
                 raise HTTPException(status_code=404, detail="No stories match the requested filters")

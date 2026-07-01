@@ -22,16 +22,25 @@ logger = logging.getLogger(__name__)
 _MAX_PARALLEL_SUMMARIES = 6
 
 
-def ensure_story_summaries(ranking_run_id: int, story_ids: list[str]) -> dict[str, int]:
+def ensure_story_summaries(
+    ranking_run_id: int,
+    story_ids: list[str],
+    depths: dict[str, tuple[str, int]] | None = None,
+) -> dict[str, int]:
     """
     Ensure summaries exist in data.story_summaries for every story_id in story_ids
     under ranking_run_id. Called on-demand at manifest/bulletin-assembly time.
 
+    depths: optional {story_id: (depth_tier, depth_words)} — depth-by-rank. A story
+            not in the map (or depths=None) defaults to the 'lead' full treatment
+            (back-compat with the eager pre-warm). Depth is part of the cache key,
+            so the same story can hold up to 4 tiers.
+
     Cache semantics
     ---------------
-    - Stories already summarised for this ranking_run_id are skipped entirely.
-    - Stories with a matching (story_id, content_hash, model) row from ANY previous
-      run are reused — no LLM call, just a new row inserted for this run.
+    - Stories already summarised for this run AT THEIR REQUESTED DEPTH are skipped.
+    - A matching (story_id, content_hash, model, depth_tier) row from ANY previous
+      run is reused — no LLM call, just a new row inserted for this run.
     - Only true cache misses call the LLM, and those calls run in parallel.
 
     Returns counts: {attempted, generated, reused, failed}.
@@ -40,6 +49,11 @@ def ensure_story_summaries(ranking_run_id: int, story_ids: list[str]) -> dict[st
 
     if not story_ids:
         return counts
+
+    depths = depths or {}
+
+    def _depth(sid: str) -> tuple[str, int | None]:
+        return depths.get(sid, ("lead", None))
 
     model = _model()
 
@@ -55,19 +69,24 @@ def ensure_story_summaries(ranking_run_id: int, story_ids: list[str]) -> dict[st
 
     with SessionLocal() as db:
         repo = StorySummaryRepo(db)
-        already_done = repo.get_existing_story_ids(ranking_run_id)
-        pending = [sid for sid in story_ids if sid not in already_done]
+        # Depth-aware skip: a story is "done" for this run only at the depth already
+        # stored — a story summarised at 'lead' still needs work if 'brief' is asked.
+        done_rows = db.execute(text("""
+            SELECT story_id, depth_tier FROM data.story_summaries WHERE ranking_run_id = :r
+        """), {"r": ranking_run_id}).fetchall()
+        done_pairs = {(str(row[0]), row[1]) for row in done_rows}
+        pending = [sid for sid in story_ids if (str(sid), _depth(sid)[0]) not in done_pairs]
 
         if not pending:
             logger.info(
-                "ensure_story_summaries run=%s: all %d stories already summarised",
-                ranking_run_id, len(already_done),
+                "ensure_story_summaries run=%s: all %d stories already summarised at their depth",
+                ranking_run_id, len(story_ids),
             )
             return counts
 
         logger.info(
-            "ensure_story_summaries run=%s: %d total  %d already done  %d to process",
-            ranking_run_id, len(story_ids), len(already_done), len(pending),
+            "ensure_story_summaries run=%s: %d total  %d done@depth  %d to process",
+            ranking_run_id, len(story_ids), len(done_pairs), len(pending),
         )
 
         cat_rows = db.execute(text("""
@@ -98,12 +117,13 @@ def ensure_story_summaries(ranking_run_id: int, story_ids: list[str]) -> dict[st
             story_articles[story_id] = articles
             content_hash = _compute_content_hash(articles)
             story_hashes[story_id] = content_hash
+            tier, _ = _depth(story_id)
 
-            cached = repo.get_cached(story_id, content_hash, model)
+            cached = repo.get_cached(story_id, content_hash, model, depth_tier=tier)
             if cached:
                 logger.info(
-                    "ensure_story_summaries REUSE    run=%-4s story=%-20s hash=%s  headline=%r",
-                    ranking_run_id, story_id, content_hash, cached["headline"][:60],
+                    "ensure_story_summaries REUSE    run=%-4s story=%-20s tier=%-8s hash=%s",
+                    ranking_run_id, story_id, tier, content_hash,
                 )
                 stories_to_reuse.append({
                     "story_id": story_id,
@@ -116,6 +136,7 @@ def ensure_story_summaries(ranking_run_id: int, story_ids: list[str]) -> dict[st
                     "model": model,
                     "summary_version": cached["summary_version"],
                     "confidence": cached["confidence"],
+                    "depth_tier": tier,
                 })
             else:
                 stories_to_generate.append(story_id)
@@ -134,11 +155,14 @@ def ensure_story_summaries(ranking_run_id: int, story_ids: list[str]) -> dict[st
     if stories_to_generate:
         def _call_llm(story_id: str) -> tuple[str, Any]:
             arts = story_articles[story_id]
+            tier, words = _depth(story_id)
             return story_id, summarise_story(
                 story_id=story_id,
                 representative_title=arts[0].get("title") or "",
                 articles=arts,
                 category=story_categories.get(story_id),
+                depth_words=words,
+                depth_tier=tier,
             )
 
         n_workers = min(len(stories_to_generate), _MAX_PARALLEL_SUMMARIES)
@@ -167,6 +191,7 @@ def ensure_story_summaries(ranking_run_id: int, story_ids: list[str]) -> dict[st
                     "model": model,
                     "summary_version": 1,
                     "confidence": result.confidence,
+                    "depth_tier": _depth(story_id)[0],
                 })
                 counts["generated"] += 1
 
@@ -180,13 +205,13 @@ def ensure_story_summaries(ranking_run_id: int, story_ids: list[str]) -> dict[st
                     INSERT INTO data.story_summaries (
                         story_id, ranking_run_id, content_hash,
                         headline, summary_text, why_it_matters, audio_script,
-                        model, summary_version, confidence
+                        model, summary_version, confidence, depth_tier
                     ) VALUES (
                         :story_id, :ranking_run_id, :content_hash,
                         :headline, :summary_text, :why_it_matters, :audio_script,
-                        :model, :summary_version, :confidence
+                        :model, :summary_version, :confidence, :depth_tier
                     )
-                    ON CONFLICT (story_id, ranking_run_id) DO NOTHING
+                    ON CONFLICT (story_id, ranking_run_id, depth_tier) DO NOTHING
                 """), row)
             db.commit()
 
