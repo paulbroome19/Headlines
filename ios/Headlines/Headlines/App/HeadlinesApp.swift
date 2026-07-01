@@ -50,7 +50,9 @@ struct HeadlinesApp: App {
 
                 case .buildBriefing:
                     // Step 2 — persists topics + sets `didOnboard`, then Home.
-                    BuildBriefingView { phase = .home }
+                    // Back returns to the name step (name persists via @AppStorage).
+                    BuildBriefingView(onContinue: { phase = .home },
+                                      onBack: { phase = .createProfile })
                         .transition(.opacity)
 
                 case .home:

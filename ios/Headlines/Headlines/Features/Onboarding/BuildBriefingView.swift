@@ -18,6 +18,8 @@ import SwiftUI
 
 struct BuildBriefingView: View {
     var onContinue: () -> Void = {}
+    /// Back to the name step (onboarding). No-op by default (e.g. previews).
+    var onBack: () -> Void = {}
     var profileService: ProfileServicing = ProfileService()
 
     @AppStorage("userName")       private var userName = ""
@@ -29,7 +31,7 @@ struct BuildBriefingView: View {
         // Onboarding context: defaults pre-lit (initialSelection nil), step
         // indicator shown, finish creates the profile and completes first-run.
         FiltersScreen(
-            chrome: .onboarding(ctaLabel: "COMPLETE SETUP"),
+            chrome: .onboarding(ctaLabel: "COMPLETE SETUP", onBack: onBack),
             initialSelection: nil,
             onComplete: { leafIDs in try await createProfileAndFinish(leafIDs) }
         )
