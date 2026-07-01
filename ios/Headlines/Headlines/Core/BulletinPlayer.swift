@@ -291,7 +291,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
         setupQueuePlayer()
         activateAudioSession()
         player?.play()
-        // Stay in .preparing; timeControlStatus(.playing) flips to .playing + snaps to 100%.
+        // Reflect playback in state directly — audio is gated-ready, so don't wait for
+        // a timeControlStatus(.playing) edge (AVQueuePlayer may not emit one). This snaps
+        // the loader to complete and shows the transport with the correct pause icon.
+        // handleTimeControlStatus still handles genuine stalls/resumes from here.
+        loadProgress = 1.0
+        playerState = .playing
     }
 
     private func applyReadinessMilestones(_ model: inout LoadProgressModel, _ r: BulletinReadiness) {
@@ -765,11 +770,20 @@ final class BulletinPlayer: NSObject, ObservableObject {
             p.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if wasPlaying { self.player?.play() }
+                    if wasPlaying {
+                        self.player?.play()
+                        // Set .playing directly — the removeAllItems()→re-enqueue and the
+                        // in-buffer seek can leave timeControlStatus already .playing, so the
+                        // KVO edge may never fire and the state would strand at .buffering.
+                        self.playerState = .playing
+                    }
                 }
             }
         } else {
-            if wasPlaying { p.play() }
+            if wasPlaying {
+                p.play()
+                playerState = .playing   // see note above — don't depend on a KVO edge
+            }
         }
     }
 
