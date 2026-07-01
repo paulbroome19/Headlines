@@ -79,7 +79,7 @@ class Settings(BaseSettings):
 
     # TTS
     tts_provider: str = "elevenlabs"
-    tts_voice: str = "JBFqnCBsd6RMkjVDRZzb"   # ElevenLabs "George" — British male
+    tts_voice: str = "19STyYD15bswVz51nqLf"   # ElevenLabs voice (default; override via TTS_VOICE env)
     tts_model: str = "eleven_turbo_v2_5"
     tts_audio_format: str = "mp3_44100_128"
     elevenlabs_api_key: str | None = None
