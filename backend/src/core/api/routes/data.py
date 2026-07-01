@@ -963,6 +963,23 @@ def get_bulletin_readiness(bulletin_id: int):
     iOS polls this ~0.5-1s after the manifest returns to drive a real progress
     bar and flip to playback at `safe_to_start`. Additive — does NOT change the
     manifest or segment contracts iOS already depends on.
+
+    Response (superset of the #58 shape — all original fields unchanged):
+      bulletin_id, assembled(true), total_segments, ready_segments,
+      failed_segments, segments[{index,type,state}],
+      safe_to_start   — THE authoritative "dismiss loader + start audio" signal.
+      stage           — ordered: assembled → audio_generating → buffered → ready
+                        (or "failed" if a critical segment failed).
+      intro_ready, first_story_ready, all_ready, blocked — distinct milestone bools.
+      milestones      — ordered [{key, reached, weight}] (weights sum to 1.0) the
+                        loader advances a bar against; creep smoothly between them.
+      progress        — optional 0–100 hint; never 100 until fully ready and never
+                        the dismissal trigger (safe_to_start is).
+
+    NOTE: this covers the post-manifest AUDIO phase. Pre-manifest assembly
+    (summarise/connective) runs inside the blocking manifest POST — before the
+    client has a bulletin_id — so it is not observable here; a profile-level
+    preparation endpoint would be needed to surface those stages.
     """
     voice = tts_voice()
     model = tts_model()
@@ -1000,17 +1017,80 @@ def get_bulletin_readiness(bulletin_id: int):
             state = "pending"
         out_segments.append({"index": i, "type": s.get("type", "story"), "state": state})
 
-    lead = min(_SAFE_START_LEAD_SEGMENTS, len(out_segments))
+    total = len(out_segments)
+    ready_count = sum(1 for x in out_segments if x["state"] == "ready")
+    failed_count = sum(1 for x in out_segments if x["state"] == "failed")
+
+    lead = min(_SAFE_START_LEAD_SEGMENTS, total)
     safe_to_start = lead > 0 and all(out_segments[i]["state"] == "ready" for i in range(lead))
+
+    # ── Named audio-phase milestones (ordered) the loader advances a bar against ──
+    def _first(pred):
+        return next((x for x in out_segments if pred(x)), None)
+
+    intro_seg = _first(lambda x: x["type"] == "intro")
+    first_story_seg = _first(lambda x: x["type"] == "story")
+    # No intro segment (shouldn't happen) → nothing to wait for.
+    intro_ready = (intro_seg is None) or intro_seg["state"] == "ready"
+    first_story_ready = first_story_seg is not None and first_story_seg["state"] == "ready"
+    all_ready = total > 0 and ready_count == total
+    audio_started = ready_count > 0
+    # A CRITICAL segment (intro or first story) genuinely failed → safe_to_start can
+    # never be reached, so the loader would hold forever. Surface it so the client
+    # can show an error instead of hanging at ~95%.
+    blocked = (intro_seg is not None and intro_seg["state"] == "failed") or (
+        first_story_seg is not None and first_story_seg["state"] == "failed"
+    )
+
+    # Single ordered stage (furthest milestone reached) — convenient for the client.
+    if blocked:
+        stage = "failed"
+    elif all_ready:
+        stage = "ready"
+    elif safe_to_start:
+        stage = "buffered"       # dismiss-eligible: intro + first story buffered
+    elif audio_started:
+        stage = "audio_generating"
+    else:
+        stage = "assembled"
+
+    # Ordered milestones with weights (sum = 1.0) so the client can drive a bar.
+    milestones = [
+        {"key": "assembled",         "reached": True,              "weight": 0.10},
+        {"key": "audio_generating",  "reached": audio_started,     "weight": 0.15},
+        {"key": "intro_ready",       "reached": intro_ready,       "weight": 0.30},
+        {"key": "first_story_ready", "reached": first_story_ready, "weight": 0.30},
+        {"key": "safe_to_start",     "reached": safe_to_start,     "weight": 0.15},
+    ]
+
+    # Optional 0–100 hint: milestone structure blended with audio-completion
+    # fraction so it moves both as milestones land AND as segments finish. Capped
+    # below 100 until everything is ready — dismissal is driven by safe_to_start,
+    # never by this number.
+    reached_weight = sum(m["weight"] for m in milestones if m["reached"])
+    seg_fraction = (ready_count / total) if total else 0.0
+    if all_ready:
+        progress = 100
+    else:
+        progress = min(99, round(100 * (0.6 * reached_weight + 0.4 * seg_fraction)))
 
     return {
         "bulletin_id": bulletin_id,
         "assembled": True,
-        "total_segments": len(out_segments),
-        "ready_segments": sum(1 for x in out_segments if x["state"] == "ready"),
-        "failed_segments": sum(1 for x in out_segments if x["state"] == "failed"),
-        "safe_to_start": safe_to_start,
+        # ── #58 fields (unchanged, still authoritative) ──
+        "total_segments": total,
+        "ready_segments": ready_count,
+        "failed_segments": failed_count,
+        "safe_to_start": safe_to_start,       # THE dismiss-loader + start-audio signal
         "segments": out_segments,
+        # ── added: ordered milestones the loader advances against ──
+        "stage": stage,                       # assembled → audio_generating → buffered → ready (| failed)
+        "intro_ready": intro_ready,
+        "first_story_ready": first_story_ready,
+        "all_ready": all_ready,
+        "blocked": blocked,                   # critical segment failed → safe_to_start unreachable
+        "milestones": milestones,
+        "progress": progress,                 # 0–100 hint (nice-to-have; safe_to_start still dismisses)
     }
 
 
