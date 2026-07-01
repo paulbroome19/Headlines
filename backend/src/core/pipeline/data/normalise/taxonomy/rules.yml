@@ -1,7 +1,16 @@
-version: 1
+version: 2
+
+# Keyword/entity rules for the FINE layer (see docs/taxonomy-final.md).
+# - Coarse top-level comes from the GNews pool stamp (not here).
+# - These rules do the sub-category (competition) routing.
+# - TEAM level (football clubs) is ENTITY matching in entities.yml, not here.
+# - top-stories.* is the geographic axis (⟦GEO⟧ pool_country → geo_region). Until
+#   pool-aware ingestion lands, the country/domestic keywords below BRIDGE it
+#   (mention-based); replace with real geo when ingestion ships.
 
 rules:
 
+  # ── POLITICS (⟦DERIVED⟧ from nation/world pools + these rules) ────────────────
   politics.uk:
     keywords:
       - "prime minister"
@@ -12,21 +21,15 @@ rules:
       - "cabinet"
       - "uk government"
       - "home secretary"
+      - "foreign secretary"
+      - "chancellor of the exchequer"
       - "whitehall"
-      - "royal family"
-      - "royal"
-      - "royals"
-      - "monarchy"
-      - "buckingham palace"
-      - "king charles"
-      - "prince william"
-      - "princess of wales"
-      - "prince harry"
-      - "kensington palace"
+      - "by-election"
+      - "holyrood"
+      - "senedd"
     entities:
       - "labour-party"
       - "conservative-party"
-      - "hmrc"
 
   politics.us:
     keywords:
@@ -35,22 +38,34 @@ rules:
       - "senate"
       - "president"
       - "us government"
+      - "capitol hill"
+      - "republican"
+      - "democrat"
+      - "supreme court"
 
   politics.europe:
     keywords:
       - "european union"
       - "eu commission"
+      - "european commission"
       - "brussels"
       - "european parliament"
+      - "bundestag"
 
-  politics.global:
+  politics.world:
     keywords:
       - "diplomatic"
       - "sanctions"
       - "foreign minister"
       - "summit"
+      - "united nations"
+      - "nato"
+      - "g7"
+      - "g20"
+      - "ceasefire"
 
-  world.uk:
+  # ── TOP STORIES (⟦GEO⟧ — interim keyword BRIDGE until pool geo lands) ─────────
+  top-stories.uk:
     keywords:
       - "metropolitan police"
       - "met police"
@@ -61,41 +76,49 @@ rules:
       - "murder inquiry"
       - "manslaughter"
       - "inquest"
+      - "royal family"
+      - "buckingham palace"
+      - "king charles"
+      - "prince william"
+      - "princess of wales"
+      - "kensington palace"
+      - "nhs"
 
-  world.us:
+  top-stories.us:
     keywords:
       - "united states"
       - "america"
       - "u.s."
 
-  world.europe:
+  top-stories.europe:
     keywords:
       - "france"
       - "germany"
       - "italy"
       - "spain"
 
-  world.asia:
+  top-stories.asia:
     keywords:
       - "china"
       - "japan"
       - "india"
       - "taiwan"
 
-  world.middle-east:
+  top-stories.middle-east:
     keywords:
       - "israel"
       - "gaza"
       - "iran"
       - "saudi"
 
-  world.africa:
+  top-stories.africa:
     keywords:
       - "nigeria"
       - "south africa"
       - "kenya"
       - "sudan"
 
+  # ── BUSINESS (⟦POOL⟧ business → these fine rules) ────────────────────────────
   business.markets:
     keywords:
       - "stocks"
@@ -106,14 +129,8 @@ rules:
       - "ftse"
       - "s&p 500"
       - "nasdaq"
-
-  business.companies:
-    keywords:
-      - "earnings"
-      - "merger"
-      - "acquisition"
-      - "takeover"
-      - "ceo"
+      - "dow jones"
+      - "gilts"
 
   business.economy:
     keywords:
@@ -122,6 +139,20 @@ rules:
       - "gdp"
       - "recession"
       - "unemployment"
+      - "bank of england"
+      - "federal reserve"
+      - "base rate"
+
+  business.companies:
+    keywords:
+      - "earnings"
+      - "merger"
+      - "acquisition"
+      - "takeover"
+      - "ceo"
+      - "profits"
+      - "iphone"
+      - "smartphone"
 
   business.personal-finance:
     keywords:
@@ -130,36 +161,19 @@ rules:
       - "pension"
       - "tax return"
       - "cost of living"
+      - "isa"
+      - "energy bills"
+      - "stamp duty"
     entities:
       - "hmrc"
 
+  # ── TECHNOLOGY (⟦POOL⟧ technology → these fine rules) ────────────────────────
   technology.ai:
     keywords:
       - "artificial intelligence"
       - "ai model"
       - "chatbot"
       - "machine learning"
-
-  technology.companies:
-    keywords:
-      - "microsoft"
-      - "google"
-      - "nvidia"
-
-  technology.consumer:
-    keywords:
-      - "iphone"
-      - "smartphone"
-      - "laptop"
-      - "app launch"
-
-  technology.cybersecurity:
-    keywords:
-      - "cyber attack"
-      - "cybersecurity"
-      - "data breach"
-      - "hack"
-      - "ransomware"
 
   technology.gaming:
     keywords:
@@ -171,7 +185,24 @@ rules:
     entities:
       - "pokemon"
 
-  entertainment.tv-film:
+  technology.companies:
+    keywords:
+      - "microsoft"
+      - "google"
+      - "nvidia"
+      - "laptop"
+      - "app launch"
+
+  technology.cybersecurity:
+    keywords:
+      - "cyber attack"
+      - "cybersecurity"
+      - "data breach"
+      - "hack"
+      - "ransomware"
+
+  # ── CULTURE (⟦POOL⟧ entertainment → these fine rules) ────────────────────────
+  culture.tv-film:
     keywords:
       - "netflix"
       - "film"
@@ -179,37 +210,39 @@ rules:
       - "tv series"
       - "cinema"
       - "soap opera"
-      - "itv soap"
-      - "bbc drama"
       - "coronation street"
       - "eastenders"
       - "emmerdale"
-      - "monty python"
 
-  entertainment.music:
+  culture.music:
     keywords:
       - "album"
       - "music awards"
       - "record label"
 
-  entertainment.celebrity:
+  culture.celebrity:
     keywords:
       - "celebrity"
       - "actor"
       - "actress"
       - "showbiz"
 
-  climate:
+  # ── ENVIRONMENT (⟦DERIVED⟧) ──────────────────────────────────────────────────
+  environment:
     keywords:
       - "climate change"
       - "carbon emissions"
       - "net zero"
       - "global warming"
       - "fossil fuels"
+      - "energy transition"
+      - "wildlife"
+      - "flooding"
     entities:
       - "cop"
       - "ipcc"
 
+  # ── HEALTH (⟦POOL⟧ health) ───────────────────────────────────────────────────
   health:
     keywords:
       - "mental health"
@@ -217,73 +250,121 @@ rules:
       - "cancer diagnosis"
       - "vaccine"
     entities:
-      - "nhs"
       - "world-health-organization"
 
+  # ── SPORT — COMPETITION level (⟦POOL⟧ sports → these; TEAMS via entities) ─────
   sport.football.premier-league:
     keywords:
       - "premier league"
-      - "nottingham forest"
-    entities:
-      - "man-utd"
-      - "liverpool"
-      - "arsenal"
-      - "chelsea"
-
   sport.football.championship:
     keywords:
       - "efl championship"
-
+      - "the championship"
+  sport.football.league-one:
+    keywords:
+      - "league one"
+  sport.football.league-two:
+    keywords:
+      - "league two"
+  sport.football.fa-cup:
+    keywords:
+      - "fa cup"
+  sport.football.efl-cup:
+    keywords:
+      - "carabao cup"
+      - "efl cup"
+      - "league cup"
   sport.football.champions-league:
     keywords:
       - "champions league"
-
-  sport.football.international:
+  sport.football.europa-league:
+    keywords:
+      - "europa league"
+  sport.football.la-liga:
+    keywords:
+      - "la liga"
+  sport.football.serie-a:
+    keywords:
+      - "serie a"
+  sport.football.bundesliga:
+    keywords:
+      - "bundesliga"
+  sport.football.ligue-1:
+    keywords:
+      - "ligue 1"
+  sport.football.womens-super-league:
+    keywords:
+      - "women's super league"
+      - "wsl"
+      - "lionesses"
+  sport.football.scottish-premiership:
+    keywords:
+      - "scottish premiership"
+      - "old firm"
+  sport.football.internationals:
     keywords:
       - "world cup"
       - "euros"
       - "international break"
-
-  sport.formula1:
-    keywords:
-      - "formula 1"
-      - "f1"
-      - "grand prix"
-      - "pre-season testing"
-    entities:
-      - "ferrari"
-      - "mercedes-f1"
-      - "red-bull-racing"
-      - "mclaren"
-
-  sport.cricket.uk:
-    keywords:
-      - "county championship"
-      - "the hundred"
-      - "t20 blast"
+      - "nations league"
 
   sport.cricket.international:
     keywords:
-      - "the ashes"
       - "test match"
       - "odi"
       - "t20 international"
       - "cricket world cup"
-
-  sport.rugby-union.uk:
+    entities:
+      - "ashes"
+  sport.cricket.the-hundred:
     keywords:
-      - "premiership rugby"
+      - "the hundred"
+  sport.cricket.county:
+    keywords:
+      - "county championship"
+      - "t20 blast"
+  sport.cricket.ipl:
+    keywords:
+      - "ipl"
+      - "indian premier league"
+  sport.cricket.womens:
+    keywords:
+      - "women's cricket"
 
-  sport.rugby-union.international:
+  sport.rugby-union.six-nations:
     keywords:
       - "six nations"
+  sport.rugby-union.premiership:
+    keywords:
+      - "premiership rugby"
+      - "gallagher premiership"
+  sport.rugby-union.champions-cup:
+    keywords:
+      - "champions cup"
+      - "heineken champions cup"
+  sport.rugby-union.internationals:
+    keywords:
       - "rugby world cup"
       - "autumn nations"
+      - "british and irish lions"
 
-  sport.rugby-league:
+  sport.rugby-league.super-league:
     keywords:
       - "super league"
       - "rugby league"
+  sport.rugby-league.internationals:
+    keywords:
+      - "rugby league world cup"
+
+  sport.motorsport.formula1:
+    keywords:
+      - "formula 1"
+      - "f1"
+      - "grand prix"
+  sport.motorsport.motogp:
+    keywords:
+      - "motogp"
+      - "moto gp"
 
   sport.tennis:
     keywords:
@@ -302,10 +383,13 @@ rules:
       - "pga tour"
       - "augusta"
       - "ryder cup"
-
   sport.golf.liv:
     keywords:
       - "liv golf"
+  sport.golf.dp-world-tour:
+    keywords:
+      - "dp world tour"
+      - "european tour"
 
   sport.boxing:
     keywords:
@@ -324,6 +408,34 @@ rules:
       - "darts"
       - "pdc"
       - "world matchplay"
+
+  sport.snooker:
+    keywords:
+      - "snooker"
+      - "the crucible"
+      - "world snooker championship"
+
+  sport.horse-racing:
+    keywords:
+      - "horse racing"
+      - "grand national"
+      - "cheltenham"
+      - "royal ascot"
+      - "gold cup"
+
+  sport.cycling:
+    keywords:
+      - "tour de france"
+      - "giro d'italia"
+      - "vuelta"
+      - "cycling"
+
+  sport.athletics:
+    keywords:
+      - "athletics"
+      - "world athletics"
+      - "diamond league"
+      - "marathon"
 
   sport.nfl:
     keywords:

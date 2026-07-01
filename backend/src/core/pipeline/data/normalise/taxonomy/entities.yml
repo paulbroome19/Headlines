@@ -71,7 +71,7 @@ entities:
       - "european commission"
     categories:
       - "politics.europe"
-      - "world.europe"
+      - "top-stories.europe"
 
   nato:
     display_name: "NATO"
@@ -79,8 +79,8 @@ entities:
     aliases:
       - "nato"
     categories:
-      - "politics.global"
-      - "world.europe"
+      - "politics.world"
+      - "top-stories.europe"
 
   united-nations:
     display_name: "United Nations"
@@ -89,7 +89,7 @@ entities:
       - "united nations"
       - "u.n."
     categories:
-      - "politics.global"
+      - "politics.world"
 
   # ============================================================
   # WORLD
@@ -103,7 +103,7 @@ entities:
       - "u.s."
       - "america"
     categories:
-      - "world.us"
+      - "top-stories.us"
 
   france:
     display_name: "France"
@@ -111,7 +111,7 @@ entities:
     aliases:
       - "france"
     categories:
-      - "world.europe"
+      - "top-stories.europe"
 
   germany:
     display_name: "Germany"
@@ -119,7 +119,7 @@ entities:
     aliases:
       - "germany"
     categories:
-      - "world.europe"
+      - "top-stories.europe"
 
   italy:
     display_name: "Italy"
@@ -127,7 +127,7 @@ entities:
     aliases:
       - "italy"
     categories:
-      - "world.europe"
+      - "top-stories.europe"
 
   spain:
     display_name: "Spain"
@@ -135,7 +135,7 @@ entities:
     aliases:
       - "spain"
     categories:
-      - "world.europe"
+      - "top-stories.europe"
 
   china:
     display_name: "China"
@@ -143,7 +143,7 @@ entities:
     aliases:
       - "china"
     categories:
-      - "world.asia"
+      - "top-stories.asia"
 
   india:
     display_name: "India"
@@ -151,7 +151,7 @@ entities:
     aliases:
       - "india"
     categories:
-      - "world.asia"
+      - "top-stories.asia"
 
   japan:
     display_name: "Japan"
@@ -159,7 +159,7 @@ entities:
     aliases:
       - "japan"
     categories:
-      - "world.asia"
+      - "top-stories.asia"
 
   taiwan:
     display_name: "Taiwan"
@@ -167,7 +167,7 @@ entities:
     aliases:
       - "taiwan"
     categories:
-      - "world.asia"
+      - "top-stories.asia"
 
   israel:
     display_name: "Israel"
@@ -175,7 +175,7 @@ entities:
     aliases:
       - "israel"
     categories:
-      - "world.middle-east"
+      - "top-stories.middle-east"
 
   iran:
     display_name: "Iran"
@@ -183,7 +183,7 @@ entities:
     aliases:
       - "iran"
     categories:
-      - "world.middle-east"
+      - "top-stories.middle-east"
 
   saudi-arabia:
     display_name: "Saudi Arabia"
@@ -192,7 +192,7 @@ entities:
       - "saudi arabia"
       - "saudi"
     categories:
-      - "world.middle-east"
+      - "top-stories.middle-east"
 
   nigeria:
     display_name: "Nigeria"
@@ -200,7 +200,7 @@ entities:
     aliases:
       - "nigeria"
     categories:
-      - "world.africa"
+      - "top-stories.africa"
 
   south-africa:
     display_name: "South Africa"
@@ -208,7 +208,7 @@ entities:
     aliases:
       - "south africa"
     categories:
-      - "world.africa"
+      - "top-stories.africa"
 
   kenya:
     display_name: "Kenya"
@@ -216,7 +216,7 @@ entities:
     aliases:
       - "kenya"
     categories:
-      - "world.africa"
+      - "top-stories.africa"
 
   # ============================================================
   # BUSINESS
@@ -346,7 +346,7 @@ entities:
       - "apple inc"
     categories:
       - "technology.companies"
-      - "technology.consumer"
+      - "technology.companies"
 
   nvidia:
     display_name: "Nvidia"
@@ -374,7 +374,7 @@ entities:
       - "ps5"
     categories:
       - "technology.gaming"
-      - "technology.consumer"
+      - "technology.companies"
 
   xbox:
     display_name: "Xbox"
@@ -383,7 +383,7 @@ entities:
       - "xbox"
     categories:
       - "technology.gaming"
-      - "technology.consumer"
+      - "technology.companies"
 
   nintendo:
     display_name: "Nintendo"
@@ -448,7 +448,7 @@ entities:
       - "cop summit"
       - "climate summit"
     categories:
-      - "climate"
+      - "environment"
 
   ipcc:
     display_name: "IPCC"
@@ -456,7 +456,7 @@ entities:
     aliases:
       - "ipcc"
     categories:
-      - "climate"
+      - "environment"
 
   # ============================================================
   # ENTERTAINMENT
@@ -468,7 +468,7 @@ entities:
     aliases:
       - "netflix"
     categories:
-      - "entertainment.tv-film"
+      - "culture.tv-film"
 
   disney:
     display_name: "Disney"
@@ -477,7 +477,7 @@ entities:
       - "disney"
       - "disney+"
     categories:
-      - "entertainment.tv-film"
+      - "culture.tv-film"
 
   # ============================================================
   # SPORT - FOOTBALL
@@ -491,7 +491,7 @@ entities:
       - "man utd"
       - "man u"
     categories:
-      - "sport.football.premier-league"
+      - "sport.football.premier-league.man-utd"
 
   liverpool:
     display_name: "Liverpool FC"
@@ -501,7 +501,7 @@ entities:
       - "liverpool fc"
       - "lfc"
     categories:
-      - "sport.football.premier-league"
+      - "sport.football.premier-league.liverpool"
 
   arsenal:
     display_name: "Arsenal"
@@ -510,7 +510,7 @@ entities:
       - "arsenal"
       - "arsenal fc"
     categories:
-      - "sport.football.premier-league"
+      - "sport.football.premier-league.arsenal"
 
   chelsea:
     display_name: "Chelsea"
@@ -519,7 +519,7 @@ entities:
       - "chelsea"
       - "chelsea fc"
     categories:
-      - "sport.football.premier-league"
+      - "sport.football.premier-league.chelsea"
 
   man-city:
     display_name: "Manchester City"
@@ -528,7 +528,7 @@ entities:
       - "manchester city"
       - "man city"
     categories:
-      - "sport.football.premier-league"
+      - "sport.football.premier-league.man-city"
 
   tottenham:
     display_name: "Tottenham Hotspur"
@@ -538,7 +538,7 @@ entities:
       - "spurs"
       - "tottenham hotspur"
     categories:
-      - "sport.football.premier-league"
+      - "sport.football.premier-league.tottenham"
 
   leeds-united:
     display_name: "Leeds United"
@@ -547,7 +547,7 @@ entities:
       - "leeds united"
       - "leeds"
     categories:
-      - "sport.football.championship"
+      - "sport.football.premier-league.leeds"
 
   leicester-city:
     display_name: "Leicester City"
@@ -556,7 +556,7 @@ entities:
       - "leicester city"
       - "leicester"
     categories:
-      - "sport.football.championship"
+      - "sport.football.championship.leicester-city"
 
   real-madrid:
     display_name: "Real Madrid"
@@ -564,7 +564,7 @@ entities:
     aliases:
       - "real madrid"
     categories:
-      - "sport.football.champions-league"
+      - "sport.football.la-liga"
 
   england-football:
     display_name: "England"
@@ -572,7 +572,7 @@ entities:
     aliases:
       - "england football"
     categories:
-      - "sport.football.international"
+      - "sport.football.internationals"
 
   # ============================================================
   # SPORT - FORMULA 1
@@ -584,7 +584,7 @@ entities:
     aliases:
       - "ferrari"
     categories:
-      - "sport.formula1"
+      - "sport.motorsport.formula1"
 
   mercedes-f1:
     display_name: "Mercedes F1"
@@ -593,7 +593,7 @@ entities:
       - "mercedes"
       - "mercedes amg"
     categories:
-      - "sport.formula1"
+      - "sport.motorsport.formula1"
 
   red-bull-racing:
     display_name: "Red Bull Racing"
@@ -602,7 +602,7 @@ entities:
       - "red bull"
       - "red bull racing"
     categories:
-      - "sport.formula1"
+      - "sport.motorsport.formula1"
 
   mclaren:
     display_name: "McLaren"
@@ -610,7 +610,7 @@ entities:
     aliases:
       - "mclaren"
     categories:
-      - "sport.formula1"
+      - "sport.motorsport.formula1"
 
   # ============================================================
   # SPORT - CRICKET
@@ -630,7 +630,7 @@ entities:
     aliases:
       - "the hundred"
     categories:
-      - "sport.cricket.uk"
+      - "sport.cricket.the-hundred"
 
   ashes:
     display_name: "The Ashes"
@@ -650,7 +650,7 @@ entities:
     aliases:
       - "six nations"
     categories:
-      - "sport.rugby-union.international"
+      - "sport.rugby-union.six-nations"
 
   premiership-rugby:
     display_name: "Premiership Rugby"
@@ -658,7 +658,7 @@ entities:
     aliases:
       - "premiership rugby"
     categories:
-      - "sport.rugby-union.uk"
+      - "sport.rugby-union.premiership"
 
   super-league:
     display_name: "Super League"
@@ -666,7 +666,7 @@ entities:
     aliases:
       - "super league"
     categories:
-      - "sport.rugby-league"
+      - "sport.rugby-league.super-league"
 
   # ============================================================
   # SPORT - GOLF / COMBAT / DARTS / US SPORTS
@@ -722,3 +722,437 @@ entities:
       - "national basketball association"
     categories:
       - "sport.nba"
+
+  # ============================================================
+  # SPORT - FOOTBALL: PREMIER LEAGUE CLUBS (durable entities)
+  # ============================================================
+
+  aston-villa:
+    display_name: "Aston Villa"
+    entity_type: "team"
+    aliases:
+      - "aston villa"
+      - "avfc"
+    categories:
+      - "sport.football.premier-league.aston-villa"
+
+  bournemouth:
+    display_name: "AFC Bournemouth"
+    entity_type: "team"
+    aliases:
+      - "afc bournemouth"
+      - "bournemouth fc"
+    categories:
+      - "sport.football.premier-league.bournemouth"
+
+  brentford:
+    display_name: "Brentford"
+    entity_type: "team"
+    aliases:
+      - "brentford fc"
+      - "brentford"
+    categories:
+      - "sport.football.premier-league.brentford"
+
+  brighton:
+    display_name: "Brighton & Hove Albion"
+    entity_type: "team"
+    aliases:
+      - "brighton & hove albion"
+      - "brighton and hove albion"
+      - "brighton hove albion"
+      - "the seagulls"
+    categories:
+      - "sport.football.premier-league.brighton"
+
+  burnley:
+    display_name: "Burnley"
+    entity_type: "team"
+    aliases:
+      - "burnley fc"
+    categories:
+      - "sport.football.premier-league.burnley"
+
+  crystal-palace:
+    display_name: "Crystal Palace"
+    entity_type: "team"
+    aliases:
+      - "crystal palace"
+      - "cpfc"
+    categories:
+      - "sport.football.premier-league.crystal-palace"
+
+  everton:
+    display_name: "Everton"
+    entity_type: "team"
+    aliases:
+      - "everton"
+      - "everton fc"
+    categories:
+      - "sport.football.premier-league.everton"
+
+  fulham:
+    display_name: "Fulham"
+    entity_type: "team"
+    aliases:
+      - "fulham fc"
+      - "fulham"
+    categories:
+      - "sport.football.premier-league.fulham"
+
+  newcastle:
+    display_name: "Newcastle United"
+    entity_type: "team"
+    aliases:
+      - "newcastle united"
+      - "newcastle utd"
+      - "nufc"
+    categories:
+      - "sport.football.premier-league.newcastle"
+
+  nottingham-forest:
+    display_name: "Nottingham Forest"
+    entity_type: "team"
+    aliases:
+      - "nottingham forest"
+      - "notts forest"
+      - "nffc"
+    categories:
+      - "sport.football.premier-league.nottingham-forest"
+
+  sunderland:
+    display_name: "Sunderland"
+    entity_type: "team"
+    aliases:
+      - "sunderland afc"
+      - "sunderland fc"
+    categories:
+      - "sport.football.premier-league.sunderland"
+
+  west-ham:
+    display_name: "West Ham United"
+    entity_type: "team"
+    aliases:
+      - "west ham united"
+      - "west ham"
+      - "whufc"
+    categories:
+      - "sport.football.premier-league.west-ham"
+
+  wolves:
+    display_name: "Wolverhampton Wanderers"
+    entity_type: "team"
+    aliases:
+      - "wolverhampton wanderers"
+      - "wolverhampton"
+    categories:
+      - "sport.football.premier-league.wolves"
+
+  # ============================================================
+  # SPORT - FOOTBALL: CHAMPIONSHIP CLUBS (durable entities; ⚑ season-dependent)
+  # ============================================================
+
+  birmingham:
+    display_name: "Birmingham City"
+    entity_type: "team"
+    aliases:
+      - "birmingham city"
+    categories:
+      - "sport.football.championship.birmingham"
+
+  blackburn:
+    display_name: "Blackburn Rovers"
+    entity_type: "team"
+    aliases:
+      - "blackburn rovers"
+    categories:
+      - "sport.football.championship.blackburn"
+
+  bristol-city:
+    display_name: "Bristol City"
+    entity_type: "team"
+    aliases:
+      - "bristol city"
+    categories:
+      - "sport.football.championship.bristol-city"
+
+  cardiff:
+    display_name: "Cardiff City"
+    entity_type: "team"
+    aliases:
+      - "cardiff city"
+    categories:
+      - "sport.football.championship.cardiff"
+
+  coventry:
+    display_name: "Coventry City"
+    entity_type: "team"
+    aliases:
+      - "coventry city"
+    categories:
+      - "sport.football.championship.coventry"
+
+  derby:
+    display_name: "Derby County"
+    entity_type: "team"
+    aliases:
+      - "derby county"
+    categories:
+      - "sport.football.championship.derby"
+
+  hull-city:
+    display_name: "Hull City"
+    entity_type: "team"
+    aliases:
+      - "hull city"
+    categories:
+      - "sport.football.championship.hull-city"
+
+  ipswich:
+    display_name: "Ipswich Town"
+    entity_type: "team"
+    aliases:
+      - "ipswich town"
+    categories:
+      - "sport.football.championship.ipswich"
+
+  middlesbrough:
+    display_name: "Middlesbrough"
+    entity_type: "team"
+    aliases:
+      - "middlesbrough"
+    categories:
+      - "sport.football.championship.middlesbrough"
+
+  millwall:
+    display_name: "Millwall"
+    entity_type: "team"
+    aliases:
+      - "millwall"
+    categories:
+      - "sport.football.championship.millwall"
+
+  norwich:
+    display_name: "Norwich City"
+    entity_type: "team"
+    aliases:
+      - "norwich city"
+      - "the canaries"
+    categories:
+      - "sport.football.championship.norwich"
+
+  oxford-united:
+    display_name: "Oxford United"
+    entity_type: "team"
+    aliases:
+      - "oxford united"
+    categories:
+      - "sport.football.championship.oxford-united"
+
+  plymouth:
+    display_name: "Plymouth Argyle"
+    entity_type: "team"
+    aliases:
+      - "plymouth argyle"
+    categories:
+      - "sport.football.championship.plymouth"
+
+  portsmouth:
+    display_name: "Portsmouth"
+    entity_type: "team"
+    aliases:
+      - "portsmouth fc"
+      - "pompey"
+    categories:
+      - "sport.football.championship.portsmouth"
+
+  preston:
+    display_name: "Preston North End"
+    entity_type: "team"
+    aliases:
+      - "preston north end"
+    categories:
+      - "sport.football.championship.preston"
+
+  qpr:
+    display_name: "Queens Park Rangers"
+    entity_type: "team"
+    aliases:
+      - "queens park rangers"
+      - "qpr"
+    categories:
+      - "sport.football.championship.qpr"
+
+  sheffield-united:
+    display_name: "Sheffield United"
+    entity_type: "team"
+    aliases:
+      - "sheffield united"
+      - "the blades"
+    categories:
+      - "sport.football.championship.sheffield-united"
+
+  sheffield-wednesday:
+    display_name: "Sheffield Wednesday"
+    entity_type: "team"
+    aliases:
+      - "sheffield wednesday"
+      - "the owls"
+    categories:
+      - "sport.football.championship.sheffield-wednesday"
+
+  southampton:
+    display_name: "Southampton"
+    entity_type: "team"
+    aliases:
+      - "southampton fc"
+    categories:
+      - "sport.football.championship.southampton"
+
+  stoke:
+    display_name: "Stoke City"
+    entity_type: "team"
+    aliases:
+      - "stoke city"
+    categories:
+      - "sport.football.championship.stoke"
+
+  swansea:
+    display_name: "Swansea City"
+    entity_type: "team"
+    aliases:
+      - "swansea city"
+    categories:
+      - "sport.football.championship.swansea"
+
+  watford:
+    display_name: "Watford"
+    entity_type: "team"
+    aliases:
+      - "watford fc"
+    categories:
+      - "sport.football.championship.watford"
+
+  west-brom:
+    display_name: "West Bromwich Albion"
+    entity_type: "team"
+    aliases:
+      - "west bromwich albion"
+      - "west brom"
+      - "wba"
+    categories:
+      - "sport.football.championship.west-brom"
+
+  # ============================================================
+  # SPORT - FOOTBALL: EUROPEAN CLUBS + SCOTTISH + PLAYERS
+  # ============================================================
+
+  barcelona:
+    display_name: "FC Barcelona"
+    entity_type: "team"
+    aliases:
+      - "fc barcelona"
+      - "barcelona"
+      - "barca"
+    categories:
+      - "sport.football.la-liga"
+
+  bayern-munich:
+    display_name: "Bayern Munich"
+    entity_type: "team"
+    aliases:
+      - "bayern munich"
+      - "bayern münchen"
+      - "fc bayern"
+    categories:
+      - "sport.football.bundesliga"
+
+  psg:
+    display_name: "Paris Saint-Germain"
+    entity_type: "team"
+    aliases:
+      - "paris saint-germain"
+      - "paris st germain"
+      - "psg"
+    categories:
+      - "sport.football.ligue-1"
+
+  juventus:
+    display_name: "Juventus"
+    entity_type: "team"
+    aliases:
+      - "juventus"
+      - "juve"
+    categories:
+      - "sport.football.serie-a"
+
+  celtic:
+    display_name: "Celtic"
+    entity_type: "team"
+    aliases:
+      - "celtic fc"
+      - "celtic football club"
+    categories:
+      - "sport.football.scottish-premiership"
+
+  rangers:
+    display_name: "Rangers"
+    entity_type: "team"
+    aliases:
+      - "rangers fc"
+      - "glasgow rangers"
+    categories:
+      - "sport.football.scottish-premiership"
+
+  erling-haaland:
+    display_name: "Erling Haaland"
+    entity_type: "person"
+    aliases:
+      - "erling haaland"
+    categories:
+      - "sport.football.premier-league.man-city"
+
+  bukayo-saka:
+    display_name: "Bukayo Saka"
+    entity_type: "person"
+    aliases:
+      - "bukayo saka"
+    categories:
+      - "sport.football.premier-league.arsenal"
+
+  mohamed-salah:
+    display_name: "Mohamed Salah"
+    entity_type: "person"
+    aliases:
+      - "mohamed salah"
+      - "mo salah"
+    categories:
+      - "sport.football.premier-league.liverpool"
+
+  cole-palmer:
+    display_name: "Cole Palmer"
+    entity_type: "person"
+    aliases:
+      - "cole palmer"
+    categories:
+      - "sport.football.premier-league.chelsea"
+
+  # ============================================================
+  # SPORT - MOTORSPORT DRIVERS
+  # ============================================================
+
+  max-verstappen:
+    display_name: "Max Verstappen"
+    entity_type: "person"
+    aliases:
+      - "max verstappen"
+    categories:
+      - "sport.motorsport.formula1"
+
+  lewis-hamilton:
+    display_name: "Lewis Hamilton"
+    entity_type: "person"
+    aliases:
+      - "lewis hamilton"
+    categories:
+      - "sport.motorsport.formula1"

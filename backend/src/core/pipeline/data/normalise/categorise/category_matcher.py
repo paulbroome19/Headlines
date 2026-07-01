@@ -60,23 +60,26 @@ def match_categories(
             if entity_slug in entity_slugs:
                 score += 3.0
 
-        # --------------------------------------------------
-        # 3) Entity -> category boosts from entities.yml
-        # --------------------------------------------------
-        for entity_slug in entity_slugs:
-            entity_meta = entity_registry.slug_map.get(entity_slug)
-            if not entity_meta:
-                continue
-
-            if slug in entity_meta.categories:
-                # Countries are mentioned in many unrelated articles; a lower boost
-                # prevents a country name in a snippet from overriding the primary
-                # topic signal (e.g. "I'm A Celebrity filmed in South Africa").
-                boost = 1.5 if entity_meta.entity_type == "country" else 5.0
-                score += boost
-
         if score > 0:
             scores[slug] = score
+
+    # --------------------------------------------------
+    # 3) Entity -> category boosts from entities.yml
+    # --------------------------------------------------
+    # Applied OUTSIDE the rule loop so entity-only categories are reachable — a
+    # football club's team category (e.g. sport.football.premier-league.man-city)
+    # has no keyword rule and is populated purely by ENTITY matching. Iterating
+    # only rule slugs would leave those categories unscored.
+    for entity_slug in entity_slugs:
+        entity_meta = entity_registry.slug_map.get(entity_slug)
+        if not entity_meta:
+            continue
+        # Countries are mentioned in many unrelated articles; a lower boost
+        # prevents a country name in a snippet from overriding the primary topic
+        # signal (e.g. "I'm A Celebrity filmed in South Africa").
+        boost = 1.5 if entity_meta.entity_type == "country" else 5.0
+        for cat in entity_meta.categories:
+            scores[cat] = scores.get(cat, 0.0) + boost
 
     if not scores:
         return [], None

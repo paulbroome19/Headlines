@@ -1,76 +1,155 @@
-version: 1
+version: 2
+
+# Final listener-first taxonomy (see docs/taxonomy-final.md).
+# Population: coarse top-level = GNews pool category stamp; fine = rules.yml
+# keywords; team-level (football clubs) = entities.yml name matching; top-stories.*
+# = geographic axis (pool_country → geo_region; bridged via country keywords until
+# pool-aware ingestion lands). politics + environment are DERIVED (no GNews pool).
 
 categories:
+
+  # Geographic "Top Stories" axis (⟦GEO⟧ — pool_country → geo_region).
+  top-stories:
+    uk:
+    us:
+    europe:
+    middle-east:
+    africa:
+    asia:
 
   politics:
     uk:
     us:
     europe:
-    global:
-
-  world:
-    uk:
-    us:
-    europe:
-    asia:
-    middle-east:
-    africa:
+    world:
 
   business:
     markets:
-    companies:
     economy:
+    companies:
     personal-finance:
 
   technology:
     ai:
-    companies:
-    consumer:
-    cybersecurity:
     gaming:
+    companies:
+    cybersecurity:
 
-  science:
-
-  climate:
-
-  health:
-
-  entertainment:
+  culture:
     tv-film:
     music:
     celebrity:
+
+  science:
+
+  health:
+
+  environment:
 
   sport:
 
     football:
       premier-league:
+        arsenal:
+        aston-villa:
+        bournemouth:
+        brentford:
+        brighton:
+        burnley:
+        chelsea:
+        crystal-palace:
+        everton:
+        fulham:
+        leeds:
+        liverpool:
+        man-city:
+        man-utd:
+        newcastle:
+        nottingham-forest:
+        sunderland:
+        tottenham:
+        west-ham:
+        wolves:
       championship:
+        birmingham:
+        blackburn:
+        bristol-city:
+        cardiff:
+        coventry:
+        derby:
+        hull-city:
+        ipswich:
+        leicester-city:
+        middlesbrough:
+        millwall:
+        norwich:
+        oxford-united:
+        plymouth:
+        portsmouth:
+        preston:
+        qpr:
+        sheffield-united:
+        sheffield-wednesday:
+        southampton:
+        stoke:
+        swansea:
+        watford:
+        west-brom:
+      league-one:
+      league-two:
+      fa-cup:
+      efl-cup:
       champions-league:
-      international:
-
-    formula1:
+      europa-league:
+      la-liga:
+      serie-a:
+      bundesliga:
+      ligue-1:
+      womens-super-league:
+      scottish-premiership:
+      internationals:
 
     cricket:
-      uk:
       international:
+      the-hundred:
+      county:
+      ipl:
+      womens:
 
     rugby-union:
-      uk:
-      international:
+      six-nations:
+      premiership:
+      champions-cup:
+      internationals:
 
     rugby-league:
+      super-league:
+      internationals:
+
+    motorsport:
+      formula1:
+      motogp:
 
     tennis:
 
     golf:
       pga:
       liv:
+      dp-world-tour:
 
     boxing:
 
     mma:
 
     darts:
+
+    snooker:
+
+    horse-racing:
+
+    cycling:
+
+    athletics:
 
     nfl:
 
