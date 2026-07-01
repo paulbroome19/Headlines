@@ -316,7 +316,11 @@ def assemble_bulletin(req: BulletinRequest):
         )
 
         if not stories:
-            raise HTTPException(status_code=404, detail="No stories match the requested filters")
+            # Normal empty result, not a failure — see the structured code note below.
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "no_stories", "message": "No stories match the requested filters"},
+            )
 
         now_uk = uk_now()
         conn = generate_connective(
@@ -702,7 +706,13 @@ def _get_or_assemble_bulletin(
             stories = all_stories
 
             if not stories:
-                raise HTTPException(status_code=404, detail="No stories match the requested filters")
+                # Normal empty result (the user's filters matched nothing right now),
+                # NOT a failure. Structured `code` lets the client show a graceful
+                # "all caught up" empty state and distinguish it from a real 404.
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "no_stories", "message": "No stories match the requested filters"},
+                )
 
             # TACTICAL #35: collapse same-event duplicates that keyword/hint
             # clustering missed (paraphrased headlines) BEFORE the connective

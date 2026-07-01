@@ -270,6 +270,11 @@ final class BriefingViewModel: ObservableObject {
             state = .playing   // show as playing; buffering spinner handled at player level
         case .ended:
             state = .ended
+        case .empty:
+            // Normal "no stories match" — not a failure. NowPlayingView renders its
+            // graceful empty state off the player state; mapped here so this switch
+            // stays exhaustive. Reuse .ended for the coarse BriefingViewModel state.
+            state = .ended
         case .failed(let msg):
             state = .failed(msg)
         }

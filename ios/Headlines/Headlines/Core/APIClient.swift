@@ -21,6 +21,16 @@ enum APIError: Error, LocalizedError {
             return "Network error: \(err.localizedDescription)"
         }
     }
+
+    /// True when the server signalled a *normal* empty result — the filters matched
+    /// no stories right now (structured `code: no_stories`) — as opposed to a genuine
+    /// failure. Lets the UI show a graceful "all caught up" state instead of an error.
+    var isNoStoriesMatch: Bool {
+        if case let .badStatus(code, body) = self, code == 404 {
+            return body.contains("no_stories")
+        }
+        return false
+    }
 }
 
 // MARK: - Client

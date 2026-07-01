@@ -85,6 +85,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         case paused
         case stalled          // buffering mid-playback
         case ended
+        case empty            // the filters matched no stories right now (normal, not a failure)
         case failed(String)
     }
 
@@ -225,7 +226,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
             #if DEBUG
             print("🎙 BulletinPlayer: load failed — \(error)")
             #endif
-            playerState = .failed(error.localizedDescription)
+            // A "no stories match these filters" result is a normal empty state, not
+            // a failure — surface it distinctly so the UI shows a graceful message.
+            if let api = error as? APIError, api.isNoStoriesMatch {
+                playerState = .empty
+            } else {
+                playerState = .failed(error.localizedDescription)
+            }
         }
     }
 
