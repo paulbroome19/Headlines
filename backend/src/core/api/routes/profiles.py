@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from pydantic import BaseModel
 
 from sqlalchemy import text
@@ -130,36 +130,59 @@ def _fmt(p: dict) -> dict[str, Any]:
 
 
 @router.post("")
-def create_profile(req: ProfileCreate, background_tasks: BackgroundTasks):
+def create_profile(
+    req: ProfileCreate,
+    background_tasks: BackgroundTasks,
+    x_device_id: str | None = Header(default=None, alias="X-Device-Id"),
+):
     errors = _validate_cats(req.include_categories, req.exclude_categories)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
     voice = _validate_voice(req.voice)
 
     with SessionLocal() as db:
-        profile = ProfileRepo(db).create(
-            name=req.name,
-            include_categories=req.include_categories,
-            exclude_categories=req.exclude_categories,
-            max_duration_minutes=req.max_duration_minutes,
-            voice=voice,
-            include_top_stories=req.include_top_stories,
-        )
+        repo = ProfileRepo(db)
+        # One profile per device: if this device already has one (e.g. re-onboarding
+        # after a reinstall recovery missed), UPDATE it rather than create a duplicate.
+        existing = repo.get_by_device_id(x_device_id) if x_device_id else None
+        if existing is not None:
+            profile = repo.update(existing["id"], {
+                "name": req.name,
+                "include_categories": req.include_categories,
+                "exclude_categories": req.exclude_categories,
+                "max_duration_minutes": req.max_duration_minutes,
+                "voice": voice,
+                "include_top_stories": req.include_top_stories,
+            })
+        else:
+            profile = repo.create(
+                name=req.name,
+                include_categories=req.include_categories,
+                exclude_categories=req.exclude_categories,
+                max_duration_minutes=req.max_duration_minutes,
+                voice=voice,
+                include_top_stories=req.include_top_stories,
+                device_id=x_device_id,
+            )
         db.commit()
 
-    # Warm this new user's first bulletin (greeting + audio) in the background so
-    # it's ready by the time they reach Home and tap play. Non-blocking: the
-    # response returns now; generation happens after. Fails silently.
+    # Warm this user's first bulletin (greeting + audio) in the background so it's
+    # ready by the time they reach Home and tap play. Non-blocking; fails silently.
     background_tasks.add_task(_prepare_first_bulletin, profile["id"])
 
     return _fmt(profile)
 
 
 @router.get("")
-def list_profiles():
+def list_profiles(x_device_id: str | None = Header(default=None, alias="X-Device-Id")):
+    # Identity scoping: a client only ever sees ITS OWN device's profile. A request
+    # without a device id gets nothing (never the whole table) — this is what stops a
+    # fresh/reinstalled device from adopting another tester's profile.
+    if not x_device_id:
+        return {"profiles": []}
     with SessionLocal() as db:
-        profiles = ProfileRepo(db).get_all()
-    return {"profiles": [_fmt(p) for p in profiles]}
+        profile = ProfileRepo(db).get_by_device_id(x_device_id)
+    return {"profiles": [_fmt(profile)] if profile else []}
 
 
 @router.get("/{profile_id}")

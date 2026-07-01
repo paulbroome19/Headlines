@@ -8,7 +8,7 @@ _ALLOWED_UPDATE_FIELDS = {
 
 _SELECT_COLS = """
     id, name, include_categories, exclude_categories,
-    max_duration_minutes, voice, include_top_stories, created_at, updated_at
+    max_duration_minutes, voice, include_top_stories, device_id, created_at, updated_at
 """
 
 
@@ -18,12 +18,12 @@ class ProfileRepo:
 
     def create(self, *, name: str, include_categories=None, exclude_categories=None,
                max_duration_minutes: int = 5, voice: str | None = None,
-               include_top_stories: bool = True) -> dict:
+               include_top_stories: bool = True, device_id: str | None = None) -> dict:
         row = self.db.execute(text(f"""
             INSERT INTO data.profiles
                 (name, include_categories, exclude_categories,
-                 max_duration_minutes, voice, include_top_stories)
-            VALUES (:name, :inc, :exc, :max_duration_minutes, :voice, :include_top_stories)
+                 max_duration_minutes, voice, include_top_stories, device_id)
+            VALUES (:name, :inc, :exc, :max_duration_minutes, :voice, :include_top_stories, :device_id)
             RETURNING {_SELECT_COLS}
         """), {
             "name": name,
@@ -32,6 +32,7 @@ class ProfileRepo:
             "max_duration_minutes": max_duration_minutes,
             "voice": voice,
             "include_top_stories": include_top_stories,
+            "device_id": device_id,
         }).mappings().fetchone()
         return _parse(dict(row))
 
@@ -42,6 +43,18 @@ class ProfileRepo:
             ORDER BY id
         """)).mappings().fetchall()
         return [_parse(dict(r)) for r in rows]
+
+    def get_by_device_id(self, device_id: str) -> dict | None:
+        """The single profile owned by this device (identity scoping). None if the
+        device has never onboarded."""
+        row = self.db.execute(text(f"""
+            SELECT {_SELECT_COLS}
+            FROM data.profiles
+            WHERE device_id = :device_id
+            ORDER BY id
+            LIMIT 1
+        """), {"device_id": device_id}).mappings().fetchone()
+        return _parse(dict(row)) if row else None
 
     def get_by_id(self, profile_id: int) -> dict | None:
         row = self.db.execute(text(f"""
