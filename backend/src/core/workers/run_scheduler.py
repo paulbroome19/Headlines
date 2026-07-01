@@ -1,30 +1,27 @@
 """
-Scheduled ingest worker — wall-clock window edition.
+Scheduled ingest worker — tiered pool edition (docs/ingestion-pool-design.md Part 3).
 
-Fires data.ingest.requested at aligned wall-clock slots within a UTC window,
-then sleeps until the next slot. Restart-safe: never fires immediately on
-boot; never catches up missed slots. Enabled only when
-ENABLE_SCHEDULED_INGEST=true.
+Each POOL = one (category, country) GNews request, fired on its own aligned
+wall-clock grid:
+  Tier 1   — core finance-commuter coverage, every 60 min
+  Tier 1.5 — the rest of the GB topic categories, every 3 h
+  Tier 2   — major economies / Commonwealth, 3×/day (every 8 h)
+  Tier 3   — the long tail, 1×/day
+Priorities (business / politics-via-nation / top-stories) are the frequent tiers.
+
+Restart-safe: slots are aligned to the wall-clock grid from midnight UTC, so a
+restart never double-fires a slot and never catches up missed slots. Enabled only
+when ENABLE_SCHEDULED_INGEST=true.
+
+Budget (hard constraint < 1000 req/day) is computed from the pool intervals at
+import and asserted — see daily_request_budget().
 """
 from __future__ import annotations
 
-# --- Schedule (temporary, GNews free-tier sized; retune for paid tier) ---
-# 16 fires/day, every INTERVAL_MIN over [START_HOUR, END_HOUR) UTC.
-# Last fire of the day: 12:30 UTC.  Next day's first fire: 05:00 UTC.
-# Knobs to adjust when moving to a paid GNews tier:
-#   SCHEDULE_START_HOUR_UTC  — first slot hour (inclusive)
-#   SCHEDULE_END_HOUR_UTC    — cutoff hour (exclusive; last slot = END-INTERVAL)
-#   SCHEDULE_INTERVAL_MIN    — minutes between consecutive slots
-SCHEDULE_START_HOUR_UTC = 5
-SCHEDULE_END_HOUR_UTC   = 13    # exclusive — last fire is 12:30 UTC
-SCHEDULE_INTERVAL_MIN   = 30
-
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
-
-from sqlalchemy import text
 
 from core.platform.config.settings import settings
 from core.platform.db.session import SessionLocal
@@ -34,50 +31,92 @@ from core.pipeline.data.ingest.events import DATA_INGEST_REQUESTED
 
 logger = logging.getLogger(__name__)
 
-
-def next_fire_time(now: datetime) -> datetime:
-    """Return the next scheduled fire slot strictly after *now* (UTC-aware).
-
-    Slots are aligned to the wall-clock grid defined by the SCHEDULE_* constants.
-    Scans today then tomorrow; tomorrow's first slot is always reachable so the
-    function always returns a valid datetime.
-    """
-    for day_offset in range(2):  # today, then tomorrow
-        d = now.date() + timedelta(days=day_offset)
-        slot_minutes = SCHEDULE_START_HOUR_UTC * 60
-        end_minutes  = SCHEDULE_END_HOUR_UTC   * 60
-        while slot_minutes < end_minutes:
-            slot = datetime(
-                d.year, d.month, d.day,
-                slot_minutes // 60, slot_minutes % 60, 0,
-                tzinfo=timezone.utc,
-            )
-            if slot > now:
-                return slot
-            slot_minutes += SCHEDULE_INTERVAL_MIN
-    # Unreachable when START_HOUR < END_HOUR (tomorrow always has a valid first slot)
-    raise AssertionError("next_fire_time: no slot found — check SCHEDULE_* constants")
+# Intervals (minutes) → fires/day = 1440 / interval.
+_T1, _T15, _T2, _T3 = 60, 180, 480, 1440
 
 
-def _has_pending_ingest() -> bool:
-    with SessionLocal() as db:
-        n = db.execute(text("""
-            SELECT COUNT(*) FROM event.outbox
-            WHERE event_type = :t AND status = 'pending'
-        """), {"t": DATA_INGEST_REQUESTED}).scalar()
-        return (n or 0) > 0
+@dataclass(frozen=True)
+class Pool:
+    category: str          # coarse stamp label: general/business/nation/world/technology/sports/science/health/entertainment
+    country: str           # 2-letter GNews country
+    interval_min: int      # aligned wall-clock cadence
+
+    @property
+    def fires_per_day(self) -> int:
+        return 1440 // self.interval_min
 
 
-def _emit_ingest() -> None:
-    key = f"ingest:scheduled:{uuid4()}"
+def _build_pools() -> list[Pool]:
+    pools: list[Pool] = []
+
+    # TIER 1 — core (every 60 min): general/business/nation for gb + us.
+    for country in ("gb", "us"):
+        for cat in ("general", "business", "nation"):
+            pools.append(Pool(cat, country, _T1))
+
+    # TIER 1.5 — UK comprehensiveness (every 3 h): remaining GB topic categories.
+    for cat in ("world", "technology", "sports", "science", "health", "entertainment"):
+        pools.append(Pool(cat, "gb", _T15))
+
+    # TIER 2 — major economies / Commonwealth (3×/day).
+    t2_headlines = ("de", "fr", "it", "es", "nl", "ie", "ca", "in", "cn", "jp",
+                    "kr", "au", "za", "ng", "br", "ae", "il", "ua")
+    t2_business = ("de", "fr", "cn", "jp", "in", "ca", "au", "hk", "sg", "ae")
+    for c in t2_headlines:
+        pools.append(Pool("general", c, _T2))
+    for c in t2_business:
+        pools.append(Pool("business", c, _T2))
+
+    # TIER 3 — long tail (1×/day, general headlines only).
+    t3 = ("ar", "at", "bd", "be", "bw", "bg", "cl", "co", "cu", "cz", "eg", "ee",
+          "et", "fi", "gh", "gr", "hu", "id", "ke", "lv", "lb", "lt", "my", "mx",
+          "ma", "na", "no", "pk", "pe", "ph", "pl", "pt", "ro", "ru", "sa", "sn",
+          "sk", "si", "se", "ch", "tw", "tz", "th", "tr", "ug", "ve", "vn", "zw")
+    for c in t3:
+        pools.append(Pool("general", c, _T3))
+
+    return pools
+
+
+POOLS: list[Pool] = _build_pools()
+
+
+def daily_request_budget() -> int:
+    """Total GNews requests/day across all pools. Hard constraint: < 1000."""
+    return sum(p.fires_per_day for p in POOLS)
+
+
+# Fail fast at import if the schedule ever exceeds the paid-tier budget.
+assert daily_request_budget() < 1000, (
+    f"pool schedule exceeds 1000 req/day: {daily_request_budget()}"
+)
+
+
+def _next_slot(now: datetime, interval_min: int) -> datetime:
+    """Next wall-clock slot strictly after *now*, aligned to the interval grid
+    from midnight UTC. Rolls into the next day cleanly for daily pools."""
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    mins_since = (now - day_start).total_seconds() / 60.0
+    next_mult = (int(mins_since // interval_min) + 1) * interval_min
+    return day_start + timedelta(minutes=next_mult)
+
+
+def _emit_pool(pool: Pool, slot: datetime) -> None:
+    # Idempotency key per (pool, slot) → a restart within the same slot can't
+    # double-process (consumer dedups on the key).
+    key = f"ingest:scheduled:{pool.category}:{pool.country}:{slot.strftime('%Y%m%dT%H%M')}"
     with SessionLocal() as db:
         OutboxRepo(db).add_event(Event(
             type=DATA_INGEST_REQUESTED,
             idempotency_key=key,
-            payload={"source": "scheduler"},
+            payload={
+                "source": "scheduler",
+                "provider": "gnews",
+                "category": pool.category,
+                "country": pool.country,
+            },
         ))
         db.commit()
-    logger.info("scheduler: emitted  event=%s  key=%s", DATA_INGEST_REQUESTED, key)
 
 
 def main() -> None:
@@ -86,38 +125,37 @@ def main() -> None:
         return
 
     logger.info(
-        "scheduler: started  window=%02d:00–%02d:00 UTC  interval=%d min",
-        SCHEDULE_START_HOUR_UTC, SCHEDULE_END_HOUR_UTC, SCHEDULE_INTERVAL_MIN,
+        "scheduler: started  pools=%d  budget=%d req/day (< 1000)",
+        len(POOLS), daily_request_budget(),
     )
 
     while True:
-        now  = datetime.now(timezone.utc)
-        fire = next_fire_time(now)
-        wait = (fire - now).total_seconds()
-        logger.info(
-            "scheduler: next fire at %s UTC  (sleeping %.0f s)",
-            fire.strftime("%H:%M"), wait,
-        )
-        time.sleep(wait)
+        now = datetime.now(timezone.utc)
 
-        now_utc = datetime.now(timezone.utc)
-        logger.info(
-            ">>> SCHEDULED INGEST FIRED at %s UTC <<<",
-            now_utc.strftime("%H:%M:%S"),
-        )
+        # Group pools by their next slot; the earliest slot is the next wake-up.
+        by_slot: dict[datetime, list[Pool]] = {}
+        for p in POOLS:
+            by_slot.setdefault(_next_slot(now, p.interval_min), []).append(p)
 
-        if _has_pending_ingest():
-            logger.info("scheduler: ingest already pending — skipping emit")
-        else:
+        fire_at = min(by_slot)
+        due = by_slot[fire_at]
+        wait = (fire_at - now).total_seconds()
+        logger.info(
+            "scheduler: next fire at %s UTC — %d pools  (sleeping %.0f s)",
+            fire_at.strftime("%H:%M"), len(due), wait,
+        )
+        if wait > 0:
+            time.sleep(wait)
+
+        logger.info(">>> SCHEDULED POOL FIRE at %s UTC — %d pools <<<",
+                    fire_at.strftime("%H:%M"), len(due))
+        for p in due:
             try:
-                _emit_ingest()
+                _emit_pool(p, fire_at)
             except Exception:
-                logger.exception("scheduler: failed to emit ingest event")
+                logger.exception("scheduler: failed to emit pool %s/%s", p.category, p.country)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     main()

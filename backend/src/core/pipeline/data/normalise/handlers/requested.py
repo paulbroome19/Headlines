@@ -14,6 +14,8 @@ from core.pipeline.data.normalise.categorise.entity_service import (
 from core.pipeline.data.normalise.categorise.category_service import (
     categorise_categories,
 )
+from core.pipeline.data.normalise.categorise.pool_reconcile import reconcile_with_pool
+from core.pipeline.data.ingest.pool_taxonomy import geo_region as _geo_region_for
 
 
 def handle_normalise_requested(event: dict) -> None:
@@ -40,6 +42,16 @@ def handle_normalise_requested(event: dict) -> None:
     with SessionLocal() as db:
         outbox = OutboxRepo(db)
         repo = NormalisationArticleRepo(db)
+
+        # Pool stamp for this run (pool-aware ingestion). Denormalised onto every
+        # article below so topic coarse + geography are carried by construction.
+        run_meta = db.execute(
+            text("SELECT pool_category, pool_country FROM data.ingestion_runs WHERE id = :id"),
+            {"id": ingestion_run_id},
+        ).mappings().first()
+        pool_category = run_meta["pool_category"] if run_meta else None
+        pool_country = run_meta["pool_country"] if run_meta else None
+        region = _geo_region_for(pool_country)
 
         rows = db.execute(
             text(
@@ -109,6 +121,16 @@ def handle_normalise_requested(event: dict) -> None:
                 entity_slugs=entity_result.entity_slugs,
             )
 
+            # 2b) Verification layer + politics derivation (pool coarse × our fine)
+            rec_slugs, rec_primary, rec_method = reconcile_with_pool(
+                category_slugs=category_result.category_slugs,
+                primary_category=category_result.primary_category,
+                method=category_result.method,
+                pool_category=pool_category,
+                region=region,
+                text=f"{r['title']} {snippet or ''}",
+            )
+
             # --------------------------------------------------
             # 3) Insert normalised article
             # --------------------------------------------------
@@ -128,7 +150,10 @@ def handle_normalise_requested(event: dict) -> None:
                         category_slugs,
                         category_primary,
                         category_method,
-                        category_version
+                        category_version,
+                        pool_category,
+                        pool_country,
+                        geo_region
                     )
                     VALUES (
                         :ingestion_run_id,
@@ -143,7 +168,10 @@ def handle_normalise_requested(event: dict) -> None:
                         :category_slugs,
                         :category_primary,
                         :category_method,
-                        :category_version
+                        :category_version,
+                        :pool_category,
+                        :pool_country,
+                        :geo_region
                     )
                     RETURNING id
                     """
@@ -157,10 +185,13 @@ def handle_normalise_requested(event: dict) -> None:
                     "source": r["publisher"] or "unknown",
                     "published_at": r["published_at"],
                     "content_snippet": snippet,
-                    "category_slugs": category_result.category_slugs,
-                    "category_primary": category_result.primary_category,
-                    "category_method": category_result.method,
+                    "category_slugs": rec_slugs,
+                    "category_primary": rec_primary,
+                    "category_method": rec_method,
                     "category_version": category_result.version,
+                    "pool_category": pool_category,
+                    "pool_country": pool_country,
+                    "geo_region": region,
                 },
             ).scalar_one()
 
