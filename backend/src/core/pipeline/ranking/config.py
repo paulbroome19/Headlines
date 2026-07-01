@@ -89,6 +89,19 @@ THRESHOLDS: dict[str, dict[str, float]] = {
 }
 DEFAULT_PRESET = "medium"
 
+# ── Top-Stories-by-region roll-up (Part 4) ───────────────────────────────────
+# Regions with a dedicated top-stories.<region> bucket (the taxonomy geo axis).
+# geo_region also carries 'latin-america', which has no leaf → those stories have
+# no dedicated regional bucket but still appear on the bare 'top-stories' front
+# page and via topic filters. ⚑ add 'latin-america' here + a taxonomy leaf if you
+# want a dedicated LatAm bucket.
+TOP_STORIES_REGIONS: set[str] = {"uk", "us", "europe", "middle-east", "africa", "asia"}
+
+# country_weight (from docs/ingestion-pool-design.md, via pool_taxonomy) applied
+# as a LIGHT tiebreak — same principle as CATEGORY_TIEBREAK_STRENGTH. Bigger
+# markets break ties within a region; it NEVER overrides raw coverage. ⚑ tune.
+COUNTRY_TIEBREAK_STRENGTH = 0.15
+
 # ── Depth by rank (four coarse tiers; word target feeds the summariser prompt) ──
 # Assigned by a story's position in the final ordered bulletin. Lead deep, tail
 # brisk. Coarse tiers keep the summary cache to ≤4 rows/story. ⚑ tune word targets.

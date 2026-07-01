@@ -132,7 +132,9 @@ def load_story_ranking_candidates(
                 na.title,
                 na.category_primary,
                 na.source,
-                na.published_at
+                na.published_at,
+                na.geo_region,
+                na.pool_country
             FROM data.normalisation_articles na
             WHERE na.story_id IS NOT NULL
               AND na.published_at IS NOT NULL
@@ -143,7 +145,11 @@ def load_story_ranking_candidates(
                 ra.story_id,
                 COUNT(*) AS article_count,
                 COUNT(DISTINCT ra.source) AS source_count,
-                MAX(ra.published_at) AS last_seen_at
+                MAX(ra.published_at) AS last_seen_at,
+                -- Regional roll-up (Part 4): the dominant region/country of the
+                -- story's coverage. mode() ignores NULLs (legacy/un-stamped rows).
+                mode() WITHIN GROUP (ORDER BY ra.geo_region) AS geo_region,
+                mode() WITHIN GROUP (ORDER BY ra.pool_country) AS pool_country
             FROM recent_articles ra
             GROUP BY ra.story_id
         ),
@@ -202,7 +208,9 @@ def load_story_ranking_candidates(
             rep.category_primary AS primary_category,
             pse.entity_id AS primary_entity_id,
             pse.display_name AS primary_entity_name,
-            pse.entity_type AS primary_entity_type
+            pse.entity_type AS primary_entity_type,
+            sas.geo_region,
+            sas.pool_country
         FROM story_article_stats sas
         JOIN representative_articles rep
             ON rep.story_id = sas.story_id
@@ -246,6 +254,8 @@ def load_story_ranking_candidates(
                     primary_entity_name=primary_entity_name,
                     title=title,
                 ),
+                geo_region=row.get("geo_region"),
+                pool_country=row.get("pool_country"),
             )
         )
 
