@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -22,6 +23,51 @@ from core.pipeline.data.bulletin.audio.repos.segment_audio_repo import SegmentAu
 from core.api.routes.data import _do_assemble_and_audio, _get_or_assemble_bulletin
 
 router = APIRouter(prefix="/data/profiles", tags=["profiles"])
+
+logger = logging.getLogger(__name__)
+
+
+def _prepare_first_bulletin(profile_id: int) -> None:
+    """
+    Warm a new user's FIRST bulletin in the background, right after onboarding.
+
+    The greeting is unique per user (name + first-bulletin phrasing) so it can't be
+    cached and takes ~14s to TTS-generate. If we wait until tap-to-play, the player
+    can reach the not-yet-ready greeting and skip it ("no greeting" race). Generating
+    the bulletin now — assembly + per-segment audio — means the greeting and first
+    story are already cached by the time the user reaches Home and taps play, so
+    readiness is (usually) instant.
+
+    Reuses the existing assemble+TTS path (`_do_assemble_and_audio`) verbatim — this
+    just triggers it early. The bulletin is cached by (ranking_run_id, request_hash),
+    so the tap-time manifest returns the SAME greeting and finds its audio ready.
+
+    Fails silently: if anything goes wrong the normal tap-to-play path still works as
+    the fallback. Runs exactly once per profile creation (no loop / over-generation).
+    """
+    try:
+        with SessionLocal() as db:
+            profile = ProfileRepo(db).get_by_id(profile_id)
+        if profile is None:
+            logger.warning("prepare_first_bulletin: profile %s not found — skipping", profile_id)
+            return
+
+        logger.info("prepare_first_bulletin: warming first bulletin for profile %s", profile_id)
+        _do_assemble_and_audio(
+            profile_id=profile_id,
+            include_categories=profile["include_categories"],
+            exclude_categories=profile["exclude_categories"],
+            max_duration_minutes=profile.get("max_duration_minutes", 5),
+            name=profile["name"],
+            voice_key=profile["voice"],
+            include_top_stories=profile.get("include_top_stories", True),
+        )
+        logger.info("prepare_first_bulletin: done for profile %s", profile_id)
+    except Exception as e:  # never let warm-up failure surface — tap-to-play is the fallback
+        logger.warning(
+            "prepare_first_bulletin: failed for profile %s (%s) — tap-to-play remains the fallback",
+            profile_id, e,
+        )
 
 
 class ProfileCreate(BaseModel):
@@ -80,7 +126,7 @@ def _fmt(p: dict) -> dict[str, Any]:
 
 
 @router.post("")
-def create_profile(req: ProfileCreate):
+def create_profile(req: ProfileCreate, background_tasks: BackgroundTasks):
     errors = _validate_cats(req.include_categories, req.exclude_categories)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
@@ -96,6 +142,11 @@ def create_profile(req: ProfileCreate):
             include_top_stories=req.include_top_stories,
         )
         db.commit()
+
+    # Warm this new user's first bulletin (greeting + audio) in the background so
+    # it's ready by the time they reach Home and tap play. Non-blocking: the
+    # response returns now; generation happens after. Fails silently.
+    background_tasks.add_task(_prepare_first_bulletin, profile["id"])
 
     return _fmt(profile)
 
