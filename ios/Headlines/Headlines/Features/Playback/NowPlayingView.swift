@@ -39,10 +39,12 @@ struct NowPlayingView: View {
                 topBar
                 Group {
                     switch player.playerState {
-                    case .idle, .loadingManifest:
-                        loadingState
-                    case .preparing:
+                    case .idle, .loadingManifest, .preparing:
+                        // Solari loader is the IMMEDIATE state on tap — no default
+                        // spinner beforehand (it renders from .idle through readiness).
                         preparingState
+                    case .empty:
+                        emptyState
                     case .failed(let msg):
                         failedState(msg)
                     default:
@@ -93,13 +95,29 @@ struct NowPlayingView: View {
 
     // MARK: - Loading / failed states
 
-    private var loadingState: some View {
-        VStack(spacing: 14) {
+    /// Graceful empty state (fix 4): the filters matched no stories right now — a
+    /// normal result, not an error. On-brand, calm, no raw JSON. Back = the top-bar
+    /// chevron; "DONE" also returns Home (where topics can be adjusted).
+    private var emptyState: some View {
+        VStack(spacing: 16) {
             Spacer()
-            ProgressView().tint(ink.opacity(0.5))
-            Text("PREPARING YOUR BRIEFING")
-                .font(.label(12)).tracking(2.5)
+            Text("YOU'RE ALL CAUGHT UP")
+                .font(.label(15)).tracking(2)
+                .foregroundColor(ink)
+            Text("Nothing new for these filters right now.\nCheck back soon, or adjust your topics.")
+                .font(.label(12))
                 .foregroundColor(inkMuted)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+                .padding(.horizontal, 24)
+            Button(action: onClose) {
+                Text("DONE")
+                    .font(.label(13)).tracking(2)
+                    .foregroundColor(ink)
+                    .padding(.horizontal, 22).padding(.vertical, 11)
+                    .overlay(Capsule().strokeBorder(ink.opacity(0.3), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
