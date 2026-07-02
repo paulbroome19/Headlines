@@ -131,30 +131,33 @@ struct NowPlayingView: View {
     /// now-playing card's position (churning through status lines) and a determinate
     /// 0→100% bar sits in the scrubber's position.
     ///
-    /// PACING IS A FIXED, EVEN VISUAL SEQUENCE — decoupled from backend progress. The four
-    /// stages advance purely on a timer (`LoaderTiming.stageIndex`): stages 1→3 each take
-    /// exactly `stageSeconds`, so stage 1 can NEVER freeze while a slow manifest loads. The
-    /// bar is elapsed-driven too, so it moves in even quarters. Real readiness governs only
-    /// DISMISSAL: the gate holds the loader (and thus the 4th stage) until `safe_to_start`,
-    /// then leaves `.preparing` → the loader is replaced by the player. So stages 1–3 are
-    /// evenly timed and only stage 4 dwells to absorb the remaining wait.
+    /// PACING IS A FIXED, EVEN VISUAL SEQUENCE — decoupled from backend progress. The paced
+    /// stages advance purely on a timer (`LoaderTiming.stageIndex`), each exactly
+    /// `stageSeconds`, so no stage can freeze while a slow manifest loads. The bar is
+    /// elapsed-driven too, so it moves at a steady rate. Real readiness governs only
+    /// DISMISSAL: the gate holds the loader (and thus the final DWELL stage) until
+    /// `safe_to_start`, then leaves `.preparing` → the loader is replaced by the player. So
+    /// the paced stages are evenly timed and only the last stage dwells to absorb the wait.
     private var preparingState: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 16)
-            // STAGE WORD — one stage per `stageSeconds` on a plain timer (coarse cadence
-            // is enough; the word only changes at stage boundaries). NOT loadProgress.
-            TimelineView(.periodic(from: loaderStart, by: 0.2)) { ctx in
-                let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
-                loaderBoard(lineIndex: LoaderTiming.stageIndex(elapsed: elapsed))
+            // Board + progress bar are ONE coupled card unit: the bar sits directly beneath
+            // the Solari board (fixed 18pt gap — the same rhythm as the playback card's
+            // scrubber under the now-playing card), NOT floating at the bottom of the screen.
+            VStack(spacing: 18) {
+                // STAGE WORD — one stage per `stageSeconds` on a plain timer (coarse cadence
+                // is enough; the word only changes at stage boundaries). NOT loadProgress.
+                TimelineView(.periodic(from: loaderStart, by: 0.2)) { ctx in
+                    let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
+                    loaderBoard(lineIndex: LoaderTiming.stageIndex(elapsed: elapsed))
+                }
+                // DETERMINATE BAR — elapsed-driven, finer cadence so the fill reads continuous.
+                TimelineView(.periodic(from: loaderStart, by: 0.05)) { ctx in
+                    let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
+                    loaderProgressBar(fill: LoaderTiming.barFill(elapsed: elapsed))
+                }
             }
-            Spacer(minLength: 20)
-            // DETERMINATE BAR — also elapsed-driven (even quarters), finer cadence so the
-            // fill reads as continuous.
-            TimelineView(.periodic(from: loaderStart, by: 0.05)) { ctx in
-                let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
-                loaderProgressBar(fill: LoaderTiming.barFill(elapsed: elapsed))
-            }
-            Spacer(minLength: 24)
+            Spacer(minLength: 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -724,7 +727,7 @@ private struct LoaderStatusBoard: View {
     @State private var churnStart: Date = Date()
 
     // One cosmetic status-line group per visible loader stage (LoaderTiming.visibleStages).
-    // The first four are the evenly-paced stages across the ~12s window; the last is the
+    // The first four are the evenly-paced stages across the expected window; the last is the
     // "almost ready" DWELL copy that holds until the briefing is ready. One line is picked
     // per group at load and held for the whole generation.
     static let loaderWordSets: [[String]] = [

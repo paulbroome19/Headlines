@@ -1182,18 +1182,19 @@ final class BulletinPlayer: NSObject, ObservableObject {
 /// them; a slow prepare exceeds it and extends stage 4. Consumed by the gate (hold) and
 /// NowPlayingView (stage word + determinate bar).
 enum LoaderTiming {
-    // ~12s is the expected generation time. The loader lays its stages out EVENLY over
-    // that window: `pacedStages` stages, one every `stageSeconds`, so the sequence looks
-    // like steady progress (no single stage dwelling 5–6s alone). `visibleStages` adds one
-    // final DWELL stage after the expected window — it's the only stage allowed to hold,
-    // absorbing the wait when generation runs long. If generation is faster, the gate
-    // dismisses the loader on readiness (no forced hold beyond `minLoaderSeconds`).
-    static let stageSeconds: Double = 3.0        // each paced stage (evenly spaced, readable)
-    static let pacedStages: Int = 4              // evenly-timed stages covering ~0–12s
+    // The loader lays its stages out EVENLY over the expected-generation window:
+    // `pacedStages` stages, one every `stageSeconds`, so the sequence reads as steady,
+    // unhurried progress (every paced stage is exactly the same length — none is
+    // disproportionately long). `visibleStages` adds one final DWELL stage after the
+    // window — it's the only stage allowed to hold, absorbing the wait when generation
+    // runs long. If generation is faster, the gate dismisses on readiness (no forced hold
+    // beyond `minLoaderSeconds`).
+    static let stageSeconds: Double = 4.5        // each paced stage — deliberate + readable
+    static let pacedStages: Int = 4              // evenly-timed stages covering ~0–18s
     static var visibleStages: Int { pacedStages + 1 }   // + a final dwell stage for overrun
-    static var expectedSeconds: Double { stageSeconds * Double(pacedStages) }   // ~12s
+    static var expectedSeconds: Double { stageSeconds * Double(pacedStages) }   // ~18s
     // Small floor so a cached/instant briefing shows a readable stage or two rather than
-    // flashing — but NOT the full 12s (a fast briefing dismisses on ready).
+    // flashing — but NOT the full window (a fast briefing dismisses on ready).
     static var minLoaderSeconds: Double { stageSeconds * 2 }
 
     /// Which stage (0-based) is showing at `elapsed` seconds — PURELY from the timer, not
@@ -1203,8 +1204,8 @@ enum LoaderTiming {
         max(0, min(visibleStages - 1, Int(elapsed / stageSeconds)))
     }
 
-    /// Determinate bar fill (0–1) at `elapsed` seconds — elapsed-driven toward the ~12s
-    /// expectation, so it reads as steady progress and reaches ~full around when a typical
+    /// Determinate bar fill (0–1) at `elapsed` seconds — elapsed-driven toward the expected
+    /// window, so it reads as steady progress and reaches ~full around when a typical
     /// generation is ready. Capped < 1.0 so it never sits at 100% in silence; audio
     /// starting dismisses the whole loader.
     static func barFill(elapsed: Double) -> Double {
