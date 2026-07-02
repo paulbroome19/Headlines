@@ -26,8 +26,10 @@ from datetime import datetime, timezone
 
 from core.pipeline.data.ingest.pool_taxonomy import country_weight
 
+from .category_ranker import get_category_tier
 from .config import (
     BREAKING_TAU_HOURS,
+    BREAKTHROUGH_SOURCES,
     COUNTRY_TIEBREAK_STRENGTH,
     DEFAULT_PRESET,
     FRESH_CATEGORY_RELIEF,
@@ -35,6 +37,23 @@ from .config import (
     TOP_STORIES_REGIONS,
 )
 from .models import ScoredStory
+
+
+def effective_tier(s: ScoredStory) -> int:
+    """
+    The newspaper tier that governs a story's front-page position (1 = front, 2 =
+    middle, 3 = back). It is the CATEGORY's base tier — EXCEPT a Tier 2/3 story whose
+    distinct-source coverage is exceptional (>= BREAKTHROUGH_SOURCES) breaks through
+    to the front page (Tier 1), because the whole press led with it (a World Cup
+    final). Tier is DECISIVE: every Tier-1 story orders ahead of every Tier-2, ahead
+    of every Tier-3; coverage only orders stories WITHIN a tier (and earns the rare
+    break-through). Ordinary sport/tech clustering (≈8–11 sources) never clears the
+    bar, so soft news never leads unless it is genuinely dominating the news cycle.
+    """
+    base = get_category_tier(s.candidate.primary_category)
+    if base > 1 and s.candidate.source_count >= BREAKTHROUGH_SOURCES:
+        return 1
+    return base
 
 
 # Top Stories is the "best across everything" front page — it must never come back
@@ -92,7 +111,11 @@ def rank_region(
     bars = THRESHOLDS.get(preset) or THRESHOLDS[DEFAULT_PRESET]
     ts_bar = bars["top_stories"]
     pool = [s for s in scored if s.candidate.geo_region == region and region_adjusted_score(s) >= ts_bar]
+    # Within-tier order: country-weighted coverage (as before).
     pool.sort(key=lambda s: (region_adjusted_score(s), s.candidate.story_id), reverse=True)
+    # Tier is decisive — a region's front page leads with its hard news, soft news
+    # trails. Stable sort preserves the coverage order within each tier.
+    pool.sort(key=effective_tier)
     return pool
 
 
@@ -175,12 +198,19 @@ def select_by_thresholds(
             if len(qualifying) >= target:
                 break
 
-    # Coverage-primary order (so a hugely-covered story leads regardless of country);
-    # country_weight is the secondary tiebreak; story_id keeps it deterministic.
+    # Newspaper order. FIRST sort within-tier by coverage (a hugely-covered story
+    # leads its tier regardless of country; country_weight is the secondary tiebreak;
+    # story_id keeps it deterministic) — THEN sort by tier, which is DECISIVE. Python's
+    # sort is stable, so the coverage order is preserved inside each tier. Result: the
+    # front page (Tier 1: top-stories/politics/business) leads, the middle (Tier 2) and
+    # back (Tier 3: sport/tech/culture) follow — unless a soft story broke through on
+    # exceptional coverage (see effective_tier). Category is the primary driver, coverage
+    # secondary — not the old ±14% tiebreak that soft-news coverage overwhelmed.
     qualifying.sort(
         key=lambda s: (s.normalized_score, region_adjusted_score(s), s.candidate.story_id),
         reverse=True,
     )
+    qualifying.sort(key=effective_tier)
     # Cap to the preset's target length — the top-N by score. (Topic-only briefings that
     # genuinely have fewer qualifiers stay short; a truly empty set stays empty.)
     qualifying = qualifying[:target]
