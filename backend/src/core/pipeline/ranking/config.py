@@ -117,6 +117,22 @@ THRESHOLDS: dict[str, dict[str, float]] = {
 }
 DEFAULT_PRESET = "medium"
 
+# ── Fresh followed-topic bar relief (thresholds.py select_by_thresholds) ─────────
+# Following a topic is an explicit "I want this live" signal. A genuinely-breaking
+# story arrives single-source, so coverage (the dominant importance term) can't yet
+# rate it highly — it sits just under its category bar until other outlets pick it
+# up. This lets such a story clear its OWN (already-lower) category bar a little
+# sooner, decaying fast so it only offsets the fresh single-source gap.
+#   effective_category_bar = category_bar − FRESH_CATEGORY_RELIEF·exp(−hours_ago/τ)
+# Applied to the via_category branch ONLY. via_front / via_region (the front page)
+# are NEVER touched, so front-page composition and ordering are unchanged by
+# construction, and the final sort stays normalized_score-first (coverage-dominant)
+# — a fresh single-source story fills a TAIL slot in a follower's bulletin, it never
+# leapfrogs a bigger story. Keep RELIEF ≤ 0.5: above that it offsets the coverage
+# deficit itself (not just the fresh gap) and weak single-source noise leaks in.
+FRESH_CATEGORY_RELIEF = 0.4     # max category-bar reduction for a brand-new story
+BREAKING_TAU_HOURS = 0.75       # decay e-fold ≈ 45 min (~0.51·max at 30 min, ~0.26 at 1 h)
+
 # Per-preset TARGET story count — the real "length" control (time-anchored: Quick≈5m /
 # Standard≈10m / Deep≈15m). Selection returns the top-N by score (qualifiers first,
 # backfilled to the target), so the three presets are DISTINCT lengths and never empty

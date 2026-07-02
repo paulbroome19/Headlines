@@ -21,11 +21,16 @@ secondary tiebreak.
 """
 from __future__ import annotations
 
+import math
+from datetime import datetime, timezone
+
 from core.pipeline.data.ingest.pool_taxonomy import country_weight
 
 from .config import (
+    BREAKING_TAU_HOURS,
     COUNTRY_TIEBREAK_STRENGTH,
     DEFAULT_PRESET,
+    FRESH_CATEGORY_RELIEF,
     THRESHOLDS,
     TOP_STORIES_REGIONS,
 )
@@ -62,6 +67,17 @@ def region_adjusted_score(s: ScoredStory) -> float:
     return s.normalized_score * factor
 
 
+def _fresh_category_relief(s: ScoredStory, now: datetime) -> float:
+    """Category-bar reduction for a genuinely-fresh story, decaying ~45-min e-fold.
+    Used by the via_category branch ONLY — never the front-page/region bars. Returns
+    0 for old stories, up to FRESH_CATEGORY_RELIEF for a brand-new one."""
+    last_seen = s.candidate.last_seen_at
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    hours_ago = max((now - last_seen).total_seconds() / 3600.0, 0.0)
+    return FRESH_CATEGORY_RELIEF * math.exp(-hours_ago / BREAKING_TAU_HOURS)
+
+
 def rank_region(
     scored: list[ScoredStory],
     region: str,
@@ -87,6 +103,7 @@ def select_by_thresholds(
     include_categories: list[str] | None,
     preset: str = DEFAULT_PRESET,
     target_count: int | None = None,
+    now: datetime | None = None,
 ) -> list[ScoredStory]:
     """
     Return the stories that clear any of their sources' thresholds for this preset,
@@ -99,8 +116,11 @@ def select_by_thresholds(
                           <region>` → that region's bucket (geo-filtered, country-
                           weighted); anything else → a topic category (lower bar).
     target_count        — desired bulletin length; defaults to the front-page floor.
+    now                 — reference time for the fresh-category relief (injectable
+                          for tests); defaults to now(UTC).
     """
     target = target_count if target_count is not None else _FRONT_PAGE_MIN
+    reference_now = now or datetime.now(timezone.utc)
     bars = THRESHOLDS.get(preset) or THRESHOLDS[DEFAULT_PRESET]
     ts_bar = bars["top_stories"]
     cat_bar = bars["category"]
@@ -127,7 +147,13 @@ def select_by_thresholds(
 
         via_front = front_page and score >= ts_bar
         via_region = (region in regions) and region_adjusted_score(s) >= ts_bar
-        via_category = score >= cat_bar and any(_matches_category(cat, tc) for tc in topic_cats)
+        # Fresh followed-topic relief: a genuinely-breaking story clears its OWN
+        # (already-lower) category bar a little sooner. via_category ONLY — via_front
+        # / via_region above are untouched, so front-page composition and the final
+        # coverage-first sort are unchanged; a fresh single-source story fills a tail
+        # slot, it never leapfrogs a bigger one.
+        cat_bar_eff = cat_bar - _fresh_category_relief(s, reference_now)
+        via_category = score >= cat_bar_eff and any(_matches_category(cat, tc) for tc in topic_cats)
         if via_front or via_region or via_category:
             qualifying.append(s)
             seen.add(sid)
