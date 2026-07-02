@@ -48,8 +48,8 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: s * 1.5), 1)
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: s * 2.5), 2)
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: s * 3.5), 3)
-        // Each paced stage spans exactly stageSeconds (~4.5s) — deliberate, none dwells alone.
-        XCTAssertEqual(LoaderTiming.stageSeconds, 4.5, accuracy: 0.001)
+        // Each paced stage spans exactly stageSeconds (~3.5s) — deliberate, none dwells alone.
+        XCTAssertEqual(LoaderTiming.stageSeconds, 3.5, accuracy: 0.001)
     }
 
     /// The bug this guards: a slow manifest must NOT strand the loader on stage 1. Only the
@@ -63,21 +63,27 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: 60.0), LoaderTiming.visibleStages - 1)
     }
 
-    /// The determinate bar is elapsed-driven toward the ~12s expectation (even progress);
-    /// it never sits at 100% in silence.
-    func testLoaderBarFillEvenAndSubOne() {
+    /// The bar climbs in EVEN CHUNKS per stage — each stage bumps it by an equal step
+    /// (ceiling / visibleStages) — reaching `nearFullCeiling` at the dwell stage; it never
+    /// exceeds the ceiling (the final raise to 1.0 is done on ready, via loaderComplete).
+    func testLoaderBarFillEvenStepsPerStage() {
         let s = LoaderTiming.stageSeconds
-        XCTAssertEqual(LoaderTiming.barFill(elapsed: 0),     0.00, accuracy: 0.001)
-        XCTAssertEqual(LoaderTiming.barFill(elapsed: s * 1), 0.25, accuracy: 0.02)   // ~3s
-        XCTAssertEqual(LoaderTiming.barFill(elapsed: s * 2), 0.50, accuracy: 0.02)   // ~6s
-        XCTAssertEqual(LoaderTiming.barFill(elapsed: s * 3), 0.75, accuracy: 0.02)   // ~9s
-        XCTAssertLessThanOrEqual(LoaderTiming.barFill(elapsed: 100), 0.97)
+        let step = LoaderTiming.nearFullCeiling / Double(LoaderTiming.visibleStages)   // 0.9/5 = 0.18
+        XCTAssertEqual(LoaderTiming.barFill(elapsed: 0),       step * 1, accuracy: 0.001)  // stage 0
+        XCTAssertEqual(LoaderTiming.barFill(elapsed: s * 1.5), step * 2, accuracy: 0.001)  // stage 1
+        XCTAssertEqual(LoaderTiming.barFill(elapsed: s * 2.5), step * 3, accuracy: 0.001)  // stage 2
+        XCTAssertEqual(LoaderTiming.barFill(elapsed: s * 3.5), step * 4, accuracy: 0.001)  // stage 3
+        // Dwell stage → the near-full ceiling; never above it (100% is the ready-raise).
+        XCTAssertEqual(LoaderTiming.barFill(elapsed: s * 5),   LoaderTiming.nearFullCeiling, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(LoaderTiming.barFill(elapsed: 100), LoaderTiming.nearFullCeiling)
+        // Even steps: consecutive stages differ by exactly one step.
+        XCTAssertEqual(LoaderTiming.barFill(elapsed: s * 2.5) - LoaderTiming.barFill(elapsed: s * 1.5), step, accuracy: 0.001)
     }
 
-    /// The expected window is ~18s (4 paced stages × 4.5s), plus a dwell stage; the
+    /// The expected window is ~14s (4 paced stages × 3.5s), plus a dwell stage; the
     /// fast-path floor is small (dismiss on ready), not the full window.
     func testLoaderExpectedWindowAndFloor() {
-        XCTAssertEqual(LoaderTiming.expectedSeconds, 18.0, accuracy: 0.001)
+        XCTAssertEqual(LoaderTiming.expectedSeconds, 14.0, accuracy: 0.001)
         XCTAssertEqual(LoaderTiming.visibleStages, 5)   // 4 paced + 1 dwell
         XCTAssertLessThan(LoaderTiming.minLoaderSeconds, LoaderTiming.expectedSeconds)
     }
