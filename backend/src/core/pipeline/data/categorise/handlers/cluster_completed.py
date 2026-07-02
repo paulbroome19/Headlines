@@ -1,15 +1,35 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from collections import Counter
 
 from sqlalchemy import text
 
+from core.platform.config.settings import settings
 from core.platform.db.session import SessionLocal
 from core.platform.queue.event import Event
 from core.platform.queue.outbox import OutboxRepo
 
 from core.pipeline.data.categorise.events import DATA_CATEGORISE_COMPLETED
+from core.pipeline.data.normalise.categorise.cluster_categoriser import categorise_story
+
+logger = logging.getLogger(__name__)
+
+
+def _majority_vote(db, story_id: int) -> str | None:
+    """Legacy fallback: the most common article-level primary across the story. Used only
+    when the LLM path is disabled or unavailable — kept so the pipeline never stalls."""
+    rows = db.execute(
+        text("""
+            SELECT category_primary FROM data.normalisation_articles
+            WHERE story_id = :story_id AND category_primary IS NOT NULL
+        """),
+        {"story_id": story_id},
+    ).scalars().all()
+    if not rows:
+        return None
+    return Counter(rows).most_common(1)[0][0]
 
 
 def handle_cluster_completed(event: dict) -> None:
@@ -17,11 +37,14 @@ def handle_cluster_completed(event: dict) -> None:
     Triggered by: data.cluster.completed
 
     Responsibilities:
-    - For each story in story_ids, load all constituent articles
-    - Resolve primary_category by majority vote across articles (more robust
-      than the representative-article assignment done during clustering)
-    - Update data.stories.primary_category where the vote differs
-    - Emit data.categorise.completed
+    - For each story, resolve primary_category LLM-PRIMARY at the CLUSTER level: one
+      Haiku call per story, constrained to valid taxonomy leaves, pool topic/country as
+      hints only, cached by content hash (see cluster_categoriser). This replaces the
+      context-blind keyword majority vote that mis-slugged stories (e.g. "shares" verb →
+      business.markets). The keyword majority survives only as a fallback when the LLM
+      path is off/unavailable.
+    - Also record the LLM's secondary labels on the primary article (multi-label).
+    - Update data.stories.primary_category; emit data.categorise.completed.
     """
     payload = event.get("payload") or {}
     story_ids: list[int] = payload.get("story_ids") or []
@@ -32,28 +55,26 @@ def handle_cluster_completed(event: dict) -> None:
     if not story_ids:
         return
 
+    use_llm = settings.enable_llm_primary_categorise
     with SessionLocal() as db:
         for story_id in story_ids:
-            # Load category_primary for every article in this story.
-            # normalisation_articles.story_id is set by the cluster handler.
-            rows = db.execute(
-                text(
-                    """
-                    SELECT category_primary
-                    FROM data.normalisation_articles
-                    WHERE story_id = :story_id
-                      AND category_primary IS NOT NULL
-                    """
-                ),
-                {"story_id": story_id},
-            ).scalars().all()
+            resolved_category: str | None = None
 
-            if not rows:
+            if use_llm:
+                try:
+                    result = categorise_story(db, story_id)
+                except Exception as e:  # never let one story stall the batch
+                    logger.warning("llm categorise failed for story %s: %s", story_id, e)
+                    result = None
+                if result is not None:
+                    resolved_category = result.primary
+
+            if resolved_category is None:
+                # LLM off / unavailable / failed → keep the legacy majority vote.
+                resolved_category = _majority_vote(db, story_id)
+
+            if resolved_category is None:
                 continue
-
-            # Majority vote: pick the most common category across all articles.
-            counts: Counter[str] = Counter(rows)
-            resolved_category = counts.most_common(1)[0][0]
 
             db.execute(
                 text(

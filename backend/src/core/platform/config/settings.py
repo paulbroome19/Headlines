@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     fallback_model: str = "claude-haiku-4-5-20251001"
     connective_model: str = "claude-sonnet-4-6"
     enable_llm_categorise_fallback: bool = True
+    # LLM-PRIMARY categoriser: cluster-level Haiku classification is the primary path
+    # (keyword majority survives only as a fallback). Set false to revert to the legacy
+    # keyword-majority vote (e.g. if the API key is absent and cost/latency matters).
+    enable_llm_primary_categorise: bool = True
 
     # Scheduled ingest
     enable_scheduled_ingest: bool = False
