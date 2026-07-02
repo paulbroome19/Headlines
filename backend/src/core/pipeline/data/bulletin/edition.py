@@ -32,8 +32,10 @@ from core.pipeline.data.bulletin.connective import uk_now
 from core.pipeline.data.bulletin.repos.user_story_state_repo import UserStoryStateRepo
 from core.pipeline.ranking.depth import depth_for_rank
 
-# Max stories held in an edition (aligned with the summarise budget / front-page floor).
-EDITION_MAX = 12
+# Absolute ceiling on stories held in an edition — a safety cap only. The effective
+# size is the caller's preset target (Quick/Standard/Deep); this just bounds it so a
+# huge target can never blow up the edition. Set to the largest preset target (Deep=16).
+EDITION_MAX = 16
 
 
 def reconcile_edition(
@@ -132,12 +134,19 @@ def resolve_daily_edition(
     request_hash: str,
     fresh_ordered: list[dict],
     fresh_depths: dict[str, tuple[str, int]],
+    target: int,
 ) -> tuple[list[dict], dict[str, tuple[str, int]]]:
     """
     Return the stable (ordered, depths) for this profile's edition of the day,
     reconciled against the fresh selection, and persist it. Same shape as
     _threshold_select_with_depth so the downstream assembly is unchanged.
+
+    target — the preset's story count (Quick/Standard/Deep). The edition is capped to
+    it AFTER dropping already-heard/skipped stories, so freed slots refill from the
+    deeper reservoir in `fresh_ordered` (which the caller sized larger than target)
+    rather than shrinking the bulletin. Bounded by EDITION_MAX as a safety ceiling.
     """
+    cap = min(target, EDITION_MAX)
     edition_date = uk_now().date()
     repo = UserDailyEditionRepo(db)
     existing = repo.get_story_ids(profile_id, edition_date, request_hash)
@@ -149,10 +158,13 @@ def resolve_daily_edition(
     # unheard (queued) stories still persist.
     dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
 
+    # Cap AFTER dropping (not before) so heard/skipped stories are replaced from the
+    # reservoir's deeper candidates — the target is a length target, not a hard slice of
+    # the top-N that erodes as the user works through it.
     if existing is None:
-        final_ids = [sid for sid in fresh_ids if sid not in dropped][:EDITION_MAX]
+        final_ids = [sid for sid in fresh_ids if sid not in dropped][:cap]
     else:
-        final_ids = reconcile_edition(existing, fresh_ids, dropped, max_size=EDITION_MAX)
+        final_ids = reconcile_edition(existing, fresh_ids, dropped, max_size=cap)
 
     repo.upsert(profile_id, edition_date, request_hash, final_ids)
 
