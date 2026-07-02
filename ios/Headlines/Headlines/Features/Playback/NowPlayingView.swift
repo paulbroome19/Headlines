@@ -412,7 +412,7 @@ struct NowPlayingView: View {
                 total: player.totalDurationSeconds,
                 elapsed: player.playbackElapsedSeconds,
                 ink: ink,
-                onSeek: { frac in player.seekToFullFraction(frac) }
+                onSeek: { frac in player.logTransport("tap:SCRUB [IN-APP]"); player.seekToFullFraction(frac) }
             )
             .frame(height: 6)
 
@@ -432,9 +432,9 @@ struct NowPlayingView: View {
 
     private var transport: some View {
         HStack(spacing: 44) {
-            transportButton(system: "backward.end.fill") { player.skipBack() }
+            transportButton(system: "backward.end.fill") { player.logTransport("tap:PREV [IN-APP]"); player.skipBack() }
             playPauseButton
-            transportButton(system: "forward.end.fill") { player.skip() }
+            transportButton(system: "forward.end.fill") { player.logTransport("tap:NEXT [IN-APP]"); player.skip() }
         }
     }
 
@@ -452,7 +452,7 @@ struct NowPlayingView: View {
     private var playPauseButton: some View {
         let isPlaying = player.isPlaying   // single source of truth (matches lock screen)
         let diameter: CGFloat = 76
-        return Button(action: { player.togglePlayPause() }) {
+        return Button(action: { player.logTransport("tap:PLAYPAUSE [IN-APP]"); player.togglePlayPause() }) {
             ZStack {
                 Circle()
                     .fill(RadialGradient(
@@ -518,7 +518,7 @@ struct NowPlayingView: View {
         let titleColor = isPlayed ? ink.opacity(0.32) : ink
         let numColor = isCurrent ? ink : inkMuted
         return Button {
-            player.playStoryUnit(at: idx)
+            player.logTransport("tap:ROW\(idx) [IN-APP]"); player.playStoryUnit(at: idx)
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Text(String(format: "%02d", idx + 1))

@@ -133,6 +133,48 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// stays PAUSE through a skip, paused stays PLAY through a skip.
     var isPlaying: Bool { intendedPlaying }
 
+    // MARK: - 🎯TX transport instrumentation (TEMPORARY — remove after diagnosis)
+    // Greppable ("🎯TX") log at every transport point. Each line shows the spec-relevant
+    // truth: intent before→after, playerState before→after, the ICON that would render
+    // (from isPlaying), the current story index, and whether the AVPlayer is ACTUALLY
+    // advancing audio (timeControlStatus == .playing). Surface (IN-APP / LOCK) is tagged by
+    // the call site. No behaviour change — logging only.
+
+    /// True when the engine is genuinely producing audio (not merely "intended").
+    private var txAudioPlaying: Bool { player?.timeControlStatus == .playing }
+
+    private func txDesc(_ s: PlayerState) -> String {
+        switch s {
+        case .idle: return "idle"
+        case .loadingManifest: return "loadingManifest"
+        case .preparing: return "preparing"
+        case .buffering: return "buffering"
+        case .playing: return "playing"
+        case .paused: return "paused"
+        case .stalled: return "stalled"
+        case .ended: return "ended"
+        case .empty: return "empty"
+        case .failed: return "failed"
+        }
+    }
+
+    /// Current snapshot line (no before/after) — used for taps and KVO callbacks.
+    private func txLine() -> String {
+        "intent=\(intendedPlaying ? "Y" : "N") state=\(txDesc(playerState)) ICON=\(isPlaying ? "PAUSE" : "PLAY") idx=\(currentUnitIndex) audioPlaying=\(txAudioPlaying ? "Y" : "N")"
+    }
+
+    /// Public tap tagger — call from the in-app buttons / remote handlers so the log names
+    /// the trigger + surface before the action mutates state.
+    func logTransport(_ trigger: String) { print("🎯TX \(trigger) | \(txLine())") }
+
+    private struct TXBefore { let intent: Bool; let state: String }
+    private func txBefore() -> TXBefore { TXBefore(intent: intendedPlaying, state: txDesc(playerState)) }
+    /// After-action line with before→after deltas for the two source-of-truth fields.
+    private func txAfter(_ trigger: String, _ b: TXBefore, _ branch: String = "") {
+        let br = branch.isEmpty ? "" : " \(branch)"
+        print("🎯TX \(trigger)\(br) | intent \(b.intent ? "Y" : "N")→\(intendedPlaying ? "Y" : "N") | state \(b.state)→\(txDesc(playerState)) | ICON=\(isPlaying ? "PAUSE" : "PLAY") | idx=\(currentUnitIndex) | audioPlaying=\(txAudioPlaying ? "Y" : "N")")
+    }
+
     private(set) var manifest: BulletinManifest?
     var storySegments: [ManifestSegment] { _storySegments }
     var storyUnits: [StoryUnit] { _storyUnits }
@@ -369,6 +411,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         loadProgress = model.progress
         setupQueuePlayer()
         activateAudioSession()
+        let txGateBefore = txBefore()
         intendedPlaying = true          // first autoplay — the user's intent is "playing"
         player?.play()
         // Reflect playback in state directly — audio is gated-ready, so don't wait for
@@ -377,6 +420,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // first load. handleTimeControlStatus still handles genuine stalls/resumes.
         loadProgress = 1.0
         playerState = .playing
+        txAfter("gate:FIRST-AUTOPLAY", txGateBefore, "(should be intent Y, ICON=PAUSE)")
     }
 
     private func applyReadinessMilestones(_ model: inout LoadProgressModel, _ r: BulletinReadiness) {
@@ -409,19 +453,22 @@ final class BulletinPlayer: NSObject, ObservableObject {
     }
 
     func play() {
+        let b = txBefore()
         switch playerState {
         case .buffering, .paused, .stalled:
             intendedPlaying = true
             activateAudioSession()
             player?.play()
             playerState = .playing   // reflect immediately (incl. stall-resume) — don't wait for a KVO edge
+            txAfter("play()", b, "→RESUME")
         case .ended:
             // Convention: PLAY at the end REPLAYS the whole briefing from the top (intro
             // → stories → outro). No dead button — in-app and lock-screen play both land
             // here (same path via performRemote → play()).
+            txAfter("play()", b, "→ROUTE restartFromBeginning (playerState was .ended)")
             restartFromBeginning()
         default:
-            break
+            txAfter("play()", b, "→NOOP (playerState=\(txDesc(playerState)) not resumable)")
         }
     }
 
@@ -429,7 +476,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// Sets intent to playing (a user PLAY press) and resets the full-timeline position to 0
     /// so the bar/timer restart cleanly on both surfaces.
     private func restartFromBeginning() {
-        guard !segments.isEmpty else { return }
+        let b = txBefore()
+        guard !segments.isEmpty else { txAfter("restartFromBeginning()", b, "→NOOP (no segments)"); return }
         navGeneration &+= 1                 // invalidate any in-flight seek completion
         intendedPlaying = true
         storyIndex = 0
@@ -452,19 +500,26 @@ final class BulletinPlayer: NSObject, ObservableObject {
         activateAudioSession()
         player?.play()
         playerState = .playing
+        txAfter("restartFromBeginning()", b, "→REPLAY from segment 0")
     }
 
     func pause() {
+        let b = txBefore()
         // Record intent even if we can't act this instant (e.g. mid-rebuild `.buffering`):
         // a pause tap must stick so an in-flight rebuild doesn't auto-resume against it.
         intendedPlaying = false
-        guard playerState == .playing || playerState == .stalled else { return }
+        guard playerState == .playing || playerState == .stalled else {
+            txAfter("pause()", b, "→intent-only (guard: playerState=\(txDesc(playerState)) not pausable, engine untouched)")
+            return
+        }
         player?.pause()
         cancelStallTimer()
         playerState = .paused
+        txAfter("pause()", b, "→PAUSED")
     }
 
     func togglePlayPause() {
+        print("🎯TX toggle → \(isPlaying ? "PAUSE-branch" : "PLAY-branch") (isPlaying/intent=\(isPlaying ? "Y" : "N")) | \(txLine())")
         if isPlaying { pause() } else { play() }
     }
 
@@ -476,9 +531,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// as the old queue-based skip landed. seekToStoryUnit fires the "skipped" event for
     /// the current story and sets prevOutcome = .userSkip.
     func skip() {
-        guard !_storyUnits.isEmpty else { return }
+        let b = txBefore()
+        guard !_storyUnits.isEmpty else { txAfter("skip()", b, "→NOOP (no story units)"); return }
         let next = currentUnitIndex + 1
-        guard next < _storyUnits.count else { return }   // already on the last story
+        guard next < _storyUnits.count else { txAfter("skip()", b, "→NOOP (already last story)"); return }
+        txAfter("skip()", b, "→NEXT unit \(currentUnitIndex)→\(next) (intent must be PRESERVED)")
         seekToStoryUnit(at: next, offsetSeconds: _storyUnits[next].transitionDurationSeconds)
     }
 
@@ -553,6 +610,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         } ?? false
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let b = self.txBefore()
             switch type {
             case .began:
                 // Pause the ENGINE but keep `intendedPlaying` — we still want to be
@@ -560,9 +618,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
                 if self.playerState == .playing || self.playerState == .stalled {
                     self.player?.pause(); self.cancelStallTimer(); self.playerState = .paused
                 }
+                self.txAfter("interruption.BEGAN", b, "(intent kept)")
             case .ended:
                 // Resume only if the system says so AND the user still intends to play
                 // (a manual pause during the interruption clears the intent → stay paused).
+                self.txAfter("interruption.ENDED", b, "(shouldResume=\(shouldResume) intent=\(self.intendedPlaying ? "Y" : "N") → \(shouldResume && self.intendedPlaying ? "play()" : "stay"))")
                 if shouldResume && self.intendedPlaying { self.play() }
             @unknown default: break
             }
@@ -575,12 +635,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
               AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
         Task { @MainActor [weak self] in
             guard let self, self.playerState == .playing || self.playerState == .stalled else { return }
+            let b = self.txBefore()
             // Headphones unplugged: pause and DON'T auto-resume when re-plugged — clear
             // the intent so the user has to press play again (standard behaviour).
             self.intendedPlaying = false
             self.player?.pause()
             self.cancelStallTimer()
             self.playerState = .paused
+            self.txAfter("routeChange.OLD-DEVICE-UNAVAILABLE", b, "(unplug → pause + clear intent)")
         }
     }
 
@@ -618,18 +680,18 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // the in-app state desynced. Running synchronously means the AVPlayer actually
         // pauses/resumes and playerState / intendedPlaying / now-playing are all updated
         // before we return, so every surface agrees.
-        cc.playCommand.addTarget            { [weak self] _ in self?.performRemote { $0.play() }            ?? .noSuchContent }
-        cc.pauseCommand.addTarget           { [weak self] _ in self?.performRemote { $0.pause() }           ?? .noSuchContent }
-        cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.performRemote { $0.togglePlayPause() } ?? .noSuchContent }
-        cc.nextTrackCommand.addTarget       { [weak self] _ in self?.performRemote { $0.skip() }            ?? .noSuchContent }
-        cc.previousTrackCommand.addTarget   { [weak self] _ in self?.performRemote { $0.skipBack() }        ?? .noSuchContent }
+        cc.playCommand.addTarget            { [weak self] _ in self?.performRemote("PLAY")   { $0.play() }            ?? .noSuchContent }
+        cc.pauseCommand.addTarget           { [weak self] _ in self?.performRemote("PAUSE")  { $0.pause() }           ?? .noSuchContent }
+        cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.performRemote("TOGGLE") { $0.togglePlayPause() } ?? .noSuchContent }
+        cc.nextTrackCommand.addTarget       { [weak self] _ in self?.performRemote("NEXT")   { $0.skip() }            ?? .noSuchContent }
+        cc.previousTrackCommand.addTarget   { [weak self] _ in self?.performRemote("PREV")   { $0.skipBack() }        ?? .noSuchContent }
         // Scrub: the event's positionTime is in the full-briefing timeline (we publish
         // duration = totalDurationSeconds), so seek to that absolute time. Same synchronous
         // main-actor path as every other remote command; resumes in the intended state.
         cc.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self, let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             let t = e.positionTime
-            return self.performRemote { $0.seekToFullTime(t) }
+            return self.performRemote("SCRUB(\(String(format: "%.1f", t)))") { $0.seekToFullTime(t) }
         }
     }
 
@@ -639,11 +701,15 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// are delivered on the main thread in practice; if ever off-main we hop synchronously
     /// so the semantics are identical. `nonisolated` so the (non-isolated) command closure
     /// can call it.
-    nonisolated private func performRemote(_ action: @escaping @MainActor (BulletinPlayer) -> Void) -> MPRemoteCommandHandlerStatus {
+    nonisolated private func performRemote(_ label: String, _ action: @escaping @MainActor (BulletinPlayer) -> Void) -> MPRemoteCommandHandlerStatus {
+        let run: @MainActor (BulletinPlayer) -> Void = { p in
+            p.logTransport("remote:\(label) [LOCK] onMain=\(Thread.isMainThread)")
+            action(p)
+        }
         if Thread.isMainThread {
-            MainActor.assumeIsolated { action(self) }
+            MainActor.assumeIsolated { run(self) }
         } else {
-            DispatchQueue.main.sync { MainActor.assumeIsolated { action(self) } }
+            DispatchQueue.main.sync { MainActor.assumeIsolated { run(self) } }
         }
         return .success
     }
@@ -783,6 +849,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
         let outcome = prevOutcome
         prevOutcome = .natural
 
+        let itemLabel = item.flatMap { itemSegmentMap[ObjectIdentifier($0)] }.map { "[\($0.index)] \($0.type)" } ?? "nil"
+        print("🎯TX KVO:currentItemChanged → \(itemLabel) (prevOutcome=\(outcome)) | \(txLine())")
+
         // Fire completion event for the previous story on natural advancement.
         if let prev = prevSeg, prev.isStory, let hash = prev.storyHash, outcome == .natural {
             let ev = StoryEvent(storyHash: hash, action: "completed", positionPct: 1.0)
@@ -805,14 +874,19 @@ final class BulletinPlayer: NSObject, ObservableObject {
             //     .preparing/.buffering/.stalled, never from .ended. This was the LAST
             //     stranded first-play path (seek/skip already set state directly).
             // A real end-of-bulletin nil always follows a played segment (prevSeg != nil).
-            guard playerState != .buffering, prevSeg != nil else { return }
+            guard playerState != .buffering, prevSeg != nil else {
+                print("🎯TX KVO:currentItem→nil IGNORED (spurious: state=\(txDesc(playerState)) prevSeg=\(prevSeg == nil ? "nil" : "set"))")
+                return
+            }
             // Genuine end of the briefing: playback is over, so intent is no longer
             // "playing" — this is the one non-user event allowed to flip intent, so the
             // icon shows PLAY (ready to replay) and matches the silent audio. play() at
             // .ended replays from the top (see restartFromBeginning).
+            let b = txBefore()
             intendedPlaying = false
             playerState    = .ended
             updateNowPlaying()
+            txAfter("KVO:currentItem→nil END-OF-BRIEFING", b, "(intent FLIPPED to N — the one non-user flip)")
             return
         }
 
@@ -835,10 +909,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
     }
 
     private func handleTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
-        #if DEBUG
+        let b = txBefore()
         let statusName = status == .playing ? "playing" : status == .paused ? "paused" : "waitingToPlay"
-        print("🎙 timeControlStatus → \(statusName)  playerState=\(playerState)")
-        #endif
         switch status {
         case .playing:
             cancelStallTimer()
@@ -850,14 +922,17 @@ final class BulletinPlayer: NSObject, ObservableObject {
             } else if playerState == .buffering || playerState == .stalled {
                 playerState = .playing
             }
+            txAfter("KVO:timeControlStatus=\(statusName)", b)
         case .waitingToPlayAtSpecifiedRate:
             // Only start stall detection during active playback (not initial buffering).
             if playerState == .playing {
                 playerState = .stalled
                 startStallTimer()
             }
+            txAfter("KVO:timeControlStatus=\(statusName)", b)
         case .paused:
             cancelStallTimer()
+            txAfter("KVO:timeControlStatus=\(statusName)", b)
         @unknown default:
             break
         }
@@ -925,7 +1000,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// (0 = start of its transition, or story if no transition).
     func seekToStoryUnit(at index: Int, offsetSeconds: Double = 0) {
         let clamped = max(0, min(index, _storyUnits.count - 1))
-        guard clamped < _storyUnits.count, let p = player else { return }
+        guard clamped < _storyUnits.count, let p = player else {
+            print("🎯TX seekToStoryUnit(\(index)) →NOOP (player=\(player == nil ? "nil" : "ok")) | \(txLine())")
+            return
+        }
+        print("🎯TX seekToStoryUnit(idx→\(clamped), off=\(String(format: "%.1f", offsetSeconds))) ENTER (intent must be PRESERVED) | \(txLine())")
         let unit = _storyUnits[clamped]
 
         // Bump the navigation token: any earlier in-flight seek's async completion will
@@ -968,6 +1047,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // already be .buffering by then to satisfy the existing nil guard. _isSeeking would
         // be set synchronously and cleared before the deferred callback fires — wrong timing.
         playerState = .buffering
+        print("🎯TX seekToStoryUnit → set .buffering during rebuild (ICON should HOLD via intent) | \(txLine())")
         p.pause()
         p.removeAllItems()
         itemObservations.removeAll()
@@ -981,7 +1061,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
             let t = CMTime(seconds: seekSeconds, preferredTimescale: 600)
             p.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    guard let self, gen == self.navGeneration else { return }   // superseded → drop
+                    guard let self, gen == self.navGeneration else {
+                        print("🎯TX seek-completion(async) DROPPED (superseded by newer nav)")
+                        return
+                    }   // superseded → drop
                     self.resumeAfterSeekIfIntended()
                 }
             }
@@ -998,10 +1081,15 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// we leave `.buffering` (paused audio at the new position, PLAY icon) — the
     /// currentItemChanged(nil) guard relies on it not being a played state yet.
     private func resumeAfterSeekIfIntended() {
-        guard intendedPlaying else { return }
+        let b = txBefore()
+        guard intendedPlaying else {
+            txAfter("resumeAfterSeekIfIntended()", b, "→STAY (intent=N, engine left paused at new pos)")
+            return
+        }
         activateAudioSession()
         player?.play()
         playerState = .playing
+        txAfter("resumeAfterSeekIfIntended()", b, "→RESUME (intent=Y)")
     }
 
     /// Seek to a fraction (0–1) across the story-unit timeline.
@@ -1069,13 +1157,16 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// Skip backward: restart current unit, or go to previous unit if near the start
     /// or called again within 2 s (standard podcast double-tap-back pattern).
     func skipBack() {
+        let b = txBefore()
         let now = Date()
         let nearStart    = positionSeconds < 2.0
         let recentBack   = lastSkipBackTime.map { now.timeIntervalSince($0) < 2.0 } ?? false
 
         if nearStart || recentBack {
+            txAfter("skipBack()", b, "→PREV unit \(currentUnitIndex)→\(max(0, currentUnitIndex - 1)) (nearStart=\(nearStart) recentBack=\(recentBack); intent must be PRESERVED)")
             seekToStoryUnit(at: max(0, currentUnitIndex - 1))
         } else {
+            txAfter("skipBack()", b, "→RESTART unit \(currentUnitIndex) (pos=\(String(format: "%.1f", positionSeconds))s; intent must be PRESERVED)")
             seekToStoryUnit(at: currentUnitIndex)
         }
         lastSkipBackTime = now
@@ -1106,12 +1197,15 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
         stallCount += 1
         if stallCount >= stallMaxCount {
+            let b = txBefore()
             stallCount  = 0
             prevOutcome = .stallSkip
             // Reset to .playing so stall detection can start fresh for the next item.
             playerState = .playing
             player?.advanceToNextItem()
+            txAfter("stallTimeout→SKIP-STALLED-ITEM (raw advanceToNextItem)", b)
         } else {
+            print("🎯TX stallTimeout (\(stallCount)/\(stallMaxCount), still waiting) | \(txLine())")
             startStallTimer()
         }
     }
