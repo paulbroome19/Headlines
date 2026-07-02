@@ -58,11 +58,13 @@ enum BriefingLength: String, CaseIterable, Identifiable {
     /// maxDurationMinutes → _preset_from_minutes: ≤3 short, ≤7 medium, else detailed.
     var minutes: Int { switch self { case .quick: 3; case .standard: 6; case .deep: 12 } }
     var title: String { switch self { case .quick: "QUICK"; case .standard: "STANDARD"; case .deep: "DEEP" } }
+    /// Qualitative depth only — no minute figures (actual duration flexes with the day's
+    /// news and isn't reliably tied to a fixed minute count).
     var detail: String {
         switch self {
-        case .quick:    "About 5 minutes — the essentials."
-        case .standard: "About 10 minutes — the full picture."
-        case .deep:     "About 15 minutes — the whole story."
+        case .quick:    "The essentials"
+        case .standard: "The full picture"
+        case .deep:     "The whole story"
         }
     }
     static func from(minutes: Int) -> BriefingLength {
