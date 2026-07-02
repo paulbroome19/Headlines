@@ -125,11 +125,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     // MARK: Accessors
 
-    /// THE single definition of "audio is playing", used by every surface (in-app
-    /// transport icon, lock-screen playback rate / MPNowPlayingInfoCenter state) so they
-    /// can never disagree. `.stalled` counts as playing — we're mid-playback buffering,
-    /// not paused — so the icon and the lock screen both read PAUSE during a stall.
-    var isPlaying: Bool { playerState == .playing || playerState == .stalled }
+    /// THE single displayed play/pause truth, on every surface (in-app icon, lock-screen
+    /// playback rate / MPNowPlayingInfoCenter state). It is a PURE FUNCTION OF INTENT, not
+    /// of transient engine state: it flips ONLY when the user presses play/pause (or the
+    /// briefing ends). A skip/seek's `.buffering` rebuild window and a `.stalled` beat do
+    /// NOT flip it, so the icon never diverges from the audio the user asked for — playing
+    /// stays PAUSE through a skip, paused stays PLAY through a skip.
+    var isPlaying: Bool { intendedPlaying }
 
     private(set) var manifest: BulletinManifest?
     var storySegments: [ManifestSegment] { _storySegments }
@@ -162,14 +164,17 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     // MARK: Private — play intent + navigation serialization
 
-    /// The user's DESIRED play/pause state — the second half of the source of truth.
-    /// It survives queue rebuilds (a seek/skip drops to `.buffering` transiently), so
-    /// resume-after-rebuild decisions consult THIS, never the transient player state.
-    /// Set by play/pause/togglePlayPause and the first-autoplay; the only thing that
-    /// clears it is an explicit pause (or teardown / headphone unplug). Without it, a
-    /// rapid next/prev tap mid-rebuild read `.buffering` as "not playing" and stranded
-    /// the transport paused.
-    private var intendedPlaying = false
+    /// The user's DESIRED play/pause state — and THE displayed play/pause truth (see
+    /// `isPlaying`). It changes ONLY when the user presses play/pause (or the briefing
+    /// genuinely ends); next/previous/skip/seek/segment-transition NEVER touch it. So it
+    /// survives queue rebuilds (a seek/skip drops to `.buffering` transiently) and the icon
+    /// holds through them — a skip while playing keeps the PAUSE icon and audio just
+    /// continues. `@Published` so every surface (in-app icon + lock screen) re-renders the
+    /// instant intent flips; its didSet refreshes now-playing even when `playerState`
+    /// didn't change (e.g. a pause that lands mid-rebuild).
+    @Published private(set) var intendedPlaying = false {
+        didSet { if intendedPlaying != oldValue { updateNowPlaying() } }
+    }
 
     /// Monotonic token bumped on every user navigation (skip / skipBack / seek). A
     /// seek's async completion captures the token and no-ops if a newer navigation has
@@ -222,7 +227,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
         NotificationCenter.default.removeObserver(self)
         let cc = MPRemoteCommandCenter.shared()
         [cc.playCommand, cc.pauseCommand, cc.togglePlayPauseCommand,
-         cc.nextTrackCommand, cc.previousTrackCommand].forEach { $0.removeTarget(nil) }
+         cc.nextTrackCommand, cc.previousTrackCommand,
+         cc.changePlaybackPositionCommand].forEach { $0.removeTarget(nil) }
     }
 
     // MARK: - Public API
@@ -409,9 +415,43 @@ final class BulletinPlayer: NSObject, ObservableObject {
             activateAudioSession()
             player?.play()
             playerState = .playing   // reflect immediately (incl. stall-resume) — don't wait for a KVO edge
+        case .ended:
+            // Convention: PLAY at the end REPLAYS the whole briefing from the top (intro
+            // → stories → outro). No dead button — in-app and lock-screen play both land
+            // here (same path via performRemote → play()).
+            restartFromBeginning()
         default:
             break
         }
+    }
+
+    /// Rebuild the queue from the very first segment and play — the end-of-briefing replay.
+    /// Sets intent to playing (a user PLAY press) and resets the full-timeline position to 0
+    /// so the bar/timer restart cleanly on both surfaces.
+    private func restartFromBeginning() {
+        guard !segments.isEmpty else { return }
+        navGeneration &+= 1                 // invalidate any in-flight seek completion
+        intendedPlaying = true
+        storyIndex = 0
+        currentUnitIndex = 0
+        globalPositionPct = 0
+        playbackElapsedSeconds = 0
+        prevOutcome = .natural
+        playerState = .buffering            // satisfies the currentItemChanged(nil) guard during rebuild
+        if player == nil {
+            setupQueuePlayer()              // fresh player, enqueues from index 0
+        } else {
+            player?.pause()
+            player?.removeAllItems()
+            itemObservations.removeAll()
+            itemSegmentMap.removeAll()
+            nextEnqueueIdx = 0
+            enqueueNext()
+            enqueueNext()
+        }
+        activateAudioSession()
+        player?.play()
+        playerState = .playing
     }
 
     func pause() {
@@ -566,7 +606,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
         cc.togglePlayPauseCommand.isEnabled = true
         cc.nextTrackCommand.isEnabled       = true
         cc.previousTrackCommand.isEnabled   = true
-        cc.changePlaybackPositionCommand.isEnabled = false
+        // Lock-screen / CarPlay scrubbing — the draggable progress bar, on the FULL-briefing
+        // timeline (see updateNowPlaying), seeking the real audio like a real player.
+        cc.changePlaybackPositionCommand.isEnabled = true
 
         // Drive each command through the SAME synchronous main-actor path the in-app
         // buttons use (see `performRemote`) — NOT a detached Task that returns .success
@@ -581,6 +623,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
         cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.performRemote { $0.togglePlayPause() } ?? .noSuchContent }
         cc.nextTrackCommand.addTarget       { [weak self] _ in self?.performRemote { $0.skip() }            ?? .noSuchContent }
         cc.previousTrackCommand.addTarget   { [weak self] _ in self?.performRemote { $0.skipBack() }        ?? .noSuchContent }
+        // Scrub: the event's positionTime is in the full-briefing timeline (we publish
+        // duration = totalDurationSeconds), so seek to that absolute time. Same synchronous
+        // main-actor path as every other remote command; resumes in the intended state.
+        cc.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            let t = e.positionTime
+            return self.performRemote { $0.seekToFullTime(t) }
+        }
     }
 
     /// Run a remote (lock-screen / Control-Center / headset) transport action on the main
@@ -756,6 +806,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
             //     stranded first-play path (seek/skip already set state directly).
             // A real end-of-bulletin nil always follows a played segment (prevSeg != nil).
             guard playerState != .buffering, prevSeg != nil else { return }
+            // Genuine end of the briefing: playback is over, so intent is no longer
+            // "playing" — this is the one non-user event allowed to flip intent, so the
+            // icon shows PLAY (ready to replay) and matches the silent audio. play() at
+            // .ended replays from the top (see restartFromBeginning).
+            intendedPlaying = false
             playerState    = .ended
             updateNowPlaying()
             return
@@ -824,9 +879,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
         updateGlobalPosition(positionWithinSegment: secs)
 
-        // Keep lock screen elapsed time current without rebuilding the full info dict.
+        // Keep the lock-screen elapsed on the FULL-briefing timeline (matches the in-app
+        // bar), not the per-segment position — so it advances continuously, never resets.
         if var info = MPNowPlayingInfoCenter.default().nowPlayingInfo {
-            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = secs
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = playbackElapsedSeconds
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         }
     }
@@ -953,6 +1009,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// intro → stories → outro). Maps the target to the segment it lands in; a story/
     /// transition seeks to that story unit at the right offset, a leading wrapper (intro/
     /// sting) seeks to the first story, a trailing wrapper (outro) to the last.
+    /// Seek to an absolute time (seconds) on the full-briefing timeline — the lock-screen /
+    /// CarPlay scrubber's `positionTime`. Thin wrapper over `seekToFullFraction`.
+    func seekToFullTime(_ seconds: Double) {
+        guard _totalDurationSeconds > 0 else { return }
+        seekToFullFraction(seconds / _totalDurationSeconds)
+    }
+
     func seekToFullFraction(_ fraction: Double) {
         guard _totalDurationSeconds > 0, !segments.isEmpty, !_storyUnits.isEmpty else { return }
         let target = max(0, min(1, fraction)) * _totalDurationSeconds
@@ -1115,35 +1178,42 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     private func updateNowPlaying() {
         let center = MPNowPlayingInfoCenter.default()
-        guard let seg = currentSegment else {
+        // Show now-playing whenever there is playable content — during playback, AND for a
+        // finished briefing (`.ended`) so the lock screen keeps a PLAY button that replays.
+        // Clear only when nothing is loaded (teardown / stop).
+        let ended = playerState == .ended
+        guard !segments.isEmpty, currentSegment != nil || ended else {
             center.nowPlayingInfo = nil
             center.playbackState = .stopped
             return
         }
-        // Title = the current story's headline; subtitle = its ranked SOURCES (same data
-        // + format as the in-app card's row) — so the lock screen mirrors the playback
-        // screen and both refresh as segments advance (updateNowPlaying runs on every
-        // segment change). Derived from the current story UNIT so it stays the story's
-        // headline through its bridge/intro. No sources → "Headlines" rather than blank.
+        // Title = the current story's headline; subtitle = its ranked SOURCES (same data +
+        // format as the in-app card's row). Derived from the current story UNIT so it stays
+        // the story's headline through its bridge/intro. No sources → "Headlines".
         let unit = currentStoryUnit
         let title = unit?.title ?? "Headlines"
         let srcs = (unit?.storySegment.sources ?? []).prefix(3)
         let artist = srcs.isEmpty ? "Headlines" : srcs.joined(separator: " · ")
+        // FULL-BRIEFING timeline (identical to the in-app scrubber): ONE continuous
+        // elapsed/duration across intro → stories → outro, so the lock-screen bar advances
+        // smoothly and NEVER resets per segment. At the end it reads full/full, paused.
+        let elapsed = ended ? totalDurationSeconds : playbackElapsedSeconds
         var info: [String: Any] = [
             MPMediaItemPropertyTitle:                    title,
             MPMediaItemPropertyArtist:                   artist,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: positionSeconds,
-            MPMediaItemPropertyPlaybackDuration:         seg.durationSeconds,
-            // Rate + playbackState derive from the SAME `isPlaying` as the in-app icon,
-            // so the lock screen can never show PLAY while the app shows PAUSE (and vice
-            // versa) — including during a `.stalled` (mid-playback buffering) beat.
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
+            MPMediaItemPropertyPlaybackDuration:         totalDurationSeconds,
+            // Rate + playbackState derive from the SAME `isPlaying` (= intent) as the in-app
+            // icon, so the lock screen can never disagree with the app.
             MPNowPlayingInfoPropertyPlaybackRate:        isPlaying ? 1.0 : 0.0,
         ]
         if let art = Self.lockScreenArtwork {
             info[MPMediaItemPropertyArtwork] = art
         }
-        if seg.isStory, storyCount > 0 {
-            info[MPNowPlayingInfoPropertyChapterNumber] = storyIndex + 1
+        // Chapter markers (story N / total) ride on the continuous timeline. N tracks the
+        // unit the playhead is in — matching the in-app "NOW PLAYING N / total".
+        if storyCount > 0 {
+            info[MPNowPlayingInfoPropertyChapterNumber] = min(max(0, currentUnitIndex), storyCount - 1) + 1
             info[MPNowPlayingInfoPropertyChapterCount]  = storyCount
         }
         center.nowPlayingInfo = info

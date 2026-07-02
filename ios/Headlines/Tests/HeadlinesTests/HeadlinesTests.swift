@@ -24,15 +24,17 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertTrue(cc.togglePlayPauseCommand.isEnabled, "Toggle (headset) must be enabled")
         XCTAssertTrue(cc.nextTrackCommand.isEnabled,       "Next must be enabled")
         XCTAssertTrue(cc.previousTrackCommand.isEnabled,   "Previous must be enabled (the regression)")
+        XCTAssertTrue(cc.changePlaybackPositionCommand.isEnabled, "Lock-screen scrubbing must be enabled")
     }
 
-    /// Requirement 2: a fresh (idle) player is not playing → the transport shows the
-    /// PLAY icon. `isPlaying` is the single definition both the in-app icon and the
-    /// lock-screen playback rate derive from.
+    /// The displayed play/pause state is a PURE FUNCTION OF INTENT: `isPlaying` == the
+    /// user's intent, so transient engine states (a skip's `.buffering` rebuild, `.stalled`)
+    /// never flip the icon. A fresh (idle) player intends nothing → PLAY icon.
     @MainActor
-    func testFreshPlayerReportsNotPlaying() {
+    func testIsPlayingTracksIntent() {
         let player = BulletinPlayer()
         XCTAssertFalse(player.isPlaying)
+        XCTAssertEqual(player.isPlaying, player.intendedPlaying)
     }
 
     // MARK: - Loader stage pacing (even ~3s stages over a ~12s window; last stage dwells)
