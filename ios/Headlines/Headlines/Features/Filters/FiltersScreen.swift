@@ -344,12 +344,15 @@ struct ProfileFiltersView: View {
     }
     @State private var stage: Stage = .loading
 
+    /// The three settings destinations — each opens as its own full screen.
+    private enum Route: String, Identifiable { case name, length, filters; var id: String { rawValue } }
+    @State private var route: Route?
+
     // Editable preferences (name + length + filters), seeded from the profile.
     @State private var editedName = ""
     @State private var editedLength: BriefingLength = .standard
     @State private var workingSelection: Set<String> = []
     @State private var loadedProfile: Profile?
-    @State private var showFilters = false
     @State private var isSaving = false
     @State private var saveError: String?
 
@@ -393,32 +396,27 @@ struct ProfileFiltersView: View {
             }
         }
         .task { if stage == .loading { await load() } }
-        .sheet(isPresented: $showFilters) {
-            FiltersScreen(
-                chrome: .settings(onClose: { showFilters = false }),
-                initialSelection: workingSelection,
-                onComplete: { leafIDs in
-                    workingSelection = Set(leafIDs)   // update working state; save on hub back
-                    showFilters = false
-                }
-            )
+        .fullScreenCover(item: $route) { route in
+            switch route {
+            case .name:    nameEditScreen
+            case .length:  lengthEditScreen
+            case .filters: filtersEditScreen
+            }
         }
     }
 
-    /// The settings hub — name, length and topics all editable (nothing write-once).
-    /// Back saves everything to the (device-keyed) profile and returns Home.
+    /// The settings hub — a clean list of three rows (Name / Length / Filters),
+    /// each tapping into its own full screen. Each sub-screen auto-saves on back,
+    /// so the hub itself holds no editable fields; its back just returns Home.
     private var settingsHub: some View {
         VStack(spacing: 0) {
             HStack {
-                Button(action: { Task { await saveAll() } }) {
-                    Group {
-                        if isSaving { ProgressView().tint(LightColors.ink) }
-                        else { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)) }
-                    }
-                    .foregroundColor(LightColors.ink)
-                    .frame(width: 40, height: 40, alignment: .leading).contentShape(Rectangle())
+                Button(action: { dismiss() }) {
+                    Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(LightColors.ink)
+                        .frame(width: 40, height: 40, alignment: .leading).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).disabled(isSaving).accessibilityLabel("Save and close")
+                .buttonStyle(.plain).accessibilityLabel("Close settings")
                 Spacer()
                 Text("SETTINGS").font(.label(12)).tracking(2).foregroundColor(LightColors.ink.opacity(0.4))
                 Spacer()
@@ -426,57 +424,127 @@ struct ProfileFiltersView: View {
             }
             .padding(.horizontal, BottomActionBar.pageMargin - 8).padding(.top, 6)
 
-            if let saveError {
-                Text(saveError)
-                    .font(.label(11)).tracking(0.5)
-                    .foregroundColor(Color(hex: 0xC85B5B))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, BottomActionBar.pageMargin)
-                    .padding(.top, 4)
+            VStack(spacing: 0) {
+                hubRow("Name")    { route = .name }
+                insetDivider
+                hubRow("Length")  { route = .length }
+                insetDivider
+                hubRow("Filters") { route = .filters }
             }
+            .padding(.top, 20)
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 26) {
-                    // NAME
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("YOUR NAME").font(.label(11)).tracking(2.5)
-                            .foregroundColor(LightColors.ink.opacity(0.45))
-                        TextField("Your name", text: $editedName)
-                            .font(.label(16)).foregroundColor(LightColors.ink)
-                            .textInputAutocapitalization(.words)
-                            .padding(.vertical, 12).padding(.horizontal, 16)
-                            .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(LightColors.ink.opacity(0.15), lineWidth: 1))
-                    }
-                    .padding(.horizontal, BottomActionBar.pageMargin)
+            Spacer()
+        }
+    }
 
-                    // LENGTH
-                    LengthPicker(selected: $editedLength)
+    /// One hub row — a plain label with a small black disclosure chevron.
+    private func hubRow(_ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(label).font(.label(16)).foregroundColor(LightColors.ink)
+                Spacer()
+                Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(LightColors.ink)
+            }
+            .padding(.vertical, 20)
+            .padding(.horizontal, BottomActionBar.pageMargin)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 
-                    // TOPICS → filters sheet
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("TOPICS").font(.label(11)).tracking(2.5)
-                            .foregroundColor(LightColors.ink.opacity(0.45))
-                        Button(action: { showFilters = true }) {
-                            HStack {
-                                Text(workingSelection.isEmpty ? "Top Stories only" : "\(workingSelection.count) selected")
-                                    .font(.label(14)).foregroundColor(LightColors.ink)
-                                Spacer()
-                                Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(LightColors.ink.opacity(0.35))
-                            }
-                            .padding(.vertical, 14).padding(.horizontal, 16)
-                            .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(LightColors.ink.opacity(0.15), lineWidth: 1))
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, BottomActionBar.pageMargin)
+    /// Inset hairline between rows — same margin treatment as the onboarding rule.
+    private var insetDivider: some View {
+        Rectangle().fill(LightColors.ink.opacity(0.15)).frame(height: 1)
+            .padding(.horizontal, BottomActionBar.pageMargin)
+    }
+
+    // MARK: - Sub-screens (each auto-saves on back)
+
+    /// A sub-screen header: back chevron (saves + closes; spinner while saving) and
+    /// a centred title, matching the hub. `disabled` while a save is in flight.
+    private func subScreenHeader(_ title: String) -> some View {
+        HStack {
+            Button(action: { Task { await saveAndClose() } }) {
+                Group {
+                    if isSaving { ProgressView().tint(LightColors.ink) }
+                    else { Image(systemName: "chevron.left").font(.system(size: 18, weight: .semibold)) }
                 }
-                .padding(.top, 20).padding(.bottom, 40)
+                .foregroundColor(LightColors.ink)
+                .frame(width: 40, height: 40, alignment: .leading).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(isSaving).accessibilityLabel("Save and close")
+            Spacer()
+            Text(title).font(.label(12)).tracking(2).foregroundColor(LightColors.ink.opacity(0.4))
+            Spacer()
+            Color.clear.frame(width: 40, height: 40)
+        }
+        .padding(.horizontal, BottomActionBar.pageMargin - 8).padding(.top, 6)
+    }
+
+    /// Shown under a sub-screen header when the auto-save fails.
+    @ViewBuilder private var subScreenError: some View {
+        if let saveError {
+            Text(saveError)
+                .font(.label(11)).tracking(0.5)
+                .foregroundColor(Color(hex: 0xC85B5B))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, BottomActionBar.pageMargin).padding(.top, 4)
+        }
+    }
+
+    /// NAME — simple: the light "YOUR NAME" label + subtext + a pre-filled field.
+    private var nameEditScreen: some View {
+        ZStack {
+            LightColors.page.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 0) {
+                subScreenHeader("NAME")
+                subScreenError
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("YOUR NAME").font(.label(11)).tracking(2.5)
+                        .foregroundColor(LightColors.ink.opacity(0.45))
+                    Text("What we'll call you in your briefing.")
+                        .font(.label(11)).tracking(0.3)
+                        .foregroundColor(LightColors.ink.opacity(0.4))
+                    TextField("Your name", text: $editedName)
+                        .font(.label(16)).foregroundColor(LightColors.ink)
+                        .textInputAutocapitalization(.words)
+                        .padding(.vertical, 12).padding(.horizontal, 16)
+                        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(LightColors.ink.opacity(0.15), lineWidth: 1))
+                        .padding(.top, 4)
+                }
+                .padding(.horizontal, BottomActionBar.pageMargin).padding(.top, 24)
+                Spacer()
             }
         }
+    }
+
+    /// LENGTH — reuses the shared onboarding length picker; back saves.
+    private var lengthEditScreen: some View {
+        ZStack {
+            LightColors.page.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 0) {
+                subScreenHeader("LENGTH")
+                subScreenError
+                LengthPicker(selected: $editedLength).padding(.top, 24)
+                Spacer()
+            }
+        }
+    }
+
+    /// FILTERS — reuses the shared filter-tree screen (identical to onboarding's),
+    /// in its settings context: its own back chevron saves and closes.
+    private var filtersEditScreen: some View {
+        FiltersScreen(
+            chrome: .settings(onClose: { route = nil }),
+            initialSelection: workingSelection,
+            onComplete: { leafIDs in
+                workingSelection = Set(leafIDs)
+                try await persist()   // throws → FiltersScreen shows its error, stays open
+                route = nil           // success → close
+            }
+        )
     }
 
     /// Load the user's current profile so we can show — and preserve — what they
@@ -504,36 +572,43 @@ struct ProfileFiltersView: View {
         return ids
     }
 
-    /// Save name + length + filters to the profile (create if none), persist locally,
-    /// dismiss. A transient error keeps the user on the hub so edits aren't lost.
-    private func saveAll() async {
-        isSaving = true
-        saveError = nil
+    /// Persist name + length + filters to the profile (create if none) and locally.
+    /// Throws on failure so callers can surface the error and keep edits.
+    private func persist() async throws {
         let leafIDs = Array(workingSelection)
         let include: [String]? = leafIDs.isEmpty ? nil : leafIDs.sorted()
         let trimmed = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmed.isEmpty ? "Listener" : trimmed
+        if let profile = loadedProfile {
+            _ = try await service.updateProfile(
+                id: profile.id, name: finalName,
+                maxDurationMinutes: editedLength.minutes, voice: profile.voice,
+                includeCategories: include, excludeCategories: profile.excludeCategories,
+                includeTopStories: profile.includeTopStories)
+            profileId = profile.id
+        } else {
+            let created = try await service.createProfile(
+                name: finalName, maxDurationMinutes: editedLength.minutes, voice: nil,
+                includeCategories: include, excludeCategories: nil, includeTopStories: true)
+            loadedProfile = created   // subsequent sub-screen saves update, not re-create
+            profileId = created.id
+        }
+        userName = finalName
+        briefingLengthRaw = editedLength.rawValue
+        persistSelection(leafIDs)
+    }
+
+    /// Auto-save-on-back for the Name/Length sub-screens: persist, then close on
+    /// success. A transient error keeps the sub-screen open (edits intact) and shows
+    /// the message so the save never fails silently.
+    private func saveAndClose() async {
+        isSaving = true
+        saveError = nil
         do {
-            if let profile = loadedProfile {
-                _ = try await service.updateProfile(
-                    id: profile.id, name: finalName,
-                    maxDurationMinutes: editedLength.minutes, voice: profile.voice,
-                    includeCategories: include, excludeCategories: profile.excludeCategories,
-                    includeTopStories: profile.includeTopStories)
-                profileId = profile.id
-            } else {
-                let created = try await service.createProfile(
-                    name: finalName, maxDurationMinutes: editedLength.minutes, voice: nil,
-                    includeCategories: include, excludeCategories: nil, includeTopStories: true)
-                profileId = created.id
-            }
-            userName = finalName
-            briefingLengthRaw = editedLength.rawValue
-            persistSelection(leafIDs)
-            dismiss()
+            try await persist()
+            isSaving = false   // reset before closing — state is shared across sub-screens
+            route = nil
         } catch {
-            // Surface the failure instead of silently stopping the spinner — the user
-            // must know the save didn't land (they stay on the hub to retry).
             saveError = "Couldn't save your changes. Check your connection and try again."
             isSaving = false
         }
