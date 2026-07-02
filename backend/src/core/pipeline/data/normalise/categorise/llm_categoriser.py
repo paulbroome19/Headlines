@@ -56,10 +56,20 @@ class StoryCategorisation:
     raw_slug: str | None = field(default=None, compare=False)
 
 
+# Sentinel the model returns when a story has no honest home in our taxonomy.
+DROP = "none"
+
+# Distinct "exclude this story" result — NOT an API failure. Callers must treat it as a
+# deliberate decision to omit the story, never as a reason to fall back to another path.
+DROPPED = StoryCategorisation(
+    primary=DROP, secondaries=[], confidence=0.0, reason="no taxonomy fit", method="llm-drop",
+)
+
+
 def _ancestor_nodes(leaves: list[str]) -> set[str]:
-    """Every valid node in the taxonomy tree = all ancestor prefixes of every leaf
-    (e.g. 'sport.football.premier-league.arsenal' → sport, sport.football, …). Used to
-    reroute a plausible-but-nonexistent slug up to the nearest node that DOES exist."""
+    """Every node in the taxonomy tree = all ancestor prefixes of every leaf
+    (e.g. 'sport.football.premier-league.arsenal' → sport, sport.football, …). Used by the
+    backfill to spot stories whose stored primary isn't a current node at all."""
     nodes: set[str] = set()
     for leaf in leaves:
         parts = leaf.split(".")
@@ -68,20 +78,27 @@ def _ancestor_nodes(leaves: list[str]) -> set[str]:
     return nodes
 
 
-def guard_and_reroute(primary: str, valid_leaves: set[str], valid_nodes: set[str]) -> str | None:
-    """VALID-SLUG GUARD: nothing invalid ever persists. A valid leaf passes through. A
-    plausible-but-nonexistent slug (taxonomy gap: 'sport.nhl', 'top-stories.north-america')
-    is REROUTED to its nearest existing ancestor node ('sport', 'top-stories'). Anything
-    with no valid ancestor is REJECTED (None)."""
-    if primary in valid_leaves:
-        return primary
-    parts = primary.split(".")
-    while len(parts) > 1:
-        parts = parts[:-1]
-        cand = ".".join(parts)
-        if cand in valid_nodes:
-            return cand
-    return None
+def offered_targets(leaves: list[str]) -> set[str]:
+    """What a primary may legitimately be: a real leaf we offer, OR a top-level bucket we
+    offer as a whole (business, sport, politics, …) for a genuinely-general story of that
+    area. NOTHING ELSE — we do NOT accept a coarse ancestor as a dumping ground for an
+    off-taxonomy subject."""
+    tops = {leaf.split(".")[0] for leaf in leaves}
+    return set(leaves) | tops
+
+
+def guard_valid(primary: str, offered: set[str]) -> str | None:
+    """VALID-SLUG GUARD — CORRECTNESS OVER COVERAGE. A story is kept ONLY if its primary
+    is something we actually offer (a real leaf, or a whole top-level bucket it genuinely
+    belongs to). Anything else — an off-taxonomy subject (ice hockey, crime, a region we
+    don't offer) or the DROP sentinel — returns None, and the story is EXCLUDED. We do NOT
+    reroute an unfitting slug up to a coarse ancestor: better to omit than mis-file."""
+    if not primary:
+        return None
+    p = primary.strip()
+    if p.lower() == DROP:
+        return None
+    return p if p in offered else None
 
 
 def _model() -> str:
@@ -92,28 +109,38 @@ def build_system(valid_leaves: list[str]) -> str:
     """The STATIC instruction + valid-leaf catalog. Identical for every story in a run,
     so it is sent as a cache_control'd system block — Anthropic prompt-caches it and each
     subsequent story pays ~0.1x for this (much larger) half of the prompt (see cost model)."""
-    catalog = "\n".join(sorted(valid_leaves))
+    leaves = sorted(valid_leaves)
+    tops = sorted({leaf.split(".")[0] for leaf in leaves})
+    catalog = "\n".join(leaves)
+    buckets = ", ".join(tops)
     return (
         "You are a strict news categoriser. Assign ONE primary category to each story, "
-        "copied EXACTLY from the allowed list. Judge by the STORY CONTENT — the pool "
+        "copied EXACTLY from the allowed slugs. Judge by the STORY CONTENT — the pool "
         "hints are weak context that is often wrong; never let them override the content.\n\n"
-        f"ALLOWED CATEGORY SLUGS (choose primary from exactly these):\n{catalog}\n\n"
-        "RULES:\n"
-        "- primary MUST be copied verbatim from the allowed list. Never invent or "
-        "abbreviate a slug, never use a legacy slug (no world.*, entertainment.*, "
+        f"ALLOWED LEAF SLUGS (prefer the most specific one that genuinely fits):\n{catalog}\n\n"
+        f"ALLOWED TOP-LEVEL BUCKETS (use ONLY for a genuinely GENERAL story of that whole "
+        f"area when no leaf fits): {buckets}\n\n"
+        "CORRECTNESS OVER COVERAGE — it is better to DROP a story than to mis-file it:\n"
+        "- If the story's genuine subject is something we do NOT list — a sport we don't "
+        "offer (e.g. ICE HOCKEY / NHL — there is no hockey slug), CRIME with no topical "
+        "home, or a country/REGION not shown — return primary \"none\". The story is then "
+        "EXCLUDED. Do NOT file it under a generic bucket like 'sport' or 'top-stories' just "
+        "because it is loosely related. \"none\" is the correct answer for anything that "
+        "doesn't honestly fit.\n"
+        "- Keep a story ONLY when it maps to a real leaf above, OR genuinely IS one of the "
+        "general top-level buckets as a whole.\n"
+        "- primary MUST be copied verbatim (a leaf, a top-level bucket, or \"none\"). Never "
+        "invent/abbreviate a slug; never use a legacy slug (world.*, entertainment.*, "
         "climate, politics.global).\n"
-        "- Judge the actual subject. A word like 'shares' (to share), 'summit', or a "
-        "city name that is also a football club must NOT drive the category unless the "
-        "story is genuinely about that topic.\n"
-        "- POLITICS is region-aware: pick politics.uk / politics.us / politics.europe by "
-        "the country the politics concerns; for anywhere else (India, Africa, Asia, "
-        "Middle East, global) use politics.world.\n"
-        "- Prefer the most specific leaf that clearly fits; otherwise use the parent-ish "
-        "leaf. If genuinely unsure between topics, pick the single best and lower confidence.\n"
-        "- secondary: 0-2 other allowed slugs that also apply (e.g. a crime story about a "
-        "footballer). Omit if none.\n\n"
+        "- Judge the actual subject. A word like 'shares' (to share), 'summit', or a city "
+        "name that is also a football club must NOT drive the category unless the story is "
+        "genuinely about that topic.\n"
+        "- POLITICS is region-aware: politics.uk / politics.us / politics.europe by the "
+        "country the politics concerns; anywhere else (India, Africa, Asia, Middle East, "
+        "global) → politics.world.\n"
+        "- secondary: 0-2 other allowed slugs that also apply. Omit if none.\n\n"
         "Respond with JSON only:\n"
-        '{"primary": "<allowed slug>", "secondary": ["<allowed slug>", ...], '
+        '{"primary": "<allowed slug or none>", "secondary": ["<allowed slug>", ...], '
         '"confidence": <0.0-1.0>, "reason": "<6 words max>"}'
     )
 
@@ -194,27 +221,40 @@ def classify_story(
     pool_country: str | None,
     valid_leaves: list[str],
 ) -> StoryCategorisation | None:
-    """Classify one story. Returns None on API failure / unusable output (caller decides
-    the fallback). The returned primary is GUARANTEED to be a valid leaf."""
-    valid = set(valid_leaves)
+    """Classify one story.
+
+    Returns:
+      • a StoryCategorisation with a valid primary   → KEEP,
+      • DROPPED (primary == DROP)                     → EXCLUDE (no honest taxonomy fit),
+      • None                                          → API/parse FAILURE (caller may fall
+                                                        back operationally).
+
+    DROP and failure are distinct: a dropped story must be excluded, NOT re-filed by a
+    fallback. The returned KEEP primary is guaranteed to be something we offer."""
+    offered = offered_targets(valid_leaves)
     system = build_system(valid_leaves)
     user = build_user(title=title, snippets=snippets, pool_topic=pool_topic,
                       pool_country=pool_country)
     raw = _post_anthropic(system, user)
     if raw is None:
         return None
-    parsed = _parse(raw, valid)
+    parsed = _parse(raw, offered)
     if parsed is None:
         return None
     raw_primary, secondary, confidence, reason = parsed
 
-    # ── VALID-SLUG GUARD (absolute) — reroute gaps, reject the un-rerouteable ─────
-    nodes = _ancestor_nodes(valid_leaves)
-    primary = guard_and_reroute(raw_primary, valid, nodes)
+    # ── VALID-SLUG GUARD — CORRECTNESS OVER COVERAGE ─────────────────────────────
+    # Keep ONLY on a genuine offered target; otherwise DROP (exclude). Never reroute an
+    # off-taxonomy subject up to a coarse ancestor.
+    primary = guard_valid(raw_primary, offered)
     if primary is None:
-        logger.warning("llm_categoriser rejected un-rerouteable primary %r for %r", raw_primary, title[:60])
-        return None
-    secondary = [s for s in secondary if s in valid and s != primary][:2]
+        logger.info("llm_categoriser DROP %r (no taxonomy fit) for %r", raw_primary, title[:60])
+        # Preserve the model's reason for visibility (dry-run / logs); still a DROP result.
+        return StoryCategorisation(
+            primary=DROP, secondaries=[], confidence=confidence,
+            reason=reason or "no taxonomy fit", method="llm-drop", raw_slug=raw_primary,
+        )
+    secondary = [s for s in secondary if s in offered and s != primary][:2]
 
     return StoryCategorisation(
         primary=primary,
