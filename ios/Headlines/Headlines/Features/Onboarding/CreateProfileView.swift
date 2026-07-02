@@ -10,10 +10,11 @@
 
 import SwiftUI
 
-// MARK: - Shared two-step progress indicator
+// MARK: - Shared step progress indicator
 
-/// Two dots, the active step lit. Used by the filters screen (BuildBriefingView)
-/// on the dark board; Create Profile uses its own light "1 OF 2" label.
+/// `total` dots, the active step lit. Used by the length step (BuildBriefingView)
+/// on the dark board; the name + filters steps use their own light "X OF 3" label.
+/// Onboarding is THREE steps: name → filters → length.
 struct StepDots: View {
     let step: Int          // 1-based
     let total: Int
@@ -64,7 +65,7 @@ struct CreateProfileView: View {
                     // Step indicator — subtle, top-right.
                     HStack {
                         Spacer()
-                        Text("1 OF 2")
+                        Text("1 OF 3")
                             .font(.label(12))
                             .tracking(2)
                             .foregroundColor(LightColors.ink.opacity(0.4))
@@ -170,7 +171,7 @@ struct CreateProfileView: View {
     // MARK: - Bottom action bar (locked footer pattern — shared component)
 
     private var actionBar: some View {
-        BottomActionBar(title: "BUILD YOUR BRIEFING", enabled: canSubmit, action: submit)
+        BottomActionBar(title: "CONTINUE", enabled: canSubmit, action: submit)
     }
 
     // MARK: - Submit

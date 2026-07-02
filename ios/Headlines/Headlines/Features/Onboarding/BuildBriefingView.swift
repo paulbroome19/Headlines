@@ -32,7 +32,7 @@ struct BuildBriefingView: View {
         // LENGTH step (which creates the profile). Nothing is written to the backend
         // here — the profile is created once, at the end, with name + topics + length.
         FiltersScreen(
-            chrome: .onboarding(ctaLabel: "CONTINUE", onBack: onBack),
+            chrome: .onboarding(ctaLabel: "CHOOSE YOUR LENGTH", onBack: onBack),
             initialSelection: nil,
             onComplete: { leafIDs in
                 if let data = try? JSONEncoder().encode(leafIDs),

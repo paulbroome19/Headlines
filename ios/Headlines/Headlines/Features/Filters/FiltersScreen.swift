@@ -144,7 +144,7 @@ struct FiltersScreen: View {
                     .accessibilityLabel("Back to name")
                 }
                 Spacer()
-                Text("2 OF 2")
+                Text("2 OF 3")
                     .font(.label(12))
                     .tracking(2)
                     .foregroundColor(LightColors.ink.opacity(0.4))
