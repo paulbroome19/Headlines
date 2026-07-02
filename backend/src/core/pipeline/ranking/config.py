@@ -44,6 +44,48 @@ CATEGORY_WEIGHTS: dict[str, float] = {
 DEFAULT_CATEGORY_WEIGHT = 0.75
 DEFAULT_ENTITY_WEIGHT = 1.00
 
+# ══════════════════════════════════════════════════════════════════════════════
+# NEWSPAPER TIER MODEL (front page composition; see docs/ranking-depth-design.md)
+# ══════════════════════════════════════════════════════════════════════════════
+# The bulletin must read like a newspaper: hard news LEADS the front page, soft
+# news (sport/tech/culture) sits at the back — UNLESS a soft story is so heavily
+# covered the whole press led with it (a World Cup final), which earns it a
+# break-through onto the front. CATEGORY (the tier) is the PRIMARY, decisive driver
+# of front-page order; coverage is secondary (orders within a tier + earns the rare
+# break-through). This replaces the old model where category was only a ~±14%
+# tiebreak that soft-news coverage routinely overwhelmed.
+#
+# Resolution mirrors CATEGORY_WEIGHTS: exact slug → prefix fallback → DEFAULT_TIER.
+CATEGORY_TIERS: dict[str, int] = {
+    # ── Tier 1 — the front page. A finance-commuter paper leads with these.
+    "top-stories": 1,   # the front-page axis + every top-stories.<region> bucket
+    "politics": 1,      # incl. politics.uk/us/europe/world (geopolitics/war/diplomacy)
+    "business": 1,      # incl. markets/economy/companies/personal-finance
+
+    # ── Tier 2 — the middle. Legitimate news, below the front page.
+    "world": 2,         # stray top-level world.* tags (geopolitics lives in politics.*)
+    "health": 2,
+    "science": 2,
+    "environment": 2,
+
+    # ── Tier 3 — the back. Soft/product/leisure news; never leads unless exceptional.
+    "technology": 3,    # incl. technology.gaming — PlayStation/Xbox product news
+    "sport": 3,
+    "culture": 3,
+    "entertainment": 3,
+}
+# Unknown / uncategorised slugs sit at the back — they must never lead the paper.
+DEFAULT_TIER = 3
+
+# Break-through: a Tier 2/3 story is promoted to the front page (Tier 1) ONLY if its
+# distinct-source coverage clears this HIGH bar — i.e. it is genuinely dominating the
+# news cycle (a World Cup final: the whole press led with it), not merely a well-clustered
+# ordinary sport/tech story. Calibrated against live data: ordinary football/tech
+# clustering tops out around 8–11 distinct sources, so this sits clearly above it —
+# nothing soft breaks through on a normal day, only a true everyone's-leading-with-it
+# event. ⚑ tune as coverage richens (raise if soft product stories start leaking in).
+BREAKTHROUGH_SOURCES = 28
+
 ENTITY_TYPE_WEIGHTS: dict[str, float] = {
     "company": 1.25,
     "government": 1.25,
