@@ -12,9 +12,11 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from collections import defaultdict
+
 from core.platform.config.settings import settings
 from core.pipeline.data.normalise.categorise.category_loader import load_valid_category_slugs
-from core.pipeline.ranking.config import TOP_STORIES_REGIONS
+from core.pipeline.ranking.category_ranker import get_category_tier
 from core.pipeline.ranking.models import ScoredStory
 from .editorial import (
     MAX_PROMOTIONS, EditorialAdjustment, StoryMeta, _model, review_front_page,
@@ -22,10 +24,22 @@ from .editorial import (
 
 logger = logging.getLogger(__name__)
 
-# How many top-ranked candidates the editor reviews. Bounds cost and scope: a story below
-# this never surfaces even in the deepest bulletin (Deep max 18), so reviewing the top
-# slice covers everything that can go out, and the long tail is never paid for.
-REVIEW_N = 40
+# Review depth LADDERED BY IMPORTANCE (newspaper tier), not a flat top-N — attention/cost
+# concentrates where it matters. Depth is PER CATEGORY:
+#   Tier 1 (top-stories/politics/business): top ~50 each, grouped by top-level.
+#   Tier 2 (world/health/science/environment): top ~20 each, grouped by top-level.
+#   Tier 3 (tech/sport/culture) & niche leaves (a specific club): top ~5 each, per LEAF.
+# Uncategorised (major hard news #113 left homeless) gets a Tier-2 depth so a big
+# disaster/crime can still be promoted to the front page. ≈350–400 stories total.
+TIER_DEPTH = {1: 50, 2: 20, 3: 5}
+UNCAT_DEPTH = 20
+# Floor guarantee: every distinct leaf contributes at least its top-2, so a story that can
+# reach a bulletin via a selected category's guaranteed floor is never skipped, even if it
+# falls below its tier's depth.
+FLOOR_N = 2
+# Above this many reviewed stories, split into tier BANDS (front page first) so each Haiku
+# call attends carefully rather than skimming one huge prompt.
+CALL_BATCH = 200
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS data.editorial_reviews (
@@ -101,25 +115,82 @@ def _snippets(db: Session, story_ids: list[str]) -> dict[str, str]:
     return {r[0]: (r[1] or "") for r in rows}
 
 
-def _build_meta(db: Session, top: list[ScoredStory]) -> list[StoryMeta]:
-    snips = _snippets(db, [s.candidate.story_id for s in top])
-    return [
+def _group_key_cap_band(cat: str | None) -> tuple[str, int, str]:
+    """(group key, per-group depth, tier band) for a category. Tier 1/2 group by top-level
+    (broad, deep review); tier 3 groups by the exact leaf (niche, shallow). Band 'A' =
+    front-page-critical (tier 1 + uncategorised, which can be promoted to top-stories);
+    band 'B' = the rest — so, when split, the front page is reviewed most carefully."""
+    if cat is None:
+        return ("__uncat__", UNCAT_DEPTH, "A")
+    tier = get_category_tier(cat)
+    if tier == 1:
+        return (cat.split(".")[0], TIER_DEPTH[1], "A")
+    if tier == 2:
+        return (cat.split(".")[0], TIER_DEPTH[2], "B")
+    return (cat, TIER_DEPTH[3], "B")
+
+
+def _tiered_review(scored: list[ScoredStory]) -> tuple[list[tuple[ScoredStory, str]], dict[str, int]]:
+    """The tier-laddered review set: top-`depth` per category by tier, PLUS the top-`FLOOR_N`
+    of every distinct leaf (floor guarantee). Returns [(story, band)] deduped and the global
+    rank map (position by score across ALL candidates) for prompt context."""
+    ordered = sorted(scored, key=lambda s: s.normalized_score, reverse=True)
+    rank = {s.candidate.story_id: i + 1 for i, s in enumerate(ordered)}
+
+    per_group: dict[str, list[ScoredStory]] = defaultdict(list)
+    per_leaf: dict[str | None, list[ScoredStory]] = defaultdict(list)
+    for s in ordered:  # already score-desc, so slices are top-N
+        key, _, _ = _group_key_cap_band(s.candidate.primary_category)
+        per_group[key].append(s)
+        per_leaf[s.candidate.primary_category].append(s)
+
+    picked: dict[str, str] = {}  # story_id -> band
+    order: list[ScoredStory] = []
+
+    def _take(s: ScoredStory) -> None:
+        sid = s.candidate.story_id
+        if sid not in picked:
+            picked[sid] = _group_key_cap_band(s.candidate.primary_category)[2]
+            order.append(s)
+
+    # Tier-laddered depth per category (each group already score-desc → top-cap).
+    for key, items in per_group.items():
+        cap = _group_key_cap_band(items[0].candidate.primary_category)[1]
+        for s in items[:cap]:
+            _take(s)
+    # Floor guarantee: every leaf's top-FLOOR_N, even below its tier depth.
+    for items in per_leaf.values():
+        for s in items[:FLOOR_N]:
+            _take(s)
+
+    return [(s, picked[s.candidate.story_id]) for s in order], rank
+
+
+def _build_meta(db: Session, stories: list[ScoredStory], rank: dict[str, int]) -> list[StoryMeta]:
+    snips = _snippets(db, [s.candidate.story_id for s in stories])
+    metas = [
         StoryMeta(
             story_id=s.candidate.story_id,
             headline=s.candidate.title,
             snippet=snips.get(s.candidate.story_id, ""),
             category=s.candidate.primary_category,
             sources=s.candidate.source_count,
-            rank=i + 1,
+            rank=rank.get(s.candidate.story_id, 0),
         )
-        for i, s in enumerate(top)
+        for s in stories
     ]
+    metas.sort(key=lambda m: m.rank)   # present in true ranked order
+    return metas
 
 
 def editorial_adjustments(
     db: Session, ranking_run_id: int, scored: list[ScoredStory],
 ) -> dict[str, EditorialAdjustment]:
-    """The review for this ranking run (cached). Empty dict if disabled/unavailable."""
+    """The review for this ranking run (cached). Empty dict if disabled/unavailable.
+
+    Reviews the tier-laddered set (≈350–400 stories). Small enough → one Haiku call; larger
+    → split into tier bands (front page first) so each call attends carefully. Merged and
+    cached once per ranking run."""
     if not settings.enable_editorial_pass or not settings.anthropic_api_key:
         return {}
     repo = EditorialRepo(db)
@@ -127,14 +198,27 @@ def editorial_adjustments(
     cached = repo.get(ranking_run_id)
     if cached is not None:
         return cached
-    top = sorted(scored, key=lambda s: s.normalized_score, reverse=True)[:REVIEW_N]
-    adjustments = review_front_page(_build_meta(db, top), sorted(load_valid_category_slugs()))
+
+    review, rank = _tiered_review(scored)
+    leaves = sorted(load_valid_category_slugs())
+
+    if len(review) <= CALL_BATCH:
+        batches = [[s for s, _ in review]]
+    else:
+        # Band A (front-page-critical) reviewed first / together; then band B.
+        band_a = [s for s, b in review if b == "A"]
+        band_b = [s for s, b in review if b == "B"]
+        batches = [band_a[i:i + CALL_BATCH] for i in range(0, len(band_a), CALL_BATCH)] or [[]]
+        batches += [band_b[i:i + CALL_BATCH] for i in range(0, len(band_b), CALL_BATCH)]
+
+    adjustments: dict[str, EditorialAdjustment] = {}
+    for batch in batches:
+        if not batch:
+            continue
+        adjustments.update(review_front_page(_build_meta(db, batch, rank), leaves))
+
     repo.put(ranking_run_id, adjustments, _model())
     return adjustments
-
-
-def _top_story_target(region: str | None) -> str:
-    return f"top-stories.{region}" if region in TOP_STORIES_REGIONS else "top-stories"
 
 
 def apply_editorial(scored: list[ScoredStory], adjustments: dict[str, EditorialAdjustment]) -> int:
