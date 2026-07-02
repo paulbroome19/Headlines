@@ -127,38 +127,40 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Readiness-gated loader: a determinate bar driven by `player.loadProgress`
-    /// (smooth, asymptotic — never full until audio starts). Generic UI for now;
-    /// the mechanism is what matters. The `.animation` smooths the ~20fps updates
-    /// so the fill reads as continuous and never "stuck".
-    /// Generation loader — mirrors the Playback layout: the dark Solari board sits
-    /// in the now-playing card's position (churning through status lines), and a
-    /// continuous 0→100% bar sits in the scrubber's position. Driven by
-    /// `player.loadProgress`; dismissal is the player leaving `.preparing` on
-    /// `safe_to_start`. The bar holds at ≤~97% (LoadProgressModel.preStartCap)
-    /// until audio actually starts — it never finishes-and-waits in silence.
+    /// Generation loader — mirrors the Playback layout: the dark Solari board sits in the
+    /// now-playing card's position (churning through status lines) and a determinate
+    /// 0→100% bar sits in the scrubber's position.
+    ///
+    /// PACING IS A FIXED, EVEN VISUAL SEQUENCE — decoupled from backend progress. The four
+    /// stages advance purely on a timer (`LoaderTiming.stageIndex`): stages 1→3 each take
+    /// exactly `stageSeconds`, so stage 1 can NEVER freeze while a slow manifest loads. The
+    /// bar is elapsed-driven too, so it moves in even quarters. Real readiness governs only
+    /// DISMISSAL: the gate holds the loader (and thus the 4th stage) until `safe_to_start`,
+    /// then leaves `.preparing` → the loader is replaced by the player. So stages 1–3 are
+    /// evenly timed and only stage 4 dwells to absorb the remaining wait.
     private var preparingState: some View {
-        let bandCount = LoaderStatusBoard.loaderWordSets.count   // 5
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             Spacer(minLength: 16)
-            // The stage word advances by the SLOWER of real progress and time (#7):
-            // each stage holds ≥ LoaderTiming.minStageSeconds so its words are readable
-            // even on an instant/cached briefing, while a slow prepare lets real progress
-            // hold a stage LONGER. The gate keeps the loader up for the matching minimum.
+            // STAGE WORD — one stage per `stageSeconds` on a plain timer (coarse cadence
+            // is enough; the word only changes at stage boundaries). NOT loadProgress.
             TimelineView(.periodic(from: loaderStart, by: 0.2)) { ctx in
                 let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
-                let timeStage = Int(elapsed / LoaderTiming.minStageSeconds)
-                let progressStage = Int(player.loadProgress * Double(bandCount))
-                let line = max(0, min(bandCount - 1, min(progressStage, timeStage)))
-                loaderBoard(lineIndex: line)
+                loaderBoard(lineIndex: LoaderTiming.stageIndex(elapsed: elapsed))
             }
             Spacer(minLength: 20)
-            loaderProgressBar
+            // DETERMINATE BAR — also elapsed-driven (even quarters), finer cadence so the
+            // fill reads as continuous.
+            TimelineView(.periodic(from: loaderStart, by: 0.05)) { ctx in
+                let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
+                loaderProgressBar(fill: LoaderTiming.barFill(elapsed: elapsed))
+            }
             Spacer(minLength: 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            if loaderLines.isEmpty { loaderLines = LoaderStatusBoard.pickWords() }
+            // Anchor the timer to when the loader appears (fresh each load, incl. retry).
+            loaderStart = Date()
+            loaderLines = LoaderStatusBoard.pickWords()
         }
     }
 
@@ -188,9 +190,11 @@ struct NowPlayingView: View {
         .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
     }
 
-    /// Continuous progress bar in the scrubber's position.
-    private var loaderProgressBar: some View {
-        let pct = Int((player.loadProgress * 100).rounded())
+    /// Determinate progress bar in the scrubber's position. `fill` (0–1) is the
+    /// elapsed-driven, evenly-paced value from LoaderTiming — NOT backend progress — so it
+    /// advances smoothly in quarters and never sits frozen while the manifest loads.
+    private func loaderProgressBar(fill: Double) -> some View {
+        let pct = Int((fill * 100).rounded())
         return VStack(spacing: 10) {
             HStack {
                 Text("ASSEMBLING YOUR BRIEFING")
@@ -206,8 +210,7 @@ struct NowPlayingView: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(ink.opacity(0.12))
                     Capsule().fill(ink)
-                        .frame(width: max(0, geo.size.width * player.loadProgress))
-                        .animation(.easeOut(duration: 0.25), value: player.loadProgress)
+                        .frame(width: max(0, geo.size.width * fill))
                 }
             }
             .frame(height: 4)
@@ -712,12 +715,13 @@ private struct LoaderStatusBoard: View {
 
     @State private var churnStart: Date = Date()
 
-    // The five cosmetic status-line groups (one shown per progress band).
+    // One cosmetic status-line group per visible loader stage (LoaderTiming.visibleStages
+    // = 4). Stage 4 is the "almost ready" dwell copy — it holds until the briefing is
+    // ready. One line is picked per group at load and held for the whole generation.
     static let loaderWordSets: [[String]] = [
         ["ON THE BEAT", "SCANNING THE WIRES", "WORKING THE SOURCES", "COMBING THE HEADLINES", "CHASING THE STORIES"],
         ["READING THE ROOM", "TAKING THE TEMPERATURE", "GAUGING THE MOOD", "SIZING IT UP", "WEIGHING IT UP"],
-        ["CONNECTING THE DOTS", "JOINING THE THREADS", "SEPARATING THE NOISE", "FOLLOWING THE THREAD", "PIECING IT TOGETHER"],
-        ["PUTTING PEN TO PAPER", "SETTING THE TYPE", "FINDING THE WORDS", "GOING TO PRESS", "INK IS FLOWING"],
+        ["CONNECTING THE DOTS", "JOINING THE THREADS", "GOING TO PRESS", "SETTING THE TYPE", "PIECING IT TOGETHER"],
         ["ALMOST READY", "NEARLY THERE", "FINAL CHECKS", "TIDYING UP", "ANY SECOND NOW"],
     ]
     /// Pick one line per band at load, held for the whole generation.

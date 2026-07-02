@@ -320,13 +320,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
             t += 1
         }
 
-        // Minimum loader dwell (#7): when a briefing is cached, safe_to_start fires on
-        // the first poll and the Solari stages would flash by unreadably. Keep the loader
-        // up until at least `minLoaderSeconds` (≈ fastPathStages × minStageSeconds) has
-        // passed, creeping the bar so the status words step through and are readable. A
-        // slow prepare already exceeds this, so it ONLY affects the fast/cached path —
-        // capped at ~2 stages so a ready briefing never feels sluggish. The view gates
-        // each word to ≥ minStageSeconds too (see NowPlayingView.preparingState).
+        // Fast/cached-path floor: when a briefing is cached, safe_to_start fires on the
+        // first poll and the loader would dismiss mid-stage-1. Keep it up until at least
+        // `minLoaderSeconds` (= visibleStages × stageSeconds) so all four visual stages
+        // get their equal quarter. A slow prepare already exceeds this (it's still waiting
+        // on safe_to_start above), so this only floors the fast path. The visible stages
+        // themselves are paced by a fixed timer in the view (LoaderTiming.stageIndex),
+        // NOT by loadProgress — so stage 1 never freezes on a slow manifest.
         while Date().timeIntervalSince(gateStart) < LoaderTiming.minLoaderSeconds {
             model.tick(dt: tickInterval, ratePerSec: LoadProgressModel.creepRate)
             loadProgress = model.progress
@@ -1070,18 +1070,41 @@ final class BulletinPlayer: NSObject, ObservableObject {
     }()
 }
 
-// MARK: - Loader stage pacing (#7)
+// MARK: - Loader stage pacing
 
-/// Single tunable knob for the Solari loader's minimum stage dwell. Every status
-/// stage is shown for at least `minStageSeconds` so its words are always readable,
-/// even when a briefing is cached and readiness fires instantly. The fast/cached
-/// path is capped at `fastPathStages` stages (`minLoaderSeconds` total) so a ready
-/// briefing never feels sluggish; a slow prepare naturally exceeds it and dismisses
-/// on safe_to_start. Consumed by the gate (hold) and NowPlayingView (per-word cap).
+/// Even, fixed-timer pacing for the generation loader's visible stages.
+///
+/// The visible stages are a FIXED VISUAL SEQUENCE, decoupled from backend progress —
+/// this is the whole point. The loader has `visibleStages` (4) stages; stages 1→3 each
+/// last exactly `stageSeconds` on a plain timer, so stage 1 can never freeze while a
+/// slow (~5–6s) manifest loads. The last (4th) stage is the only one allowed to dwell:
+/// it holds until the briefing is actually ready (`safe_to_start`), absorbing any
+/// remaining wait. Real readiness governs ONLY when the loader dismisses (and how long
+/// stage 4 lasts) — never the 1→2→3 transitions.
+///
+/// `minLoaderSeconds` = the fast/cached-path floor: hold long enough for all four stages
+/// to get their equal quarter (25% each) so a ready briefing still walks evenly through
+/// them; a slow prepare exceeds it and extends stage 4. Consumed by the gate (hold) and
+/// NowPlayingView (stage word + determinate bar).
 enum LoaderTiming {
-    static let minStageSeconds: Double = 2.0
-    static let fastPathStages: Int = 2
-    static var minLoaderSeconds: Double { minStageSeconds * Double(fastPathStages) }
+    static let stageSeconds: Double = 1.3        // fixed duration of each of stages 1–3 (short + readable)
+    static let visibleStages: Int = 4            // 1–3 evenly timed; 4 dwells until ready
+    static var minLoaderSeconds: Double { stageSeconds * Double(visibleStages) }
+
+    /// Which stage (0-based) is showing at `elapsed` seconds — PURELY from the timer, not
+    /// backend progress. Advances one stage per `stageSeconds`, clamped at the last stage
+    /// (which then holds until the gate dismisses the loader on readiness).
+    static func stageIndex(elapsed: Double) -> Int {
+        max(0, min(visibleStages - 1, Int(elapsed / stageSeconds)))
+    }
+
+    /// Determinate bar fill (0–1) at `elapsed` seconds — also elapsed-driven, so it moves
+    /// in even quarters (≈0.25 / 0.5 / 0.75 at the stage boundaries) and eases toward a
+    /// sub-1.0 ceiling during stage 4. It never sits at 100% in silence; audio starting
+    /// dismisses the whole loader.
+    static func barFill(elapsed: Double) -> Double {
+        min(0.97, elapsed / (stageSeconds * Double(visibleStages)))
+    }
 }
 
 // MARK: - Loader progress model
