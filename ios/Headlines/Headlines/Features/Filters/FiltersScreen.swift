@@ -208,13 +208,9 @@ struct FiltersScreen: View {
     private var content: some View {
         switch loadState {
         case .loading:
-            VStack(spacing: 12) {
+            VStack {
                 Spacer()
-                ProgressView().tint(LightColors.ink.opacity(0.5))
-                Text("LOADING CATEGORIES")
-                    .font(.label(11))
-                    .foregroundColor(LightColors.ink.opacity(0.45))
-                    .tracking(2)
+                UtilityLoader()
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -361,12 +357,7 @@ struct ProfileFiltersView: View {
             LightColors.page.ignoresSafeArea()
             switch stage {
             case .loading:
-                VStack(spacing: 12) {
-                    ProgressView().tint(LightColors.ink.opacity(0.5))
-                    Text("LOADING YOUR FILTERS")
-                        .font(.label(11)).tracking(2)
-                        .foregroundColor(LightColors.ink.opacity(0.45))
-                }
+                UtilityLoader()
 
             case .failed(let msg):
                 VStack(spacing: 14) {

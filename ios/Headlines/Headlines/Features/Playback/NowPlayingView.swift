@@ -45,8 +45,8 @@ struct NowPlayingView: View {
                         preparingState
                     case .empty:
                         emptyState
-                    case .failed(let msg):
-                        failedState(msg)
+                    case .failed:
+                        failedState
                     default:
                         playerBody
                     }
@@ -96,28 +96,30 @@ struct NowPlayingView: View {
     // MARK: - Loading / failed states
 
     /// Graceful empty state (fix 4): the filters matched no stories right now — a
-    /// normal result, not an error. On-brand, calm, no raw JSON. Back = the top-bar
-    /// chevron; "DONE" also returns Home (where topics can be adjusted).
+    /// normal result, not an error. On-brand, calm, no raw JSON. Both the top-bar
+    /// chevron and the HOME machined disc return Home (`onClose` → `closePlayer`).
     private var emptyState: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
             Spacer()
             Text("YOU'RE ALL CAUGHT UP")
                 .font(.label(15)).tracking(2)
                 .foregroundColor(ink)
-            Text("Nothing new for these filters right now.\nCheck back soon, or adjust your topics.")
+            Text("Check back a little later.")
                 .font(.label(12))
                 .foregroundColor(inkMuted)
                 .multilineTextAlignment(.center)
                 .lineSpacing(3)
                 .padding(.horizontal, 24)
             Button(action: onClose) {
-                Text("DONE")
-                    .font(.label(13)).tracking(2)
-                    .foregroundColor(ink)
-                    .padding(.horizontal, 22).padding(.vertical, 11)
-                    .overlay(Capsule().strokeBorder(ink.opacity(0.3), lineWidth: 1))
+                MachinedDisc(diameter: 64) {
+                    Image(systemName: "house.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(BoardColors.character)
+                }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MachinedDiscButtonStyle())
+            .accessibilityLabel("Home")
+            .padding(.top, 4)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -203,24 +205,31 @@ struct NowPlayingView: View {
         .padding(.horizontal, 4)
     }
 
-    private func failedState(_ msg: String) -> some View {
-        VStack(spacing: 16) {
+    /// Calm, human fail state — never a status code or raw error. The ↻ machined
+    /// disc re-triggers the real briefing load (`onRetry` → `startBriefing`), which
+    /// shows the loader again and lands on playback / empty / this state.
+    private var failedState: some View {
+        VStack(spacing: 20) {
             Spacer()
             Text("COULDN'T LOAD BRIEFING")
                 .font(.label(13)).tracking(2)
                 .foregroundColor(ink)
-            Text(msg)
-                .font(.label(11))
+            Text("Something went wrong on our end. Try again in a moment.")
+                .font(.label(12))
                 .foregroundColor(inkMuted)
                 .multilineTextAlignment(.center)
+                .lineSpacing(3)
+                .padding(.horizontal, 32)
             Button(action: onRetry) {
-                Text("TRY AGAIN")
-                    .font(.label(13)).tracking(2)
-                    .foregroundColor(ink)
-                    .padding(.horizontal, 22).padding(.vertical, 11)
-                    .overlay(Capsule().strokeBorder(ink.opacity(0.3), lineWidth: 1))
+                MachinedDisc(diameter: 64) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(BoardColors.character)
+                }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MachinedDiscButtonStyle())
+            .accessibilityLabel("Try again")
+            .padding(.top, 4)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
