@@ -545,11 +545,34 @@ final class BulletinPlayer: NSObject, ObservableObject {
         cc.previousTrackCommand.isEnabled   = true
         cc.changePlaybackPositionCommand.isEnabled = false
 
-        cc.playCommand.addTarget            { [weak self] _ in Task { @MainActor [weak self] in self?.play() };            return .success }
-        cc.pauseCommand.addTarget           { [weak self] _ in Task { @MainActor [weak self] in self?.pause() };           return .success }
-        cc.togglePlayPauseCommand.addTarget { [weak self] _ in Task { @MainActor [weak self] in self?.togglePlayPause() }; return .success }
-        cc.nextTrackCommand.addTarget       { [weak self] _ in Task { @MainActor [weak self] in self?.skip() };            return .success }
-        cc.previousTrackCommand.addTarget   { [weak self] _ in Task { @MainActor [weak self] in self?.skipBack() };        return .success }
+        // Drive each command through the SAME synchronous main-actor path the in-app
+        // buttons use (see `performRemote`) — NOT a detached Task that returns .success
+        // before the action runs. The old Task approach let iOS optimistically flip the
+        // lock-screen button while the real player call + source-of-truth update happened
+        // asynchronously afterwards, so the audio kept playing while the icon toggled and
+        // the in-app state desynced. Running synchronously means the AVPlayer actually
+        // pauses/resumes and playerState / intendedPlaying / now-playing are all updated
+        // before we return, so every surface agrees.
+        cc.playCommand.addTarget            { [weak self] _ in self?.performRemote { $0.play() }            ?? .noSuchContent }
+        cc.pauseCommand.addTarget           { [weak self] _ in self?.performRemote { $0.pause() }           ?? .noSuchContent }
+        cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.performRemote { $0.togglePlayPause() } ?? .noSuchContent }
+        cc.nextTrackCommand.addTarget       { [weak self] _ in self?.performRemote { $0.skip() }            ?? .noSuchContent }
+        cc.previousTrackCommand.addTarget   { [weak self] _ in self?.performRemote { $0.skipBack() }        ?? .noSuchContent }
+    }
+
+    /// Run a remote (lock-screen / Control-Center / headset) transport action on the main
+    /// actor, SYNCHRONOUSLY, so it drives the exact same path as the in-app buttons and
+    /// iOS reads the REAL post-action now-playing state before we return. These commands
+    /// are delivered on the main thread in practice; if ever off-main we hop synchronously
+    /// so the semantics are identical. `nonisolated` so the (non-isolated) command closure
+    /// can call it.
+    nonisolated private func performRemote(_ action: @escaping @MainActor (BulletinPlayer) -> Void) -> MPRemoteCommandHandlerStatus {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { action(self) }
+        } else {
+            DispatchQueue.main.sync { MainActor.assumeIsolated { action(self) } }
+        }
+        return .success
     }
 
     // MARK: - Queue player lifecycle
