@@ -277,9 +277,16 @@ def _emit_completed(
         db.commit()
 
 
+# Bump when the summary SPEC changes (depth word targets / prompt), to invalidate cached
+# summaries so they regenerate at the new length instead of serving the old short ones.
+# The cache key is (story_id, content_hash, model, depth_tier) and depth_tier is the tier
+# NAME — unchanged when only the word target changes — so the version must live in the hash.
+_SUMMARY_SPEC_VERSION = "2"  # v2: depth targets ~doubled for ~10-min Medium (was ~5.5 min)
+
+
 def _compute_content_hash(articles: list[dict]) -> str:
-    """SHA-256 fingerprint of the top-5 article titles + snippets (first 300 chars each)."""
-    parts = []
+    """SHA-256 fingerprint of the summary spec version + top-5 article titles + snippets."""
+    parts = [f"spec:{_SUMMARY_SPEC_VERSION}"]
     for a in articles[:5]:
         title = (a.get("title") or "").strip()
         snippet = (a.get("snippet") or "")[:300].strip()
