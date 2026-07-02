@@ -120,6 +120,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     // MARK: Accessors
 
+    /// THE single definition of "audio is playing", used by every surface (in-app
+    /// transport icon, lock-screen playback rate / MPNowPlayingInfoCenter state) so they
+    /// can never disagree. `.stalled` counts as playing — we're mid-playback buffering,
+    /// not paused — so the icon and the lock screen both read PAUSE during a stall.
+    var isPlaying: Bool { playerState == .playing || playerState == .stalled }
+
     private(set) var manifest: BulletinManifest?
     var storySegments: [ManifestSegment] { _storySegments }
     var storyUnits: [StoryUnit] { _storyUnits }
@@ -139,6 +145,23 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private var _storySegments: [ManifestSegment] = []
     private var _storyUnits: [StoryUnit] = []
     private var _totalStoryDurationSeconds: Double = 0
+
+    // MARK: Private — play intent + navigation serialization
+
+    /// The user's DESIRED play/pause state — the second half of the source of truth.
+    /// It survives queue rebuilds (a seek/skip drops to `.buffering` transiently), so
+    /// resume-after-rebuild decisions consult THIS, never the transient player state.
+    /// Set by play/pause/togglePlayPause and the first-autoplay; the only thing that
+    /// clears it is an explicit pause (or teardown / headphone unplug). Without it, a
+    /// rapid next/prev tap mid-rebuild read `.buffering` as "not playing" and stranded
+    /// the transport paused.
+    private var intendedPlaying = false
+
+    /// Monotonic token bumped on every user navigation (skip / skipBack / seek). A
+    /// seek's async completion captures the token and no-ops if a newer navigation has
+    /// superseded it — so an in-flight rebuild can never clobber a later one (no stale
+    /// resume, no double-advance) when taps come fast.
+    private var navGeneration = 0
 
     // MARK: Private — seek state
 
@@ -184,9 +207,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
     deinit {
         NotificationCenter.default.removeObserver(self)
         let cc = MPRemoteCommandCenter.shared()
-        cc.playCommand.removeTarget(self)
-        cc.pauseCommand.removeTarget(self)
-        cc.nextTrackCommand.removeTarget(self)
+        [cc.playCommand, cc.pauseCommand, cc.togglePlayPauseCommand,
+         cc.nextTrackCommand, cc.previousTrackCommand].forEach { $0.removeTarget(nil) }
     }
 
     // MARK: - Public API
@@ -318,11 +340,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
         loadProgress = model.progress
         setupQueuePlayer()
         activateAudioSession()
+        intendedPlaying = true          // first autoplay — the user's intent is "playing"
         player?.play()
         // Reflect playback in state directly — audio is gated-ready, so don't wait for
         // a timeControlStatus(.playing) edge (AVQueuePlayer may not emit one). This snaps
-        // the loader to complete and shows the transport with the correct pause icon.
-        // handleTimeControlStatus still handles genuine stalls/resumes from here.
+        // the loader to complete and shows the transport with the correct PAUSE icon on
+        // first load. handleTimeControlStatus still handles genuine stalls/resumes.
         loadProgress = 1.0
         playerState = .playing
     }
@@ -359,6 +382,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
     func play() {
         switch playerState {
         case .buffering, .paused, .stalled:
+            intendedPlaying = true
             activateAudioSession()
             player?.play()
             playerState = .playing   // reflect immediately (incl. stall-resume) — don't wait for a KVO edge
@@ -368,6 +392,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     }
 
     func pause() {
+        // Record intent even if we can't act this instant (e.g. mid-rebuild `.buffering`):
+        // a pause tap must stick so an in-flight rebuild doesn't auto-resume against it.
+        intendedPlaying = false
         guard playerState == .playing || playerState == .stalled else { return }
         player?.pause()
         cancelStallTimer()
@@ -375,35 +402,21 @@ final class BulletinPlayer: NSObject, ObservableObject {
     }
 
     func togglePlayPause() {
-        if playerState == .playing || playerState == .stalled { pause() } else { play() }
+        if isPlaying { pause() } else { play() }
     }
 
+    /// Next → the next story's content. Routed through the SAME index-based navigation
+    /// primitive as Previous/seek (not a raw advanceToNextItem on the live queue), so it
+    /// stays correct even mid-rebuild and rapid taps serialize through the nav token —
+    /// no dropped taps, no double-advance, no advancing into a half-built queue. Starts
+    /// at the story part (offset = the bridge length) so it skips the transition, exactly
+    /// as the old queue-based skip landed. seekToStoryUnit fires the "skipped" event for
+    /// the current story and sets prevOutcome = .userSkip.
     func skip() {
-        guard let p = player else { return }
-
-        // Fire skipped event for the current story before advancing.
-        if let seg = currentSegment, seg.isStory, let hash = seg.storyHash {
-            let ev = StoryEvent(storyHash: hash, action: "skipped", positionPct: currentPositionPct)
-            fireEvent(ev)
-            accumulatedEvents.append(ev)
-        }
-        prevOutcome = .userSkip
-
-        // Remove the following transition (if any) so we land on the next story.
-        let items = p.items()
-        if items.count >= 2 {
-            let next = items[1]
-            if let nextSeg = itemSegmentMap[ObjectIdentifier(next)], nextSeg.type == "transition" {
-                let key = ObjectIdentifier(next)
-                p.remove(next)
-                itemObservations.removeValue(forKey: key)
-                itemSegmentMap.removeValue(forKey: key)
-                // Fill the gap with the next un-enqueued segment.
-                enqueueNext()
-            }
-        }
-
-        p.advanceToNextItem()
+        guard !_storyUnits.isEmpty else { return }
+        let next = currentUnitIndex + 1
+        guard next < _storyUnits.count else { return }   // already on the last story
+        seekToStoryUnit(at: next, offsetSeconds: _storyUnits[next].transitionDurationSeconds)
     }
 
     func stop() {
@@ -479,9 +492,15 @@ final class BulletinPlayer: NSObject, ObservableObject {
             guard let self else { return }
             switch type {
             case .began:
-                if self.playerState == .playing { self.player?.pause(); self.playerState = .paused }
+                // Pause the ENGINE but keep `intendedPlaying` — we still want to be
+                // playing, so we resume on .ended unless the user pauses meanwhile.
+                if self.playerState == .playing || self.playerState == .stalled {
+                    self.player?.pause(); self.cancelStallTimer(); self.playerState = .paused
+                }
             case .ended:
-                if shouldResume { self.play() }
+                // Resume only if the system says so AND the user still intends to play
+                // (a manual pause during the interruption clears the intent → stay paused).
+                if shouldResume && self.intendedPlaying { self.play() }
             @unknown default: break
             }
         }
@@ -492,8 +511,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
               let raw = ui[AVAudioSessionRouteChangeReasonKey] as? UInt,
               AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
         Task { @MainActor [weak self] in
-            guard let self, self.playerState == .playing else { return }
+            guard let self, self.playerState == .playing || self.playerState == .stalled else { return }
+            // Headphones unplugged: pause and DON'T auto-resume when re-plugged — clear
+            // the intent so the user has to press play again (standard behaviour).
+            self.intendedPlaying = false
             self.player?.pause()
+            self.cancelStallTimer()
             self.playerState = .paused
         }
     }
@@ -502,16 +525,31 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     private func setupRemoteCommands() {
         let cc = MPRemoteCommandCenter.shared()
-        // MPRemoteCommandCenter may deliver these off the main thread. Hop to the main
-        // actor before touching @Published playerState — otherwise a lock-screen /
-        // Control Center tap mutates it off-main and the in-app icon strands/desyncs
-        // (same fix already applied to the AVAudioSession notification handlers above).
-        cc.playCommand.addTarget  { [weak self] _ in Task { @MainActor [weak self] in self?.play() };  return .success }
-        cc.pauseCommand.addTarget { [weak self] _ in Task { @MainActor [weak self] in self?.pause() }; return .success }
-        cc.nextTrackCommand.addTarget { [weak self] _ in Task { @MainActor [weak self] in self?.skip() }; return .success }
-        cc.nextTrackCommand.isEnabled      = true
-        cc.previousTrackCommand.isEnabled  = false
+        // Clear any prior handlers first. Block-based addTarget can't be removed by
+        // `self` (it registers an internal target), so `removeTarget(nil)` is the only
+        // way to guarantee EXACTLY ONE handler set is live — otherwise a replaced player
+        // would leave stale handlers on the shared command center.
+        let commands = [cc.playCommand, cc.pauseCommand, cc.togglePlayPauseCommand,
+                        cc.nextTrackCommand, cc.previousTrackCommand]
+        commands.forEach { $0.removeTarget(nil) }
+
+        // All four transport controls ENABLED on the lock screen / Control Center — none
+        // greyed out — and wired to the SAME methods as the in-app buttons. Each hops to
+        // the main actor before touching @Published state, so a lock-screen tap never
+        // mutates it off-main (which silently breaks SwiftUI observation on device and
+        // strands the in-app icon). togglePlayPause covers headset/CarPlay centre-button.
+        cc.playCommand.isEnabled            = true
+        cc.pauseCommand.isEnabled           = true
+        cc.togglePlayPauseCommand.isEnabled = true
+        cc.nextTrackCommand.isEnabled       = true
+        cc.previousTrackCommand.isEnabled   = true
         cc.changePlaybackPositionCommand.isEnabled = false
+
+        cc.playCommand.addTarget            { [weak self] _ in Task { @MainActor [weak self] in self?.play() };            return .success }
+        cc.pauseCommand.addTarget           { [weak self] _ in Task { @MainActor [weak self] in self?.pause() };           return .success }
+        cc.togglePlayPauseCommand.addTarget { [weak self] _ in Task { @MainActor [weak self] in self?.togglePlayPause() }; return .success }
+        cc.nextTrackCommand.addTarget       { [weak self] _ in Task { @MainActor [weak self] in self?.skip() };            return .success }
+        cc.previousTrackCommand.addTarget   { [weak self] _ in Task { @MainActor [weak self] in self?.skipBack() };        return .success }
     }
 
     // MARK: - Queue player lifecycle
@@ -577,10 +615,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
         accumulatedEvents    = []
         prevOutcome          = .natural
         lastSkipBackTime     = nil
+        intendedPlaying      = false
+        navGeneration       &+= 1        // invalidate any in-flight seek completion
         _profileId           = nil
         _bulletinId          = nil
         playerState          = .idle
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
     }
 
     // MARK: - Sliding window enqueue
@@ -773,7 +814,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
         let clamped = max(0, min(index, _storyUnits.count - 1))
         guard clamped < _storyUnits.count, let p = player else { return }
         let unit = _storyUnits[clamped]
-        let wasPlaying = playerState == .playing || playerState == .stalled
+
+        // Bump the navigation token: any earlier in-flight seek's async completion will
+        // now no-op, so rapid taps can't clobber each other (no stale resume / double
+        // advance). Resume is decided by the LIVE `intendedPlaying`, not a snapshot — so
+        // a pause landing mid-rebuild sticks, and a rapid tap while playing still resumes.
+        navGeneration &+= 1
+        let gen = navGeneration
 
         // Fire skipped event for the current story when seeking forward.
         if clamped > storyIndex, let seg = currentSegment, seg.isStory,
@@ -821,22 +868,27 @@ final class BulletinPlayer: NSObject, ObservableObject {
             let t = CMTime(seconds: seekSeconds, preferredTimescale: 600)
             p.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if wasPlaying {
-                        self.player?.play()
-                        // Set .playing directly — the removeAllItems()→re-enqueue and the
-                        // in-buffer seek can leave timeControlStatus already .playing, so the
-                        // KVO edge may never fire and the state would strand at .buffering.
-                        self.playerState = .playing
-                    }
+                    guard let self, gen == self.navGeneration else { return }   // superseded → drop
+                    self.resumeAfterSeekIfIntended()
                 }
             }
         } else {
-            if wasPlaying {
-                p.play()
-                playerState = .playing   // see note above — don't depend on a KVO edge
-            }
+            resumeAfterSeekIfIntended()
         }
+    }
+
+    /// Resume playback after a seek/rebuild IFF the user still intends to be playing.
+    /// Reads `intendedPlaying` live (not a snapshot) so a pause that landed during the
+    /// rebuild wins. Sets `.playing` directly — the removeAllItems()→re-enqueue and the
+    /// in-buffer seek can leave timeControlStatus already `.playing`, so the KVO edge may
+    /// never fire and the state would otherwise strand at `.buffering`. If not intended,
+    /// we leave `.buffering` (paused audio at the new position, PLAY icon) — the
+    /// currentItemChanged(nil) guard relies on it not being a played state yet.
+    private func resumeAfterSeekIfIntended() {
+        guard intendedPlaying else { return }
+        activateAudioSession()
+        player?.play()
+        playerState = .playing
     }
 
     /// Seek to a fraction (0–1) across the story-unit timeline.
@@ -962,8 +1014,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
     // MARK: - Lock screen
 
     private func updateNowPlaying() {
+        let center = MPNowPlayingInfoCenter.default()
         guard let seg = currentSegment else {
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            center.nowPlayingInfo = nil
+            center.playbackState = .stopped
             return
         }
         let title = seg.isStory ? (seg.title ?? "Headlines") : "Headlines"
@@ -973,13 +1027,17 @@ final class BulletinPlayer: NSObject, ObservableObject {
             MPMediaItemPropertyArtwork:                 Self.lockScreenArtwork,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: positionSeconds,
             MPMediaItemPropertyPlaybackDuration:        seg.durationSeconds,
-            MPNowPlayingInfoPropertyPlaybackRate:       (playerState == .playing) ? 1.0 : 0.0,
+            // Rate + playbackState derive from the SAME `isPlaying` as the in-app icon,
+            // so the lock screen can never show PLAY while the app shows PAUSE (and vice
+            // versa) — including during a `.stalled` (mid-playback buffering) beat.
+            MPNowPlayingInfoPropertyPlaybackRate:       isPlaying ? 1.0 : 0.0,
         ]
         if seg.isStory, storyCount > 0 {
             info[MPNowPlayingInfoPropertyChapterNumber] = storyIndex + 1
             info[MPNowPlayingInfoPropertyChapterCount]  = storyCount
         }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        center.nowPlayingInfo = info
+        center.playbackState = isPlaying ? .playing : .paused
     }
 
     /// Lock-screen / Control-Center artwork (#4): the now-playing card was blank.
