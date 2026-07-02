@@ -34,7 +34,7 @@ struct NowPlayingView: View {
     @State private var loaderStart = Date()
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottomTrailing) {
             pageBG.ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -55,6 +55,40 @@ struct NowPlayingView: View {
                 }
             }
             .padding(.horizontal, 20)
+
+            // Always-visible transport debug readout (Part A). Semi-transparent, tiny,
+            // non-interactive → screenshot after each tap to SEE the live state.
+            transportDebugOverlay
+        }
+    }
+
+    // MARK: - 🎯 Transport debug readout (TEMPORARY — visible in Release for screenshots)
+
+    private var transportDebugOverlay: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            debugRow("intent", player.intendedPlaying ? "playing" : "paused")
+            debugRow("icon",   player.isPlaying ? "PAUSE" : "PLAY")
+            debugRow("state",  player.debugStateLabel)
+            debugRow("audio",  player.audioActuallyPlaying ? "Y" : "N")
+            debugRow("idx",    "\(player.currentUnitIndex)")
+            debugRow("last",   player.lastTransportEvent)
+        }
+        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+        .foregroundColor(.white)
+        .padding(6)
+        .frame(maxWidth: 180, alignment: .leading)
+        .background(Color.black.opacity(0.62))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .allowsHitTesting(false)          // never intercept taps meant for the transport
+        .padding(.trailing, 8)
+        .padding(.bottom, 8)
+    }
+
+    private func debugRow(_ key: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 4) {
+            Text(key + ":").foregroundColor(.white.opacity(0.55))
+            Text(value).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
     }
 

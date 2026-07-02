@@ -163,9 +163,28 @@ final class BulletinPlayer: NSObject, ObservableObject {
         "intent=\(intendedPlaying ? "Y" : "N") state=\(txDesc(playerState)) ICON=\(isPlaying ? "PAUSE" : "PLAY") idx=\(currentUnitIndex) audioPlaying=\(txAudioPlaying ? "Y" : "N")"
     }
 
-    /// Public tap tagger — call from the in-app buttons / remote handlers so the log names
-    /// the trigger + surface before the action mutates state.
-    func logTransport(_ trigger: String) { print("🎯TX \(trigger) | \(txLine())") }
+    // ── On-screen debug readout (Part A) — published so the overlay updates live ──────
+    /// The last transport trigger that fired (e.g. "tap:NEXT [IN-APP]", "remote:PAUSE
+    /// [LOCK]", "play()→RESTART", "KVO END-of-briefing"). Names WHAT last happened so a
+    /// screenshot tells us what fired.
+    @Published private(set) var lastTransportEvent: String = "—"
+    /// Live mirror of the AVPlayer's timeControlStatus == .playing (whether audio is truly
+    /// advancing). @Published (updated from the timeControlStatus KVO) so the overlay
+    /// reflects it in real time, not only when another @Published field changes.
+    @Published private(set) var audioActuallyPlaying: Bool = false
+    /// Short playerState name for the overlay.
+    var debugStateLabel: String { "." + txDesc(playerState) }
+
+    /// Record a spontaneous (non-tap) transport event for the overlay — used where the
+    /// trigger doesn't already flow through `logTransport` (KVO end, play→restart, system).
+    private func noteEvent(_ s: String) { lastTransportEvent = s }
+
+    /// Public tap tagger — call from the in-app buttons / remote handlers so BOTH the
+    /// console log AND the on-screen `lastTransportEvent` name the trigger + surface.
+    func logTransport(_ trigger: String) {
+        lastTransportEvent = trigger
+        print("🎯TX \(trigger) | \(txLine())")
+    }
 
     private struct TXBefore { let intent: Bool; let state: String }
     private func txBefore() -> TXBefore { TXBefore(intent: intendedPlaying, state: txDesc(playerState)) }
@@ -466,6 +485,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
             // → stories → outro). No dead button — in-app and lock-screen play both land
             // here (same path via performRemote → play()).
             txAfter("play()", b, "→ROUTE restartFromBeginning (playerState was .ended)")
+            noteEvent("play()→RESTART (was .ended)")
             restartFromBeginning()
         default:
             txAfter("play()", b, "→NOOP (playerState=\(txDesc(playerState)) not resumable)")
@@ -619,10 +639,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
                     self.player?.pause(); self.cancelStallTimer(); self.playerState = .paused
                 }
                 self.txAfter("interruption.BEGAN", b, "(intent kept)")
+                self.noteEvent("SYS interruption BEGAN (pause, intent kept)")
             case .ended:
                 // Resume only if the system says so AND the user still intends to play
                 // (a manual pause during the interruption clears the intent → stay paused).
                 self.txAfter("interruption.ENDED", b, "(shouldResume=\(shouldResume) intent=\(self.intendedPlaying ? "Y" : "N") → \(shouldResume && self.intendedPlaying ? "play()" : "stay"))")
+                self.noteEvent("SYS interruption ENDED (\(shouldResume && self.intendedPlaying ? "resume" : "stay"))")
                 if shouldResume && self.intendedPlaying { self.play() }
             @unknown default: break
             }
@@ -643,6 +665,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
             self.cancelStallTimer()
             self.playerState = .paused
             self.txAfter("routeChange.OLD-DEVICE-UNAVAILABLE", b, "(unplug → pause + clear intent)")
+            self.noteEvent("SYS unplug → pause (intent→N)")
         }
     }
 
@@ -887,6 +910,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
             playerState    = .ended
             updateNowPlaying()
             txAfter("KVO:currentItem→nil END-OF-BRIEFING", b, "(intent FLIPPED to N — the one non-user flip)")
+            noteEvent("KVO END-of-briefing (intent→N)")
             return
         }
 
@@ -910,6 +934,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     private func handleTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
         let b = txBefore()
+        audioActuallyPlaying = (status == .playing)   // live "audio: Y/N" for the overlay
         let statusName = status == .playing ? "playing" : status == .paused ? "paused" : "waitingToPlay"
         switch status {
         case .playing:
