@@ -110,6 +110,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
     @Published private(set) var currentPositionPct: Double = 0
     /// Position (0–1) across the entire story-unit timeline (wrappers excluded).
     @Published private(set) var globalPositionPct: Double = 0
+    /// Elapsed seconds across the FULL audio timeline — every segment, intro → stories →
+    /// outro. Counts from the moment audio starts (the greeting), so the timer/bar advance
+    /// continuously from 0 like a podcast player (the story-only globalPositionPct left the
+    /// intro as dead 0:00 time). Paired with `totalDurationSeconds`.
+    @Published private(set) var playbackElapsedSeconds: Double = 0
     /// Story units that have been consumed (furthest position ≥ threshold) this session.
     @Published private(set) var consumedStoryHashes: Set<String> = []
     /// Index of the story unit the playhead is currently in (updated on transition entry too).
@@ -130,6 +135,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
     var storySegments: [ManifestSegment] { _storySegments }
     var storyUnits: [StoryUnit] { _storyUnits }
     var totalStoryDurationSeconds: Double { _totalStoryDurationSeconds }
+    /// Every segment in play order (intro, transitions, stories, outro) — the full audio
+    /// timeline the scrubber renders so progress moves from the very first second.
+    var allSegments: [ManifestSegment] { segments }
+    /// Total duration of the FULL audio (all segments), for the podcast-style timer/bar.
+    var totalDurationSeconds: Double { _totalDurationSeconds }
     var profileId: Int? { _profileId }
     var bulletinId: Int? { _bulletinId }
 
@@ -145,6 +155,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private var _storySegments: [ManifestSegment] = []
     private var _storyUnits: [StoryUnit] = []
     private var _totalStoryDurationSeconds: Double = 0
+    // Full audio timeline (all segments, in play order): total duration + each segment's
+    // cumulative start, keyed by segment.index. Used for the podcast-style elapsed/bar.
+    private var _totalDurationSeconds: Double = 0
+    private var _fullStartByIndex: [Int: Double] = [:]
 
     // MARK: Private — play intent + navigation serialization
 
@@ -232,6 +246,15 @@ final class BulletinPlayer: NSObject, ObservableObject {
             _storySegments = segments.filter { $0.isStory }
             _storyUnits = Self.buildStoryUnits(from: segments)
             _totalStoryDurationSeconds = _storyUnits.reduce(0) { $0 + $1.totalDurationSeconds }
+            // Full audio timeline: cumulative start per segment + total (intro..outro).
+            _fullStartByIndex = [:]
+            var acc = 0.0
+            for seg in segments {
+                _fullStartByIndex[seg.index] = acc
+                acc += seg.durationSeconds
+            }
+            _totalDurationSeconds = acc
+            playbackElapsedSeconds = 0
             storyCount = _storySegments.count
             storyIndex = 0
             currentUnitIndex = 0
@@ -545,11 +568,34 @@ final class BulletinPlayer: NSObject, ObservableObject {
         cc.previousTrackCommand.isEnabled   = true
         cc.changePlaybackPositionCommand.isEnabled = false
 
-        cc.playCommand.addTarget            { [weak self] _ in Task { @MainActor [weak self] in self?.play() };            return .success }
-        cc.pauseCommand.addTarget           { [weak self] _ in Task { @MainActor [weak self] in self?.pause() };           return .success }
-        cc.togglePlayPauseCommand.addTarget { [weak self] _ in Task { @MainActor [weak self] in self?.togglePlayPause() }; return .success }
-        cc.nextTrackCommand.addTarget       { [weak self] _ in Task { @MainActor [weak self] in self?.skip() };            return .success }
-        cc.previousTrackCommand.addTarget   { [weak self] _ in Task { @MainActor [weak self] in self?.skipBack() };        return .success }
+        // Drive each command through the SAME synchronous main-actor path the in-app
+        // buttons use (see `performRemote`) — NOT a detached Task that returns .success
+        // before the action runs. The old Task approach let iOS optimistically flip the
+        // lock-screen button while the real player call + source-of-truth update happened
+        // asynchronously afterwards, so the audio kept playing while the icon toggled and
+        // the in-app state desynced. Running synchronously means the AVPlayer actually
+        // pauses/resumes and playerState / intendedPlaying / now-playing are all updated
+        // before we return, so every surface agrees.
+        cc.playCommand.addTarget            { [weak self] _ in self?.performRemote { $0.play() }            ?? .noSuchContent }
+        cc.pauseCommand.addTarget           { [weak self] _ in self?.performRemote { $0.pause() }           ?? .noSuchContent }
+        cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.performRemote { $0.togglePlayPause() } ?? .noSuchContent }
+        cc.nextTrackCommand.addTarget       { [weak self] _ in self?.performRemote { $0.skip() }            ?? .noSuchContent }
+        cc.previousTrackCommand.addTarget   { [weak self] _ in self?.performRemote { $0.skipBack() }        ?? .noSuchContent }
+    }
+
+    /// Run a remote (lock-screen / Control-Center / headset) transport action on the main
+    /// actor, SYNCHRONOUSLY, so it drives the exact same path as the in-app buttons and
+    /// iOS reads the REAL post-action now-playing state before we return. These commands
+    /// are delivered on the main thread in practice; if ever off-main we hop synchronously
+    /// so the semantics are identical. `nonisolated` so the (non-isolated) command closure
+    /// can call it.
+    nonisolated private func performRemote(_ action: @escaping @MainActor (BulletinPlayer) -> Void) -> MPRemoteCommandHandlerStatus {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { action(self) }
+        } else {
+            DispatchQueue.main.sync { MainActor.assumeIsolated { action(self) } }
+        }
+        return .success
     }
 
     // MARK: - Queue player lifecycle
@@ -604,6 +650,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
         _storySegments = []
         _storyUnits    = []
         _totalStoryDurationSeconds = 0
+        _totalDurationSeconds = 0
+        _fullStartByIndex = [:]
+        playbackElapsedSeconds = 0
         storyCount     = 0
         storyIndex     = 0
         currentUnitIndex     = 0
@@ -716,6 +765,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
         currentSegment     = seg
         positionSeconds    = 0
         currentPositionPct = 0
+        // Snap full-timeline elapsed to this segment's start so the bar tracks segment
+        // advances immediately (not one periodic tick later).
+        if let seg { playbackElapsedSeconds = _fullStartByIndex[seg.index] ?? playbackElapsedSeconds }
 
         if let seg {
             if let unit = storyUnit(forSegment: seg) {
@@ -760,6 +812,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
         let secs = CMTimeGetSeconds(time)
         guard secs.isFinite else { return }
         positionSeconds = secs
+
+        // Full-timeline elapsed = this segment's start (intro included) + position within it.
+        if let seg = currentSegment {
+            playbackElapsedSeconds = (_fullStartByIndex[seg.index] ?? 0) + secs
+        }
 
         if let seg = currentSegment, seg.isStory {
             currentPositionPct = seg.durationSeconds > 0 ? min(1.0, secs / seg.durationSeconds) : 0
@@ -892,6 +949,41 @@ final class BulletinPlayer: NSObject, ObservableObject {
     }
 
     /// Seek to a fraction (0–1) across the story-unit timeline.
+    /// Seek to a fraction (0–1) across the FULL audio timeline (the scrubber's timeline,
+    /// intro → stories → outro). Maps the target to the segment it lands in; a story/
+    /// transition seeks to that story unit at the right offset, a leading wrapper (intro/
+    /// sting) seeks to the first story, a trailing wrapper (outro) to the last.
+    func seekToFullFraction(_ fraction: Double) {
+        guard _totalDurationSeconds > 0, !segments.isEmpty, !_storyUnits.isEmpty else { return }
+        let target = max(0, min(1, fraction)) * _totalDurationSeconds
+
+        // Find the segment containing `target`.
+        var hit: ManifestSegment = segments[segments.count - 1]
+        var offsetInSeg = target - (_fullStartByIndex[hit.index] ?? 0)
+        for seg in segments {
+            let start = _fullStartByIndex[seg.index] ?? 0
+            if target < start + seg.durationSeconds {
+                hit = seg
+                offsetInSeg = target - start
+                break
+            }
+        }
+
+        if let unit = storyUnit(forSegment: hit) {
+            let offsetInUnit: Double
+            if let trans = unit.transitionSegment, hit.index == trans.index {
+                offsetInUnit = max(0, offsetInSeg)                                  // inside the bridge
+            } else {
+                offsetInUnit = unit.transitionDurationSeconds + max(0, offsetInSeg) // inside the story
+            }
+            seekToStoryUnit(at: unit.index, offsetSeconds: offsetInUnit)
+        } else {
+            // Wrapper (intro/sting/outro): jump to the nearest story unit.
+            let firstStoryStart = _storyUnits.first.map { _fullStartByIndex[$0.storySegment.index] ?? 0 } ?? 0
+            seekToStoryUnit(at: target < firstStoryStart ? 0 : _storyUnits.count - 1)
+        }
+    }
+
     func seekToGlobalFraction(_ fraction: Double) {
         guard !_storyUnits.isEmpty, _totalStoryDurationSeconds > 0 else { return }
         let targetSecs = max(0, min(1, fraction)) * _totalStoryDurationSeconds
@@ -1090,23 +1182,33 @@ final class BulletinPlayer: NSObject, ObservableObject {
 /// them; a slow prepare exceeds it and extends stage 4. Consumed by the gate (hold) and
 /// NowPlayingView (stage word + determinate bar).
 enum LoaderTiming {
-    static let stageSeconds: Double = 1.3        // fixed duration of each of stages 1–3 (short + readable)
-    static let visibleStages: Int = 4            // 1–3 evenly timed; 4 dwells until ready
-    static var minLoaderSeconds: Double { stageSeconds * Double(visibleStages) }
+    // ~12s is the expected generation time. The loader lays its stages out EVENLY over
+    // that window: `pacedStages` stages, one every `stageSeconds`, so the sequence looks
+    // like steady progress (no single stage dwelling 5–6s alone). `visibleStages` adds one
+    // final DWELL stage after the expected window — it's the only stage allowed to hold,
+    // absorbing the wait when generation runs long. If generation is faster, the gate
+    // dismisses the loader on readiness (no forced hold beyond `minLoaderSeconds`).
+    static let stageSeconds: Double = 3.0        // each paced stage (evenly spaced, readable)
+    static let pacedStages: Int = 4              // evenly-timed stages covering ~0–12s
+    static var visibleStages: Int { pacedStages + 1 }   // + a final dwell stage for overrun
+    static var expectedSeconds: Double { stageSeconds * Double(pacedStages) }   // ~12s
+    // Small floor so a cached/instant briefing shows a readable stage or two rather than
+    // flashing — but NOT the full 12s (a fast briefing dismisses on ready).
+    static var minLoaderSeconds: Double { stageSeconds * 2 }
 
     /// Which stage (0-based) is showing at `elapsed` seconds — PURELY from the timer, not
-    /// backend progress. Advances one stage per `stageSeconds`, clamped at the last stage
-    /// (which then holds until the gate dismisses the loader on readiness).
+    /// backend progress. Advances one stage every `stageSeconds` (evenly), clamped at the
+    /// final dwell stage, which then holds until the gate dismisses the loader on readiness.
     static func stageIndex(elapsed: Double) -> Int {
         max(0, min(visibleStages - 1, Int(elapsed / stageSeconds)))
     }
 
-    /// Determinate bar fill (0–1) at `elapsed` seconds — also elapsed-driven, so it moves
-    /// in even quarters (≈0.25 / 0.5 / 0.75 at the stage boundaries) and eases toward a
-    /// sub-1.0 ceiling during stage 4. It never sits at 100% in silence; audio starting
-    /// dismisses the whole loader.
+    /// Determinate bar fill (0–1) at `elapsed` seconds — elapsed-driven toward the ~12s
+    /// expectation, so it reads as steady progress and reaches ~full around when a typical
+    /// generation is ready. Capped < 1.0 so it never sits at 100% in silence; audio
+    /// starting dismisses the whole loader.
     static func barFill(elapsed: Double) -> Double {
-        min(0.97, elapsed / (stageSeconds * Double(visibleStages)))
+        min(0.97, elapsed / expectedSeconds)
     }
 }
 
