@@ -34,7 +34,7 @@ struct NowPlayingView: View {
     @State private var loaderStart = Date()
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack {
             pageBG.ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -55,40 +55,6 @@ struct NowPlayingView: View {
                 }
             }
             .padding(.horizontal, 20)
-
-            // Always-visible transport debug readout (Part A). Semi-transparent, tiny,
-            // non-interactive → screenshot after each tap to SEE the live state.
-            transportDebugOverlay
-        }
-    }
-
-    // MARK: - 🎯 Transport debug readout (TEMPORARY — visible in Release for screenshots)
-
-    private var transportDebugOverlay: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            debugRow("intent", player.intendedPlaying ? "playing" : "paused")
-            debugRow("icon",   player.isPlaying ? "PAUSE" : "PLAY")
-            debugRow("state",  player.debugStateLabel)
-            debugRow("audio",  player.audioActuallyPlaying ? "Y" : "N")
-            debugRow("idx",    "\(player.currentUnitIndex)")
-            debugRow("last",   player.lastTransportEvent)
-        }
-        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-        .foregroundColor(.white)
-        .padding(6)
-        .frame(maxWidth: 180, alignment: .leading)
-        .background(Color.black.opacity(0.62))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .allowsHitTesting(false)          // never intercept taps meant for the transport
-        .padding(.trailing, 8)
-        .padding(.bottom, 8)
-    }
-
-    private func debugRow(_ key: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 4) {
-            Text(key + ":").foregroundColor(.white.opacity(0.55))
-            Text(value).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
         }
     }
 
@@ -174,10 +140,11 @@ struct NowPlayingView: View {
     /// the paced stages are evenly timed and only the last stage dwells to absorb the wait.
     private var preparingState: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 16)
-            // Board + progress bar are ONE coupled card unit: the bar sits directly beneath
-            // the Solari board (fixed 18pt gap — the same rhythm as the playback card's
-            // scrubber under the now-playing card), NOT floating at the bottom of the screen.
+            // Board + progress bar are ONE coupled card unit, PINNED TO THE TOP at the same
+            // vertical level as the playback now-playing card (Spacer(16) → card), with the
+            // bar 18pt beneath — the same rhythm as the scrubber under that card. So the
+            // loader "transforms" seamlessly into the playback screen: board where the card
+            // appears, bar where the scrubber appears. The rest of the screen is empty below.
             VStack(spacing: 18) {
                 // STAGE WORD — one stage per `stageSeconds` on a plain timer (coarse cadence
                 // is enough; the word only changes at stage boundaries). NOT loadProgress.
@@ -185,13 +152,16 @@ struct NowPlayingView: View {
                     let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
                     loaderBoard(lineIndex: LoaderTiming.stageIndex(elapsed: elapsed))
                 }
-                // DETERMINATE BAR — elapsed-driven, finer cadence so the fill reads continuous.
+                // DETERMINATE BAR — even step per stage (LoaderTiming.barFill); the final
+                // raise to 100% happens on ready (player.loaderComplete). The bar's own
+                // .animation ramps each step so the climb reads smooth + steady.
                 TimelineView(.periodic(from: loaderStart, by: 0.05)) { ctx in
                     let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
-                    loaderProgressBar(fill: LoaderTiming.barFill(elapsed: elapsed))
+                    loaderProgressBar(fill: player.loaderComplete ? 1.0 : LoaderTiming.barFill(elapsed: elapsed))
                 }
             }
-            Spacer(minLength: 16)
+            .padding(.top, 16)   // pin to the top — same level as the playback card
+            Spacer(minLength: 0) // empty space below
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -248,6 +218,9 @@ struct NowPlayingView: View {
                     Capsule().fill(ink.opacity(0.12))
                     Capsule().fill(ink)
                         .frame(width: max(0, geo.size.width * fill))
+                        // Ramp each per-stage step (and the final raise to 100%) so the bar
+                        // reads as a smooth, steady climb rather than a hard jump.
+                        .animation(.easeInOut(duration: 0.55), value: fill)
                 }
             }
             .frame(height: 4)
@@ -446,7 +419,7 @@ struct NowPlayingView: View {
                 total: player.totalDurationSeconds,
                 elapsed: player.playbackElapsedSeconds,
                 ink: ink,
-                onSeek: { frac in player.logTransport("tap:SCRUB [IN-APP]"); player.seekToFullFraction(frac) }
+                onSeek: { frac in player.seekToFullFraction(frac) }
             )
             .frame(height: 6)
 
@@ -466,9 +439,9 @@ struct NowPlayingView: View {
 
     private var transport: some View {
         HStack(spacing: 44) {
-            transportButton(system: "backward.end.fill") { player.logTransport("tap:PREV [IN-APP]"); player.skipBack() }
+            transportButton(system: "backward.end.fill") { player.skipBack() }
             playPauseButton
-            transportButton(system: "forward.end.fill") { player.logTransport("tap:NEXT [IN-APP]"); player.skip() }
+            transportButton(system: "forward.end.fill") { player.skip() }
         }
     }
 
@@ -486,7 +459,7 @@ struct NowPlayingView: View {
     private var playPauseButton: some View {
         let isPlaying = player.isPlaying   // single source of truth (matches lock screen)
         let diameter: CGFloat = 76
-        return Button(action: { player.logTransport("tap:PLAYPAUSE [IN-APP]"); player.togglePlayPause() }) {
+        return Button(action: { player.togglePlayPause() }) {
             ZStack {
                 Circle()
                     .fill(RadialGradient(
@@ -552,7 +525,7 @@ struct NowPlayingView: View {
         let titleColor = isPlayed ? ink.opacity(0.32) : ink
         let numColor = isCurrent ? ink : inkMuted
         return Button {
-            player.logTransport("tap:ROW\(idx) [IN-APP]"); player.playStoryUnit(at: idx)
+            player.playStoryUnit(at: idx)
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Text(String(format: "%02d", idx + 1))
