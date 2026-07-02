@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.anthropic.com/v1/messages"
 _API_VERSION = "2023-06-01"
-_MAX_TOKENS = 950
+# Headroom for the longest structured output: a ~260-word lead audio_script plus
+# summary_text + why_it_matters. 950 would truncate the deeper tiers (see DEPTH_TIERS).
+# max_tokens is a ceiling — only actual output is billed — so a generous cap is safe.
+_MAX_TOKENS = 2000
 _TIMEOUT_SECONDS = 20
 
 
@@ -141,17 +144,18 @@ _TONE_GUIDANCE: dict[str, str] = {
 # in the bulletin: the lead gets a full treatment, the tail a sentence or two.
 _DEPTH_SPEC: dict[str, str] = {
     "lead":
-        "  ~120 words, 4–6 sentences — the LEAD story: full treatment. Hook first "
-        "sentence, develop with specific facts, forward-looking close.",
+        "  ~260 words, 9–13 sentences — the LEAD story: full treatment. Hook first "
+        "sentence, develop with specific facts, context and the key players, then a "
+        "forward-looking close. This is the anchor of the bulletin — give it room.",
     "major":
-        "  ~80 words, 3–4 sentences. Hook, two or three key facts, one line of why "
-        "it matters. Tighter than the lead.",
+        "  ~180 words, 7–9 sentences. Hook, the key facts with context, and why it "
+        "matters. A full report, just tighter than the lead.",
     "standard":
-        "  ~50 words, 2–3 sentences. The headline fact and its immediate significance. "
-        "No padding.",
+        "  ~110 words, 4–6 sentences. The headline facts, the immediate significance, "
+        "and a line of context. Rounded, not clipped.",
     "brief":
-        "  ~25 words, 1–2 sentences. A single essential fact, briskly — 'also today…'. "
-        "One crisp sentence is fine.",
+        "  ~55 words, 2–3 sentences. The essential facts, briskly — 'also today…'. "
+        "Crisp but complete.",
 }
 
 
