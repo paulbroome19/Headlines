@@ -31,6 +31,7 @@ from core.pipeline.data.bulletin.repos.user_story_state_repo import (
 from core.pipeline.data.bulletin.assembler import assemble
 from core.pipeline.data.bulletin.connective import generate_connective, uk_now
 from core.pipeline.data.bulletin.edition import resolve_daily_edition
+from core.pipeline.data.bulletin.editorial_review import apply_editorial, editorial_adjustments
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
@@ -536,6 +537,7 @@ def _threshold_select_with_depth(
     exclude_categories: list[str] | None,
     preset: str,
     pool_size: int | None = None,
+    ranking_run_id: int | None = None,
 ) -> tuple[list[dict], dict[str, tuple[str, int]]]:
     """
     The new day-level selection: score fresh candidates (coverage-driven), then keep
@@ -549,9 +551,23 @@ def _threshold_select_with_depth(
     still refill up to the target from deeper candidates instead of shrinking (see
     resolve_daily_edition). Depth here is by pool rank; the edition re-assigns depth by
     final rank, so the extra reservoir entries are harmless on the non-profile path.
+
+    ranking_run_id — enables the LLM EDITORIAL PASS: before selection, the top ranked
+    candidates get one cheap Haiku review (cached per run) that applies bounded category /
+    significance / top-story corrections. Purely additive — omit or disable to skip.
     """
     candidates = load_story_ranking_candidates(db)
     scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
+
+    # Editorial pass: bounded review/correction of the ranked candidates BEFORE selection,
+    # so a promoted story can enter the bulletin and a demoted one can fall out. Cached per
+    # ranking run; a no-op when disabled/unavailable.
+    if ranking_run_id is not None:
+        try:
+            apply_editorial(scored, editorial_adjustments(db, ranking_run_id, scored))
+        except Exception as e:  # never let the editor break assembly
+            logging.getLogger(__name__).warning("editorial pass skipped: %s", e)
+
     target = PRESET_TARGET_STORIES.get(preset, DEFAULT_TARGET_STORIES)
     qualifying = select_by_thresholds(
         scored,
@@ -687,6 +703,7 @@ def _get_or_assemble_bulletin(
                 exclude_categories=exclude_categories,
                 preset=preset,
                 pool_size=_EDITION_POOL if profile_id is not None else None,
+                ranking_run_id=ranking_run_id,
             )
 
             if profile_id is not None:
