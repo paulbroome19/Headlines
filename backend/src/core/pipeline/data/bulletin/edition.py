@@ -33,9 +33,9 @@ from core.pipeline.data.bulletin.repos.user_story_state_repo import UserStorySta
 from core.pipeline.ranking.depth import depth_for_rank
 
 # Absolute ceiling on stories held in an edition — a safety cap only. The effective
-# size is the caller's preset target (Quick/Standard/Deep); this just bounds it so a
-# huge target can never blow up the edition. Set to the largest preset target (Deep=16).
-EDITION_MAX = 16
+# size is the caller's preset range max (Quick/Standard/Deep); this just bounds it so a
+# huge target can never blow up the edition. Set to the largest preset ceiling (Deep=18).
+EDITION_MAX = 18
 
 
 def reconcile_edition(

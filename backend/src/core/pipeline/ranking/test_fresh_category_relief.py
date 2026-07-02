@@ -110,14 +110,14 @@ def test_C_trivial_gaming_only_for_follower_never_front_page():
     # Never reaches a front-page (top_stories) bar on any preset → via_front can't fire.
     for preset in ("short", "medium", "detailed"):
         assert cs.normalized_score < THRESHOLDS[preset]["top_stories"]
-    # A non-follower asking for the front page only doesn't get C on merit: it is
-    # below the front bar, so it can appear solely via the backfill floor — which is
-    # coverage-ordered, so it lands LAST.
+    # A non-follower asking for the front page only does NOT get C at all: it is below
+    # the front bar, and length is never padded past what's worth hearing (no backfill),
+    # so a below-bar trivial story is simply absent.
     front = select_by_thresholds(
         scored, include_top_stories=True, include_categories=None,
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
-    assert _ids(front)[-1] == "C"
+    assert "C" not in _ids(front)
     # A gaming-FOLLOWER does get it (legitimate) — via_category with the fresh relief.
     follower = select_by_thresholds(
         scored, include_top_stories=False, include_categories=["technology.gaming"],
@@ -137,7 +137,7 @@ def test_combined_bulletin_ordering_stays_coverage_first():
     rows = select_by_thresholds(
         scored, include_top_stories=True,
         include_categories=["sport", "technology.gaming"],
-        preset="detailed", target_count=10, now=NOW,
+        preset="detailed", now=NOW,
     )
     assert _ids(rows) == ["B", "A", "C"]           # only selected cats; D excluded
     assert "D" not in _ids(rows)
@@ -149,10 +149,10 @@ def test_front_page_composition_unaffected_by_relief():
     scored = list(_scored().values())
     fresh = select_by_thresholds(
         scored, include_top_stories=True, include_categories=None,
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     inert = select_by_thresholds(
         scored, include_top_stories=True, include_categories=None,
-        preset="medium", target_count=10, now=NOW + timedelta(days=10),
+        preset="medium", now=NOW + timedelta(days=10),
     )
     assert _ids(fresh) == _ids(inert)

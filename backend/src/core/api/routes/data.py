@@ -21,7 +21,7 @@ from core.pipeline.ranking.scorer import score_story
 from core.pipeline.ranking.category_ranker import get_category_weight
 from core.pipeline.ranking.thresholds import select_by_thresholds
 from core.pipeline.ranking.depth import depth_for_rank
-from core.pipeline.ranking.config import DEFAULT_PRESET, DEFAULT_TARGET_STORIES, PRESET_TARGET_STORIES
+from core.pipeline.ranking.config import DEFAULT_PRESET, DEFAULT_STORY_RANGE, PRESET_STORY_RANGES
 from core.pipeline.data.summarise.repos.story_summary_repo import StorySummaryRepo
 from core.pipeline.data.bulletin.repos.bulletin_repo import BulletinRepo
 from core.pipeline.data.bulletin.repos.user_story_state_repo import (
@@ -71,7 +71,7 @@ _SAFE_START_LEAD_SEGMENTS = 2
 
 # Maximum ranked stories to summarise on-demand per Generate press.
 # Covers a 5-min bulletin (typically 5–6 stories) with headroom for category filtering.
-_SUMMARISE_BUDGET = 16   # ≥ max PRESET_TARGET_STORIES (Deep=16) so long briefings aren't truncated
+_SUMMARISE_BUDGET = 18   # ≥ max of PRESET_STORY_RANGES (Deep=13–18) so long briefings aren't truncated
 
 # Daily-edition refill reservoir. The profile path selects this many ranked qualifiers
 # (not just the preset target) so resolve_daily_edition can drop stories the user has
@@ -543,22 +543,23 @@ def _threshold_select_with_depth(
     high universal bar + each ticked category at its lower bar), ordered by importance.
     Depth is assigned by rank. Returns (ordered_story_dicts, depths_map).
 
-    pool_size — how many ranked qualifiers to return. Defaults to the preset's target
-    (the final bulletin length). The daily-edition path passes a LARGER reservoir so
-    that, after dropping stories the user has already heard/skipped, the edition can
-    still refill up to the target from deeper candidates instead of shrinking (see
-    resolve_daily_edition). Depth here is by pool rank; the edition re-assigns depth by
-    final rank, so the extra reservoir entries are harmless on the non-profile path.
+    pool_size — how many ranked qualifiers to return. Defaults to the preset's range max
+    (the final bulletin's hard ceiling; the exact length flexes within the range with the
+    day's worthwhile content). The daily-edition path passes a LARGER reservoir so that,
+    after dropping stories the user has already heard/skipped, the edition can still refill
+    up to the ceiling from deeper candidates instead of shrinking (see resolve_daily_
+    edition). Depth here is by pool rank; the edition re-assigns depth by final rank, so
+    the extra reservoir entries are harmless on the non-profile path.
     """
     candidates = load_story_ranking_candidates(db)
     scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
-    target = PRESET_TARGET_STORIES.get(preset, DEFAULT_TARGET_STORIES)
+    lo, hi = PRESET_STORY_RANGES.get(preset, DEFAULT_STORY_RANGE)
     qualifying = select_by_thresholds(
         scored,
         include_top_stories=include_top_stories,
         include_categories=include_categories,
         preset=preset,
-        target_count=pool_size if pool_size is not None else target,
+        count_range=(lo, pool_size) if pool_size is not None else (lo, hi),
     )
 
     excludes = list(exclude_categories or [])
@@ -695,15 +696,18 @@ def _get_or_assemble_bulletin(
                 # run. Drops only HEARD stories (unheard persist — the old
                 # get_excluded_story_ids excluded queued-but-unheard too, which made
                 # unheard stories vanish on regenerate); refills freed slots + splices
-                # a genuinely bigger new lead. The target cap is applied HERE, after the
-                # drop, so freed slots refill from the reservoir. See bulletin/edition.py.
+                # a genuinely bigger new lead. The range's MAX cap is applied HERE, after
+                # the drop, so freed slots refill from the reservoir. Because the reservoir
+                # holds only worthwhile (cleared-bar) stories, the final count still flexes
+                # within the range — capping at the max, landing short on a thin day rather
+                # than padding. See bulletin/edition.py.
                 ordered, depths = resolve_daily_edition(
                     db,
                     profile_id=profile_id,
                     request_hash=request_hash,
                     fresh_ordered=ordered,
                     fresh_depths=depths,
-                    target=PRESET_TARGET_STORIES.get(preset, DEFAULT_TARGET_STORIES),
+                    target=PRESET_STORY_RANGES.get(preset, DEFAULT_STORY_RANGE)[1],
                 )
                 db.commit()
 

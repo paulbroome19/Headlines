@@ -149,8 +149,9 @@ IMPORTANCE_HALF = 0.9
 # ── Threshold-per-source selection (personalisation lives HERE, not in ranking) ──
 # A story qualifies if its 0–10 score clears the bar of ANY source it belongs to
 # (Top Stories = high universal bar; each ticked topic category = its own lower bar).
-# The bar is now REACHABLE (see IMPORTANCE_HALF) so via_front actually fires. LENGTH is
-# not driven by the bar (thin data makes bar-counts unstable) — it's PRESET_TARGET_STORIES.
+# The bar is now REACHABLE (see IMPORTANCE_HALF) so via_front actually fires. The bar also
+# gates LENGTH: only bar-clearing (worth-hearing) stories are included, and the count flexes
+# within PRESET_STORY_RANGES (min soft floor, max hard ceiling) — never padded past that.
 THRESHOLDS: dict[str, dict[str, float]] = {
     #            Top Stories (front page, all topics)   ticked topic category
     "short":    {"top_stories": 8.0,                    "category": 7.0},
@@ -175,13 +176,20 @@ DEFAULT_PRESET = "medium"
 FRESH_CATEGORY_RELIEF = 0.4     # max category-bar reduction for a brand-new story
 BREAKING_TAU_HOURS = 0.75       # decay e-fold ≈ 45 min (~0.51·max at 30 min, ~0.26 at 1 h)
 
-# Per-preset TARGET story count — the real "length" control (time-anchored: Quick≈5m /
-# Standard≈10m / Deep≈15m). Selection returns the top-N by score (qualifiers first,
-# backfilled to the target), so the three presets are DISTINCT lengths and never empty
-# while stories exist. Flexes honestly: a thin day still fills to the target from the
-# next-best; a rich day caps at it.
-PRESET_TARGET_STORIES: dict[str, int] = {"short": 6, "medium": 10, "detailed": 16}
-DEFAULT_TARGET_STORIES = 10
+# Per-preset story-count RANGE (min, max) — length flexes with the day's news instead
+# of cutting a worthwhile story to hit a fixed number. The exact count lands wherever the
+# genuinely-worthwhile, balanced content runs out:
+#   • min is a SOFT floor — reached whenever that much qualifying content exists (a thin
+#     day lands near it, or below it if there genuinely isn't that much worth hearing).
+#   • max is a HARD ceiling — never exceeded, so a rich day caps near it.
+# Selection fills only with stories that clear their source's bar (worth hearing); it is
+# never padded past that. Time-anchored: Quick≈5m / Standard≈10m / Deep≈15m.
+PRESET_STORY_RANGES: dict[str, tuple[int, int]] = {
+    "short":    (5, 8),
+    "medium":   (8, 13),
+    "detailed": (13, 18),
+}
+DEFAULT_STORY_RANGE = (8, 13)
 
 # ── Top-Stories-by-region roll-up (Part 4) ───────────────────────────────────
 # Regions with a dedicated top-stories.<region> bucket (the taxonomy geo axis).

@@ -9,7 +9,7 @@ calibrated for ~5.5 min (the summaries hit their targets; the targets were half 
 """
 from __future__ import annotations
 
-from .config import PRESET_TARGET_STORIES
+from .config import PRESET_STORY_RANGES
 from .depth import depth_words_for_rank
 
 _WPM = 156.0                 # measured ElevenLabs rate (bulletin #103: 882 words / 5:39)
@@ -21,7 +21,8 @@ def _story_words(n_stories: int) -> int:
 
 
 def test_medium_briefing_targets_about_ten_minutes():
-    n = PRESET_TARGET_STORIES["medium"]   # 10
+    lo, hi = PRESET_STORY_RANGES["medium"]   # (8, 13)
+    n = (lo + hi) // 2                        # a typical Medium lands mid-range ≈ 10
     total_words = _story_words(n) + _WRAPPER_WORDS
     minutes = total_words / _WPM
     # Near ~10 min (allow 8.5–11.5 for LLM variance / wpm drift). The old targets gave
