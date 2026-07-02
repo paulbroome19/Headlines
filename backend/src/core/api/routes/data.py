@@ -73,6 +73,15 @@ _SAFE_START_LEAD_SEGMENTS = 2
 # Covers a 5-min bulletin (typically 5–6 stories) with headroom for category filtering.
 _SUMMARISE_BUDGET = 16   # ≥ max PRESET_TARGET_STORIES (Deep=16) so long briefings aren't truncated
 
+# Daily-edition refill reservoir. The profile path selects this many ranked qualifiers
+# (not just the preset target) so resolve_daily_edition can drop stories the user has
+# already heard/skipped and STILL refill up to the target from deeper candidates —
+# otherwise every heard story permanently shortens the bulletin. Generous headroom over
+# any preset target (Deep=16); only a user who has exhausted this many of their top
+# unheard candidates in a day gets a genuinely shorter briefing. Reservoir only — the
+# edition is still capped to the preset target after dropping. ⚑ tune.
+_EDITION_POOL = 60
+
 
 @router.get("/categories")
 def get_categories():
@@ -526,12 +535,20 @@ def _threshold_select_with_depth(
     include_categories: list[str] | None,
     exclude_categories: list[str] | None,
     preset: str,
+    pool_size: int | None = None,
 ) -> tuple[list[dict], dict[str, tuple[str, int]]]:
     """
     The new day-level selection: score fresh candidates (coverage-driven), then keep
     everything that clears its source's threshold for this preset (Top Stories at the
     high universal bar + each ticked category at its lower bar), ordered by importance.
     Depth is assigned by rank. Returns (ordered_story_dicts, depths_map).
+
+    pool_size — how many ranked qualifiers to return. Defaults to the preset's target
+    (the final bulletin length). The daily-edition path passes a LARGER reservoir so
+    that, after dropping stories the user has already heard/skipped, the edition can
+    still refill up to the target from deeper candidates instead of shrinking (see
+    resolve_daily_edition). Depth here is by pool rank; the edition re-assigns depth by
+    final rank, so the extra reservoir entries are harmless on the non-profile path.
     """
     candidates = load_story_ranking_candidates(db)
     scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
@@ -541,7 +558,7 @@ def _threshold_select_with_depth(
         include_top_stories=include_top_stories,
         include_categories=include_categories,
         preset=preset,
-        target_count=target,
+        target_count=pool_size if pool_size is not None else target,
     )
 
     excludes = list(exclude_categories or [])
@@ -659,12 +676,17 @@ def _get_or_assemble_bulletin(
             # Score fresh candidates (coverage-driven), keep everything that clears
             # its source's threshold for this preset, ordered by importance; depth
             # scales with rank. Length is an OUTPUT of what qualifies, not a target.
+            # The profile path selects a deeper reservoir (not just the target) so the
+            # daily edition can drop already-heard stories and refill from candidates
+            # beyond the target instead of shrinking. The non-profile path takes exactly
+            # the preset target (its length control).
             ordered, depths = _threshold_select_with_depth(
                 db,
                 include_top_stories=include_top_stories,
                 include_categories=include_categories,
                 exclude_categories=exclude_categories,
                 preset=preset,
+                pool_size=_EDITION_POOL if profile_id is not None else None,
             )
 
             if profile_id is not None:
@@ -673,13 +695,15 @@ def _get_or_assemble_bulletin(
                 # run. Drops only HEARD stories (unheard persist — the old
                 # get_excluded_story_ids excluded queued-but-unheard too, which made
                 # unheard stories vanish on regenerate); refills freed slots + splices
-                # a genuinely bigger new lead. See bulletin/edition.py.
+                # a genuinely bigger new lead. The target cap is applied HERE, after the
+                # drop, so freed slots refill from the reservoir. See bulletin/edition.py.
                 ordered, depths = resolve_daily_edition(
                     db,
                     profile_id=profile_id,
                     request_hash=request_hash,
                     fresh_ordered=ordered,
                     fresh_depths=depths,
+                    target=PRESET_TARGET_STORIES.get(preset, DEFAULT_TARGET_STORIES),
                 )
                 db.commit()
 
