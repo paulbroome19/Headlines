@@ -127,15 +127,20 @@ def test_C_trivial_gaming_only_for_follower_never_front_page():
 
 
 def test_combined_bulletin_ordering_stays_coverage_first():
-    """A follower of both sport and gaming: big news leads; the fresh single-source
-    items fill tail slots and never leapfrog a bigger story."""
+    """A follower of both sport and gaming: the briefing contains ONLY sport + gaming,
+    ordered coverage-first, with the fresh single-source items filling tail slots and
+    never leapfrogging a bigger story. The big war (D, politics.world) is OUTSIDE the
+    selection, so it must NOT appear — even though the app sends include_top_stories=true
+    on every request. (Regression guard for the reported bug: a narrow selection was
+    getting unselected hard news injected via the always-on front-page flag.)"""
     scored = list(_scored().values())
     rows = select_by_thresholds(
         scored, include_top_stories=True,
         include_categories=["sport", "technology.gaming"],
         preset="detailed", target_count=10, now=NOW,
     )
-    assert _ids(rows) == ["D", "B", "A", "C"]
+    assert _ids(rows) == ["B", "A", "C"]           # only selected cats; D excluded
+    assert "D" not in _ids(rows)
 
 
 def test_front_page_composition_unaffected_by_relief():

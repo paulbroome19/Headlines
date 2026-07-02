@@ -130,3 +130,86 @@ def test_sport_follower_still_gets_sport():
         preset="medium", target_count=10, now=NOW,
     )
     assert {s.candidate.story_id for s in sel} == {"foot1", "foot2"}
+
+
+# ── the reported bug: a narrow selection must NEVER inject unselected hard news ──
+
+def _mixed_day() -> list[ScoredStory]:
+    """A realistic morning: dominant hard news + a little football."""
+    return [
+        _score(_cand("iran", 30, "top-stories.middle-east")),   # T1, huge
+        _score(_cand("googleai", 26, "technology.ai")),         # T3, huge
+        _score(_cand("tariffs", 20, "business.economy")),       # T1
+        _score(_cand("kroger", 14, "business.companies")),      # T1
+        _score(_cand("foot1", 10, "sport.football.internationals")),
+        _score(_cand("foot2", 6, "sport.football.premier-league")),
+    ]
+
+
+def test_football_only_never_gets_hard_news_even_with_flag_true():
+    """The exact reported failure: Football-only selection, and the app sends
+    include_top_stories=true on every request. The briefing must contain ONLY
+    football — never Iran/Google-AI/tariffs/Kroger padded in to hit the target."""
+    sel = select_by_thresholds(
+        _mixed_day(), include_top_stories=True,
+        include_categories=["sport.football"],
+        preset="medium", target_count=10, now=NOW,
+    )
+    cats = {s.candidate.primary_category for s in sel}
+    assert cats and all(c.startswith("sport.football") for c in cats)
+    assert {s.candidate.story_id for s in sel} == {"foot1", "foot2"}
+
+
+def test_business_and_politics_only_stays_within_selection():
+    scored = _mixed_day() + [_score(_cand("election", 12, "politics.uk"))]
+    sel = select_by_thresholds(
+        scored, include_top_stories=True,
+        include_categories=["business", "politics"],
+        preset="medium", target_count=10, now=NOW,
+    )
+    ids = {s.candidate.story_id for s in sel}
+    assert ids == {"tariffs", "kroger", "election"}          # only business + politics
+    assert "iran" not in ids and "googleai" not in ids and "foot1" not in ids
+
+
+def test_top_stories_selected_still_gets_the_front_page():
+    """Genuinely selecting Top Stories works as before: the full front page, with
+    hard news leading and soft news sinking to the back (tier is decisive)."""
+    sel = select_by_thresholds(
+        _mixed_day(), include_top_stories=True,
+        include_categories=["top-stories"],
+        preset="medium", target_count=10, now=NOW,
+    )
+    ids = [s.candidate.story_id for s in sel]
+    assert "iran" in ids and "tariffs" in ids                # front page present
+    tiers = [effective_tier(s) for s in sel]
+    assert tiers == sorted(tiers)                            # tier decisive
+    assert ids.index("iran") < ids.index("googleai")        # hard news leads soft
+
+
+def test_multi_filter_keeps_newspaper_order_within_selection():
+    """Business + Football: only those categories appear, and within them the
+    newspaper order holds — business (T1) leads, football (T3) trails."""
+    sel = select_by_thresholds(
+        _mixed_day(), include_top_stories=True,
+        include_categories=["business", "sport.football"],
+        preset="medium", target_count=10, now=NOW,
+    )
+    cats = [s.candidate.primary_category for s in sel]
+    assert set().union(*[{c} for c in cats]) and all(
+        c.startswith("business") or c.startswith("sport.football") for c in cats
+    )
+    assert "iran" not in {s.candidate.story_id for s in sel}
+    tiers = [effective_tier(s) for s in sel]
+    assert tiers == sorted(tiers)                            # business leads football
+
+
+def test_narrow_selection_stays_short_never_padded():
+    """A topic selection with only a couple of qualifiers stays SHORT — it is never
+    backfilled up to target_count with unselected content."""
+    sel = select_by_thresholds(
+        _mixed_day(), include_top_stories=True,
+        include_categories=["sport.football"],
+        preset="medium", target_count=10, now=NOW,
+    )
+    assert len(sel) == 2                                     # shorter than target, not padded
