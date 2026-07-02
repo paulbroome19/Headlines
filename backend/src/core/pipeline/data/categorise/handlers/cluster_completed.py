@@ -13,8 +13,30 @@ from core.platform.queue.outbox import OutboxRepo
 
 from core.pipeline.data.categorise.events import DATA_CATEGORISE_COMPLETED
 from core.pipeline.data.normalise.categorise.cluster_categoriser import categorise_story
+from core.pipeline.data.normalise.categorise.llm_categoriser import DROP
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_category(db, story_id: int, category: str | None) -> None:
+    """Persist the resolved category where it actually matters. Ranking reads the
+    representative article's `normalisation_articles.category_primary` (candidate_loader),
+    NOT `data.stories.primary_category`, so we set the ARTICLE field for the whole story
+    (keeping the representative consistent whichever member is picked) plus the story row
+    for consistency. `category=None` DROPS the story (clears the category → excluded)."""
+    db.execute(
+        text("""
+            UPDATE data.normalisation_articles
+            SET category_primary = :c,
+                category_method  = :m
+            WHERE story_id = :id
+        """),
+        {"c": category, "m": "llm-drop" if category is None else "llm-primary", "id": story_id},
+    )
+    db.execute(
+        text("UPDATE data.stories SET primary_category = :c WHERE id = :id"),
+        {"c": category, "id": story_id},
+    )
 
 
 def _majority_vote(db, story_id: int) -> str | None:
@@ -58,35 +80,28 @@ def handle_cluster_completed(event: dict) -> None:
     use_llm = settings.enable_llm_primary_categorise
     with SessionLocal() as db:
         for story_id in story_ids:
-            resolved_category: str | None = None
-
+            result = None
             if use_llm:
                 try:
                     result = categorise_story(db, story_id)
                 except Exception as e:  # never let one story stall the batch
                     logger.warning("llm categorise failed for story %s: %s", story_id, e)
                     result = None
-                if result is not None:
-                    resolved_category = result.primary
 
-            if resolved_category is None:
-                # LLM off / unavailable / failed → keep the legacy majority vote.
-                resolved_category = _majority_vote(db, story_id)
+            # DELIBERATE DROP: the story has no honest home in our taxonomy (ice hockey,
+            # crime, an unlisted region). EXCLUDE it — clear the category, and do NOT fall
+            # back to the keyword vote (which would just mis-file it). Correctness > coverage.
+            if result is not None and result.primary == DROP:
+                _apply_category(db, story_id, None)
+                continue
 
+            # KEEP (valid LLM primary) or operational FALLBACK (LLM off/unavailable/failed
+            # → legacy majority vote). A DROP never reaches here.
+            resolved_category = result.primary if result is not None else _majority_vote(db, story_id)
             if resolved_category is None:
                 continue
 
-            db.execute(
-                text(
-                    """
-                    UPDATE data.stories
-                    SET primary_category = :category
-                    WHERE id = :story_id
-                      AND (primary_category IS DISTINCT FROM :category)
-                    """
-                ),
-                {"category": resolved_category, "story_id": story_id},
-            )
+            _apply_category(db, story_id, resolved_category)
 
         categorisation_batch_id = str(uuid.uuid4())
 
