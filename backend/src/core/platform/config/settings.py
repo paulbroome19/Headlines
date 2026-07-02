@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # (keyword majority survives only as a fallback). Set false to revert to the legacy
     # keyword-majority vote (e.g. if the API key is absent and cost/latency matters).
     enable_llm_primary_categorise: bool = True
+    # EDITORIAL PASS: one Haiku call per ranking run reviewing the top ranked candidates,
+    # applying bounded category/significance/top-story corrections before selection. Cached
+    # per ranking run. Set false to skip (selection uses the mechanical rank unchanged).
+    enable_editorial_pass: bool = True
 
     # Scheduled ingest
     enable_scheduled_ingest: bool = False
