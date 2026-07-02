@@ -134,10 +134,19 @@ def select_by_thresholds(
     preset's length control — Quick/Standard/Deep). The result is the top-N by score;
     length is a target, not an unstable by-product of where the bar lands.
 
-    include_top_stories — the bare front-page source (high bar, all topics).
-    include_categories  — ticked slugs. `top-stories` → front page; `top-stories.
-                          <region>` → that region's bucket (geo-filtered, country-
-                          weighted); anything else → a topic category (lower bar).
+    The briefing only ever contains stories matching the user's CHOSEN sources; the
+    newspaper tiering orders within that set, it never reaches outside it.
+
+    include_top_stories — the DEFAULT-only front-page flag. It admits the bare all-
+                          topics front page ONLY when the user ticked no filters at all
+                          (a general briefing). It is NOT a blanket override: with a
+                          narrow topic selection it does nothing, so Football-only never
+                          gets front-page hard news injected.
+    include_categories  — ticked slugs = the user's selection. `top-stories` → the
+                          front page (all topics); `top-stories.<region>` → that
+                          region's bucket (geo-filtered, country-weighted); anything
+                          else → a topic category (lower bar). Top-Stories content
+                          appears ONLY when top-stories/`top-stories.<region>` is here.
     target_count        — desired bulletin length; defaults to the front-page floor.
     now                 — reference time for the fresh-category relief (injectable
                           for tests); defaults to now(UTC).
@@ -149,14 +158,34 @@ def select_by_thresholds(
     cat_bar = bars["category"]
 
     cats = list(include_categories or [])
-    # Bare "top-stories" tick OR the include_top_stories flag = the whole front page.
-    front_page = include_top_stories or ("top-stories" in cats)
+    has_selection = bool(cats)
+    # The bare all-topics front page. Selected EXPLICITLY by ticking "top-stories", or
+    # IMPLICITLY when the user picked no filters at all (default = the general briefing).
+    # The legacy `include_top_stories` flag is NO LONGER a blanket override: the app
+    # sends it true on EVERY request, so honouring it unconditionally injected front-page
+    # hard news into every narrow selection (a Football-only briefing filled with
+    # Iran/tariffs/Kroger and zero football). Top-Stories content now appears ONLY when
+    # the user actually chose it — the newspaper tiering orders WITHIN their selection,
+    # it never reaches outside it.
+    front_page = ("top-stories" in cats) or (include_top_stories and not has_selection)
     # Ticked top-stories.<region> slugs enable that region's bucket (valid leaves only).
     regions = {
         c.split(".", 1)[1] for c in cats
         if c.startswith("top-stories.") and c.split(".", 1)[1] in TOP_STORIES_REGIONS
     }
     topic_cats = [c for c in cats if not _is_top_stories_slug(c)]
+
+    def _matches_selection(s: ScoredStory) -> bool:
+        """True when a story belongs to one of the user's CHOSEN sources: the front
+        page (all topics), a chosen region bucket, or a ticked topic category. Scopes
+        the never-empty backfill so it can only ever pull stories the user actually
+        asked for — never unselected hard news padded in to hit the target length."""
+        if front_page:
+            return True
+        if s.candidate.geo_region in regions:
+            return True
+        cat = s.candidate.primary_category
+        return any(_matches_category(cat, tc) for tc in topic_cats)
 
     qualifying: list[ScoredStory] = []
     seen: set[str] = set()
@@ -181,15 +210,19 @@ def select_by_thresholds(
             qualifying.append(s)
             seen.add(sid)
 
-    # Top Stories guarantee: never return a briefing empty/thin just because nothing
-    # cleared the high universal bar — backfill with the highest-scored stories (which
-    # ARE the top stories) up to a full-bulletin floor. The app sends
-    # include_top_stories=true on every request, so honouring the flag here means
-    # EVERY briefing gets this floor and is never empty while stories exist — an empty
-    # briefing reads as broken. A truly empty candidate set still yields nothing.
-    top_stories_selected = include_top_stories or ("top-stories" in cats) or bool(regions)
-    if top_stories_selected and len(qualifying) < target:
-        for s in sorted(scored, key=lambda x: x.normalized_score, reverse=True):
+    # Never-empty guarantee, STRICTLY SCOPED TO THE SELECTION. The front page (and a
+    # regional bucket) promises "the best across everything / across the region" — it
+    # must not come back thin just because little cleared the deliberately-high universal
+    # bar, so backfill with the highest-scored stories up to the target. Crucially the
+    # backfill pool is `_matches_selection` ONLY: a front-page/default selection means
+    # all topics (so any story is fair game — that IS the front page), a region selection
+    # fills only from that region. A pure TOPIC selection (e.g. Football only) does NOT
+    # enter this branch at all — it stays its natural length, simply SHORTER (or empty on
+    # a thin day), and is NEVER padded with unselected categories.
+    if (front_page or regions) and len(qualifying) < target:
+        for s in sorted(scored, key=region_adjusted_score, reverse=True):
+            if not _matches_selection(s):
+                continue
             sid = s.candidate.story_id
             if sid in seen:
                 continue
