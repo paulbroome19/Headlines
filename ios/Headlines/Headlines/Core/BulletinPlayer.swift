@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import Foundation
 import MediaPlayer
+import UIKit
 
 // MARK: - Request / response types
 
@@ -253,6 +254,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
 
         playerState = .preparing
+        let gateStart = Date()
         var model = LoadProgressModel()
         // Creep toward the pre-start ceiling from the outset. The first phase
         // (manifest → assembled) is the long ~8s blocking one and reports no honest
@@ -294,6 +296,19 @@ final class BulletinPlayer: NSObject, ObservableObject {
             loadProgress = model.progress
             try? await Task.sleep(nanoseconds: UInt64(tickInterval * 1_000_000_000))
             t += 1
+        }
+
+        // Minimum loader dwell (#7): when a briefing is cached, safe_to_start fires on
+        // the first poll and the Solari stages would flash by unreadably. Keep the loader
+        // up until at least `minLoaderSeconds` (≈ fastPathStages × minStageSeconds) has
+        // passed, creeping the bar so the status words step through and are readable. A
+        // slow prepare already exceeds this, so it ONLY affects the fast/cached path —
+        // capped at ~2 stages so a ready briefing never feels sluggish. The view gates
+        // each word to ≥ minStageSeconds too (see NowPlayingView.preparingState).
+        while Date().timeIntervalSince(gateStart) < LoaderTiming.minLoaderSeconds {
+            model.tick(dt: tickInterval, ratePerSec: LoadProgressModel.creepRate)
+            loadProgress = model.progress
+            try? await Task.sleep(nanoseconds: UInt64(tickInterval * 1_000_000_000))
         }
 
         // Ready (or gave up): enqueue and start. Hold near-complete but < 1.0 — audio
@@ -638,10 +653,19 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
         guard let item = item else {
             currentSegment = nil
-            // Guard against spurious nil from AVQueuePlayer init AND from seek queue rebuilds.
-            // seekToStoryUnit sets playerState = .buffering before removeAllItems() so both
-            // cases are covered by the same check.
-            guard playerState != .buffering else { return }
+            // Distinguish a GENUINE queue-exhausted nil from a SPURIOUS one that must
+            // not be read as ".ended":
+            //   • .buffering        — a seek is mid-rebuild (removeAllItems).
+            //   • prevSeg == nil     — the FRESH queue's INITIAL currentItem KVO nil.
+            //     Because the observer is `.receive(on: RunLoop.main)`, that initial nil
+            //     is delivered AFTER the synchronous first-load block set
+            //     playerState = .playing (gateOnReadinessThenPlay). Reading it as .ended
+            //     would strand the first-play transport on a PLAY icon forever — the
+            //     timeControlStatus(.playing) edge only recovers from
+            //     .preparing/.buffering/.stalled, never from .ended. This was the LAST
+            //     stranded first-play path (seek/skip already set state directly).
+            // A real end-of-bulletin nil always follows a played segment (prevSeg != nil).
+            guard playerState != .buffering, prevSeg != nil else { return }
             playerState    = .ended
             updateNowPlaying()
             return
@@ -946,6 +970,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         var info: [String: Any] = [
             MPMediaItemPropertyTitle:                   title,
             MPMediaItemPropertyArtist:                  "Headlines",
+            MPMediaItemPropertyArtwork:                 Self.lockScreenArtwork,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: positionSeconds,
             MPMediaItemPropertyPlaybackDuration:        seg.durationSeconds,
             MPNowPlayingInfoPropertyPlaybackRate:       (playerState == .playing) ? 1.0 : 0.0,
@@ -956,6 +981,49 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
+
+    /// Lock-screen / Control-Center artwork (#4): the now-playing card was blank.
+    /// Rendered once — an on-brand dark flap-board with the "HEADLINES" wordmark,
+    /// using the BoardColors palette (topFlapTop→botFlapBottom gradient, bone
+    /// off-white type). Drawn rather than loaded so it never depends on the app-icon
+    /// asset resolving at runtime.
+    private static let lockScreenArtwork: MPMediaItemArtwork = {
+        let size = CGSize(width: 600, height: 600)
+        let image = UIGraphicsImageRenderer(size: size).image { ctx in
+            let cg = ctx.cgContext
+            let top = UIColor(red: CGFloat(0x2E) / 255, green: CGFloat(0x2E) / 255, blue: CGFloat(0x2E) / 255, alpha: 1)
+            let bot = UIColor(red: CGFloat(0x15) / 255, green: CGFloat(0x15) / 255, blue: CGFloat(0x15) / 255, alpha: 1)
+            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                     colors: [top.cgColor, bot.cgColor] as CFArray, locations: [0, 1]) {
+                cg.drawLinearGradient(grad, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
+            }
+            let text = "HEADLINES" as NSString
+            let para = NSMutableParagraphStyle(); para.alignment = .center
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 60, weight: .semibold),
+                .foregroundColor: UIColor(red: CGFloat(0xED) / 255, green: CGFloat(0xED) / 255, blue: CGFloat(0xEA) / 255, alpha: 1),
+                .kern: 8,
+                .paragraphStyle: para,
+            ]
+            let h = text.boundingRect(with: size, options: .usesLineFragmentOrigin, attributes: attrs, context: nil).height
+            text.draw(in: CGRect(x: 0, y: (size.height - h) / 2, width: size.width, height: h), withAttributes: attrs)
+        }
+        return MPMediaItemArtwork(boundsSize: size) { _ in image }
+    }()
+}
+
+// MARK: - Loader stage pacing (#7)
+
+/// Single tunable knob for the Solari loader's minimum stage dwell. Every status
+/// stage is shown for at least `minStageSeconds` so its words are always readable,
+/// even when a briefing is cached and readiness fires instantly. The fast/cached
+/// path is capped at `fastPathStages` stages (`minLoaderSeconds` total) so a ready
+/// briefing never feels sluggish; a slow prepare naturally exceeds it and dismisses
+/// on safe_to_start. Consumed by the gate (hold) and NowPlayingView (per-word cap).
+enum LoaderTiming {
+    static let minStageSeconds: Double = 2.0
+    static let fastPathStages: Int = 2
+    static var minLoaderSeconds: Double { minStageSeconds * Double(fastPathStages) }
 }
 
 // MARK: - Loader progress model

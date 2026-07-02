@@ -30,6 +30,8 @@ struct NowPlayingView: View {
     // generation → 5⁵ combos). Purely visual; NOT tied to backend stages.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var loaderLines: [String] = []
+    /// When the loader first appeared — anchors the per-stage minimum dwell (#7).
+    @State private var loaderStart = Date()
 
     var body: some View {
         ZStack {
@@ -136,12 +138,20 @@ struct NowPlayingView: View {
     /// `safe_to_start`. The bar holds at ≤~97% (LoadProgressModel.preStartCap)
     /// until audio actually starts — it never finishes-and-waits in silence.
     private var preparingState: some View {
-        // Advance the status line as the bar crosses each of the 5 bands.
         let bandCount = LoaderStatusBoard.loaderWordSets.count   // 5
-        let line = min(bandCount - 1, max(0, Int(player.loadProgress * Double(bandCount))))
         return VStack(spacing: 0) {
             Spacer(minLength: 16)
-            loaderBoard(lineIndex: line)
+            // The stage word advances by the SLOWER of real progress and time (#7):
+            // each stage holds ≥ LoaderTiming.minStageSeconds so its words are readable
+            // even on an instant/cached briefing, while a slow prepare lets real progress
+            // hold a stage LONGER. The gate keeps the loader up for the matching minimum.
+            TimelineView(.periodic(from: loaderStart, by: 0.2)) { ctx in
+                let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
+                let timeStage = Int(elapsed / LoaderTiming.minStageSeconds)
+                let progressStage = Int(player.loadProgress * Double(bandCount))
+                let line = max(0, min(bandCount - 1, min(progressStage, timeStage)))
+                loaderBoard(lineIndex: line)
+            }
             Spacer(minLength: 20)
             loaderProgressBar
             Spacer(minLength: 24)
