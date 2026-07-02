@@ -405,11 +405,11 @@ struct NowPlayingView: View {
     private var scrubberSection: some View {
         VStack(spacing: 8) {
             SegmentedScrubber(
-                units: player.storyUnits,
-                total: player.totalStoryDurationSeconds,
-                elapsed: bulletinElapsedSeconds,
+                segments: player.allSegments,
+                total: player.totalDurationSeconds,
+                elapsed: player.playbackElapsedSeconds,
                 ink: ink,
-                onSeek: { frac in player.seekToGlobalFraction(frac) }
+                onSeek: { frac in player.seekToFullFraction(frac) }
             )
             .frame(height: 6)
 
@@ -578,11 +578,11 @@ struct NowPlayingView: View {
         return player.storyUnits[currentUnitIndexClamped].storySegment.sources ?? []
     }
 
-    private var bulletinElapsedSeconds: Double {
-        player.globalPositionPct * player.totalStoryDurationSeconds
-    }
+    // Full audio timeline (intro → stories → outro), so the timer counts from the very
+    // first second of the greeting — not 0:00 until the first story.
+    private var bulletinElapsedSeconds: Double { player.playbackElapsedSeconds }
     private var bulletinLeftSeconds: Double {
-        max(0, player.totalStoryDurationSeconds - bulletinElapsedSeconds)
+        max(0, player.totalDurationSeconds - player.playbackElapsedSeconds)
     }
 
     private func timeString(_ seconds: Double) -> String {
@@ -593,8 +593,12 @@ struct NowPlayingView: View {
 
 // MARK: - Segmented scrubber
 
+/// Progress over the FULL audio timeline: one cell per segment (intro, transitions,
+/// stories, outro), so the fill advances continuously from the very first second — like a
+/// podcast player — while still showing segment boundaries. Story cells read at full ink;
+/// wrapper cells (intro/transition/outro) are dimmer so the stories still dominate.
 private struct SegmentedScrubber: View {
-    let units: [StoryUnit]
+    let segments: [ManifestSegment]
     let total: Double
     let elapsed: Double
     let ink: Color
@@ -603,14 +607,17 @@ private struct SegmentedScrubber: View {
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
-            let gap: CGFloat = 3
-            let count = max(units.count, 1)
+            let gap: CGFloat = 2
+            let count = max(segments.count, 1)
             let usable = w - gap * CGFloat(count - 1)
             HStack(spacing: gap) {
-                ForEach(Array(units.enumerated()), id: \.offset) { _, unit in
-                    let frac = total > 0 ? unit.totalDurationSeconds / total : 1.0 / Double(count)
+                ForEach(Array(segments.enumerated()), id: \.offset) { i, seg in
+                    let frac = total > 0 ? seg.durationSeconds / total : 1.0 / Double(count)
                     let segW = max(2, usable * CGFloat(frac))
-                    SegmentBar(unit: unit, elapsed: elapsed, ink: ink)
+                    // Cumulative start of this cell in the full timeline.
+                    let start = segments.prefix(i).reduce(0.0) { $0 + $1.durationSeconds }
+                    SegmentBar(start: start, duration: seg.durationSeconds,
+                               isStory: seg.isStory, elapsed: elapsed, ink: ink)
                         .frame(width: segW)
                 }
             }
@@ -627,18 +634,19 @@ private struct SegmentedScrubber: View {
     }
 
     private struct SegmentBar: View {
-        let unit: StoryUnit
+        let start: Double
+        let duration: Double
+        let isStory: Bool
         let elapsed: Double
         let ink: Color
 
         var body: some View {
-            let start = unit.cumulativeStartSeconds
-            let dur = max(0.0001, unit.totalDurationSeconds)
+            let dur = max(0.0001, duration)
             let progress = min(1, max(0, (elapsed - start) / dur))  // 0 not started … 1 done
             GeometryReader { g in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(ink.opacity(0.15))                       // not-yet
-                    Capsule().fill(ink)                                     // played portion
+                    Capsule().fill(ink.opacity(isStory ? 0.15 : 0.10))       // not-yet
+                    Capsule().fill(ink.opacity(isStory ? 1.0 : 0.5))         // played portion
                         .frame(width: g.size.width * CGFloat(progress))
                 }
             }
@@ -715,13 +723,15 @@ private struct LoaderStatusBoard: View {
 
     @State private var churnStart: Date = Date()
 
-    // One cosmetic status-line group per visible loader stage (LoaderTiming.visibleStages
-    // = 4). Stage 4 is the "almost ready" dwell copy — it holds until the briefing is
-    // ready. One line is picked per group at load and held for the whole generation.
+    // One cosmetic status-line group per visible loader stage (LoaderTiming.visibleStages).
+    // The first four are the evenly-paced stages across the ~12s window; the last is the
+    // "almost ready" DWELL copy that holds until the briefing is ready. One line is picked
+    // per group at load and held for the whole generation.
     static let loaderWordSets: [[String]] = [
         ["ON THE BEAT", "SCANNING THE WIRES", "WORKING THE SOURCES", "COMBING THE HEADLINES", "CHASING THE STORIES"],
         ["READING THE ROOM", "TAKING THE TEMPERATURE", "GAUGING THE MOOD", "SIZING IT UP", "WEIGHING IT UP"],
-        ["CONNECTING THE DOTS", "JOINING THE THREADS", "GOING TO PRESS", "SETTING THE TYPE", "PIECING IT TOGETHER"],
+        ["CONNECTING THE DOTS", "JOINING THE THREADS", "SEPARATING THE NOISE", "FOLLOWING THE THREAD", "PIECING IT TOGETHER"],
+        ["PUTTING PEN TO PAPER", "SETTING THE TYPE", "FINDING THE WORDS", "GOING TO PRESS", "INK IS FLOWING"],
         ["ALMOST READY", "NEARLY THERE", "FINAL CHECKS", "TIDYING UP", "ANY SECOND NOW"],
     ]
     /// Pick one line per band at load, held for the whole generation.
