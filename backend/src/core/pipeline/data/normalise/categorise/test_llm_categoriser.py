@@ -11,28 +11,34 @@ LEAVES = [
     "sport.football.premier-league.arsenal", "sport.cricket.international",
     "technology.gaming", "technology.companies", "top-stories.uk",
 ]
-VSET = set(LEAVES)
-NODES = L._ancestor_nodes(LEAVES)
+OFFERED = L.offered_targets(LEAVES)   # leaves + top-level buckets
 
 
-# ── valid-slug guard / reroute ───────────────────────────────────────────────
+# ── valid-slug guard: correctness over coverage (keep / drop, never reroute) ──
 
-def test_valid_leaf_passes_through():
-    assert L.guard_and_reroute("politics.uk", VSET, NODES) == "politics.uk"
-
-
-def test_taxonomy_gap_reroutes_to_nearest_ancestor():
-    # invented deeper slugs snap up to the nearest node that exists
-    assert L.guard_and_reroute("sport.nhl", VSET, NODES) == "sport"
-    assert L.guard_and_reroute("top-stories.north-america", VSET, NODES) == "top-stories"
-    assert L.guard_and_reroute("sport.cricket.internationals", VSET, NODES) == "sport.cricket"
+def test_offered_targets_are_leaves_plus_top_levels():
+    assert "politics.uk" in OFFERED            # a leaf
+    assert "business" in OFFERED and "sport" in OFFERED  # top-level buckets
+    assert "sport.football" not in OFFERED      # a bare intermediate is NOT an offer
 
 
-def test_legacy_and_invented_top_levels_are_rejected():
-    assert L.guard_and_reroute("world.europe", VSET, NODES) is None
-    assert L.guard_and_reroute("entertainment.celebrity", VSET, NODES) is None
-    assert L.guard_and_reroute("climate", VSET, NODES) is None
-    assert L.guard_and_reroute("made.up.thing", VSET, NODES) is None
+def test_valid_leaf_and_offered_parent_are_kept():
+    assert L.guard_valid("politics.uk", OFFERED) == "politics.uk"
+    assert L.guard_valid("business", OFFERED) == "business"   # genuine general bucket
+
+
+def test_offtaxonomy_subject_is_DROPPED_not_rerouted():
+    # ice hockey / a region we don't offer — no honest fit → drop, NOT reroute to a parent
+    assert L.guard_valid("sport.nhl", OFFERED) is None
+    assert L.guard_valid("top-stories.north-america", OFFERED) is None
+    assert L.guard_valid("sport.cricket.internationals", OFFERED) is None  # plural gap → drop
+
+
+def test_none_sentinel_and_legacy_slugs_dropped():
+    assert L.guard_valid("none", OFFERED) is None
+    assert L.guard_valid("world.europe", OFFERED) is None
+    assert L.guard_valid("entertainment.celebrity", OFFERED) is None
+    assert L.guard_valid("climate", OFFERED) is None
 
 
 # ── tolerant JSON parser ─────────────────────────────────────────────────────
@@ -42,47 +48,61 @@ def _raw(text: str) -> dict:
 
 
 def test_parse_clean_json():
-    got = L._parse(_raw('{"primary":"health","secondary":[],"confidence":0.9,"reason":"x"}'), VSET)
+    got = L._parse(_raw('{"primary":"health","secondary":[],"confidence":0.9,"reason":"x"}'), OFFERED)
     assert got[0] == "health" and got[2] == 0.9
 
 
 def test_parse_tolerates_trailing_prose():
     txt = '{"primary":"health","secondary":[],"confidence":0.9,"reason":"x"}\n\nThis is health news.'
-    assert L._parse(_raw(txt), VSET)[0] == "health"
+    assert L._parse(_raw(txt), OFFERED)[0] == "health"
 
 
 def test_parse_strips_code_fence():
     txt = '```json\n{"primary":"science","secondary":[],"confidence":0.8,"reason":"y"}\n```'
-    assert L._parse(_raw(txt), VSET)[0] == "science"
+    assert L._parse(_raw(txt), OFFERED)[0] == "science"
 
 
-# ── classify_story with a mocked API ─────────────────────────────────────────
+# ── classify_story with a mocked API: KEEP vs DROP vs FAILURE ─────────────────
 
 def _mock_post(monkeypatch, payload_text: str):
     monkeypatch.setattr(L, "_post_anthropic", lambda system, user: _raw(payload_text))
 
 
-def test_classify_returns_valid_leaf(monkeypatch):
+def test_classify_keeps_valid_leaf(monkeypatch):
     _mock_post(monkeypatch, '{"primary":"politics.uk","secondary":["top-stories.uk"],"confidence":0.95,"reason":"uk gov"}')
     r = L.classify_story(title="No 10 shares shock at smuggler", snippets=[],
                          pool_topic="nation", pool_country="gb", valid_leaves=LEAVES)
-    assert r.primary == "politics.uk"
+    assert r.primary == "politics.uk" and r.method == "llm-primary"
     assert r.secondaries == ["top-stories.uk"]
-    assert r.method == "llm-primary"
 
 
-def test_classify_reroutes_taxonomy_gap(monkeypatch):
+def test_classify_keeps_offered_parent(monkeypatch):
+    _mock_post(monkeypatch, '{"primary":"business","secondary":[],"confidence":0.7,"reason":"general business"}')
+    r = L.classify_story(title="Markets roundup", snippets=[], pool_topic="business",
+                         pool_country="gb", valid_leaves=LEAVES)
+    assert r.primary == "business"
+
+
+def test_classify_DROPS_offtaxonomy_subject(monkeypatch):
+    # ice hockey: model may (wrongly) emit a hockey slug OR correctly say none — either way DROP.
     _mock_post(monkeypatch, '{"primary":"sport.nhl","secondary":[],"confidence":0.9,"reason":"hockey"}')
     r = L.classify_story(title="Oilers move on", snippets=[], pool_topic="sports",
                          pool_country="us", valid_leaves=LEAVES)
-    assert r.primary == "sport" and r.method == "llm-primary-rerouted"
-    assert r.raw_slug == "sport.nhl"
+    assert r.primary == L.DROP and r.method == "llm-drop"
+    assert r.reason == "hockey"          # model's reason preserved for visibility
 
 
-def test_classify_rejects_unrerouteable(monkeypatch):
+def test_classify_DROPS_on_explicit_none(monkeypatch):
+    _mock_post(monkeypatch, '{"primary":"none","secondary":[],"confidence":0.4,"reason":"no fit"}')
+    r = L.classify_story(title="Local curling bonspiel result", snippets=[], pool_topic=None,
+                         pool_country=None, valid_leaves=LEAVES)
+    assert r.primary == L.DROP
+
+
+def test_classify_DROPS_legacy_slug(monkeypatch):
     _mock_post(monkeypatch, '{"primary":"climate","secondary":[],"confidence":0.9,"reason":"legacy"}')
     assert L.classify_story(title="Heatwave", snippets=[], pool_topic=None,
-                            pool_country=None, valid_leaves=LEAVES) is None
+                            pool_country=None, valid_leaves=LEAVES).primary == L.DROP
 
 
 def test_classify_filters_invalid_secondaries(monkeypatch):
@@ -92,10 +112,11 @@ def test_classify_filters_invalid_secondaries(monkeypatch):
     assert r.secondaries == ["science"]   # climate dropped (invalid), health dropped (== primary)
 
 
-def test_classify_none_on_api_failure(monkeypatch):
+def test_classify_none_on_api_failure_is_distinct_from_drop(monkeypatch):
     monkeypatch.setattr(L, "_post_anthropic", lambda system, user: None)
-    assert L.classify_story(title="x", snippets=[], pool_topic=None,
-                            pool_country=None, valid_leaves=LEAVES) is None
+    r = L.classify_story(title="x", snippets=[], pool_topic=None,
+                         pool_country=None, valid_leaves=LEAVES)
+    assert r is None   # API failure → None (fallback), NOT DROPPED (exclude)
 
 
 # ── content hash ─────────────────────────────────────────────────────────────
