@@ -291,7 +291,7 @@ struct NowPlayingView: View {
             // Hidden gracefully (no placeholder) until the backend surfaces sources.
             if !sources.isEmpty {
                 HStack(spacing: 0) {
-                    Text("SOURCES — \(sources.prefix(3).joined(separator: " · "))".uppercased())
+                    Text(sources.prefix(3).joined(separator: " · ").uppercased())
                         .font(.label(11)).tracking(1.5)
                         .foregroundColor(BoardColors.character.opacity(0.55))
                         .lineLimit(1)

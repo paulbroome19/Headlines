@@ -1013,6 +1013,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     // MARK: - Lock screen
 
+    /// The story unit the playhead is in (clamped) — stays the current story even during
+    /// its bridge/intro, mirroring NowPlayingView's board. nil when there are no stories.
+    private var currentStoryUnit: StoryUnit? {
+        guard !_storyUnits.isEmpty else { return nil }
+        let idx = min(max(0, currentUnitIndex), _storyUnits.count - 1)
+        return _storyUnits[idx]
+    }
+
     private func updateNowPlaying() {
         let center = MPNowPlayingInfoCenter.default()
         guard let seg = currentSegment else {
@@ -1020,18 +1028,28 @@ final class BulletinPlayer: NSObject, ObservableObject {
             center.playbackState = .stopped
             return
         }
-        let title = seg.isStory ? (seg.title ?? "Headlines") : "Headlines"
+        // Title = the current story's headline; subtitle = its ranked SOURCES (same data
+        // + format as the in-app card's row) — so the lock screen mirrors the playback
+        // screen and both refresh as segments advance (updateNowPlaying runs on every
+        // segment change). Derived from the current story UNIT so it stays the story's
+        // headline through its bridge/intro. No sources → "Headlines" rather than blank.
+        let unit = currentStoryUnit
+        let title = unit?.title ?? "Headlines"
+        let srcs = (unit?.storySegment.sources ?? []).prefix(3)
+        let artist = srcs.isEmpty ? "Headlines" : srcs.joined(separator: " · ")
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle:                   title,
-            MPMediaItemPropertyArtist:                  "Headlines",
-            MPMediaItemPropertyArtwork:                 Self.lockScreenArtwork,
+            MPMediaItemPropertyTitle:                    title,
+            MPMediaItemPropertyArtist:                   artist,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: positionSeconds,
-            MPMediaItemPropertyPlaybackDuration:        seg.durationSeconds,
+            MPMediaItemPropertyPlaybackDuration:         seg.durationSeconds,
             // Rate + playbackState derive from the SAME `isPlaying` as the in-app icon,
             // so the lock screen can never show PLAY while the app shows PAUSE (and vice
             // versa) — including during a `.stalled` (mid-playback buffering) beat.
-            MPNowPlayingInfoPropertyPlaybackRate:       isPlaying ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate:        isPlaying ? 1.0 : 0.0,
         ]
+        if let art = Self.lockScreenArtwork {
+            info[MPMediaItemPropertyArtwork] = art
+        }
         if seg.isStory, storyCount > 0 {
             info[MPNowPlayingInfoPropertyChapterNumber] = storyIndex + 1
             info[MPNowPlayingInfoPropertyChapterCount]  = storyCount
@@ -1040,33 +1058,18 @@ final class BulletinPlayer: NSObject, ObservableObject {
         center.playbackState = isPlaying ? .playing : .paused
     }
 
-    /// Lock-screen / Control-Center artwork (#4): the now-playing card was blank.
-    /// Rendered once — an on-brand dark flap-board with the "HEADLINES" wordmark,
-    /// using the BoardColors palette (topFlapTop→botFlapBottom gradient, bone
-    /// off-white type). Drawn rather than loaded so it never depends on the app-icon
-    /// asset resolving at runtime.
-    private static let lockScreenArtwork: MPMediaItemArtwork = {
-        let size = CGSize(width: 600, height: 600)
-        let image = UIGraphicsImageRenderer(size: size).image { ctx in
-            let cg = ctx.cgContext
-            let top = UIColor(red: CGFloat(0x2E) / 255, green: CGFloat(0x2E) / 255, blue: CGFloat(0x2E) / 255, alpha: 1)
-            let bot = UIColor(red: CGFloat(0x15) / 255, green: CGFloat(0x15) / 255, blue: CGFloat(0x15) / 255, alpha: 1)
-            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                     colors: [top.cgColor, bot.cgColor] as CFArray, locations: [0, 1]) {
-                cg.drawLinearGradient(grad, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
+    /// Lock-screen / Control-Center artwork — the REAL app icon (Headlines_Icon_1024),
+    /// bundled as a standalone image set ("LockScreenArtwork") because asset-catalog APP
+    /// ICONS aren't reliably loadable via UIImage(named:) at runtime. The provider closure
+    /// renders the icon at whatever size the lock screen requests, so it's crisp at every
+    /// scale. nil (artwork omitted) only if the bundled asset is somehow missing.
+    private static let lockScreenArtwork: MPMediaItemArtwork? = {
+        guard let icon = UIImage(named: "LockScreenArtwork") else { return nil }
+        return MPMediaItemArtwork(boundsSize: icon.size) { size in
+            UIGraphicsImageRenderer(size: size).image { _ in
+                icon.draw(in: CGRect(origin: .zero, size: size))
             }
-            let text = "HEADLINES" as NSString
-            let para = NSMutableParagraphStyle(); para.alignment = .center
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 60, weight: .semibold),
-                .foregroundColor: UIColor(red: CGFloat(0xED) / 255, green: CGFloat(0xED) / 255, blue: CGFloat(0xEA) / 255, alpha: 1),
-                .kern: 8,
-                .paragraphStyle: para,
-            ]
-            let h = text.boundingRect(with: size, options: .usesLineFragmentOrigin, attributes: attrs, context: nil).height
-            text.draw(in: CGRect(x: 0, y: (size.height - h) / 2, width: size.width, height: h), withAttributes: attrs)
         }
-        return MPMediaItemArtwork(boundsSize: size) { _ in image }
     }()
 }
 
