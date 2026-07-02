@@ -2,12 +2,15 @@
 Scheduled ingest worker — tiered pool edition (docs/ingestion-pool-design.md Part 3).
 
 Each POOL = one (category, country) GNews request, fired on its own aligned
-wall-clock grid:
-  Tier 1   — core finance-commuter coverage, every 60 min
-  Tier 1.5 — the rest of the GB topic categories, every 3 h
+wall-clock grid. The grid is FRESHNESS-first: the pools a UK user wants the
+instant news breaks poll fastest, the long tail stays slow.
+  Tier 0   — real-time: top stories (gb+us), UK politics, UK sport, every 15 min
+  Tier 1   — fast: US politics, business (gb+us), UK world/tech, every 30 min
+  Tier 1.5 — steady: slow-moving GB topics (science/health/ents), every 3 h
   Tier 2   — major economies / Commonwealth, 3×/day (every 8 h)
   Tier 3   — the long tail, 1×/day
-Priorities (business / politics-via-nation / top-stories) are the frequent tiers.
+15 min is the practical floor — below it GNews's own indexing latency dominates,
+so faster polling mostly re-reads the same index (see docs/ingestion-pool-design.md).
 
 Restart-safe: slots are aligned to the wall-clock grid from midnight UTC, so a
 restart never double-fires a slot and never catches up missed slots. Enabled only
@@ -34,7 +37,7 @@ from core.pipeline.data.ingest.events import DATA_INGEST_REQUESTED
 logger = logging.getLogger(__name__)
 
 # Intervals (minutes) → fires/day = 1440 / interval.
-_T1, _T15, _T2, _T3 = 60, 180, 480, 1440
+_T0, _T1, _T15, _T2, _T3 = 15, 30, 180, 480, 1440
 
 
 @dataclass(frozen=True)
@@ -51,13 +54,24 @@ class Pool:
 def _build_pools() -> list[Pool]:
     pools: list[Pool] = []
 
-    # TIER 1 — core (every 60 min): general/business/nation for gb + us.
-    for country in ("gb", "us"):
-        for cat in ("general", "business", "nation"):
-            pools.append(Pool(cat, country, _T1))
+    # TIER 0 — real-time (every 15 min): the pools a UK user wants the instant
+    # news breaks — top stories (gb + us), UK politics (nation/gb), and UK sport
+    # (the "England just won" case — was 3 h, the worst freshness offender).
+    pools.append(Pool("general", "gb", _T0))
+    pools.append(Pool("general", "us", _T0))
+    pools.append(Pool("nation",  "gb", _T0))
+    pools.append(Pool("sports",  "gb", _T0))
 
-    # TIER 1.5 — UK comprehensiveness (every 3 h): remaining GB topic categories.
-    for cat in ("world", "technology", "sports", "science", "health", "entertainment"):
+    # TIER 1 — fast (every 30 min): US politics, business (gb + us markets), and
+    # the other time-sensitive GB topics (world, technology).
+    pools.append(Pool("nation",     "us", _T1))
+    pools.append(Pool("business",   "gb", _T1))
+    pools.append(Pool("business",   "us", _T1))
+    pools.append(Pool("world",      "gb", _T1))
+    pools.append(Pool("technology", "gb", _T1))
+
+    # TIER 1.5 — steady (every 3 h): slow-moving GB topics — no freshness need.
+    for cat in ("science", "health", "entertainment"):
         pools.append(Pool(cat, "gb", _T15))
 
     # TIER 2 — major economies / Commonwealth (3×/day).
