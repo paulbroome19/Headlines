@@ -862,18 +862,29 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
         guard let item = item else {
             currentSegment = nil
-            // Distinguish a GENUINE queue-exhausted nil from a SPURIOUS one that must
-            // not be read as ".ended":
-            //   • .buffering        — a seek is mid-rebuild (removeAllItems).
-            //   • prevSeg == nil     — the FRESH queue's INITIAL currentItem KVO nil.
-            //     Because the observer is `.receive(on: RunLoop.main)`, that initial nil
-            //     is delivered AFTER the synchronous first-load block set
-            //     playerState = .playing (gateOnReadinessThenPlay). Reading it as .ended
-            //     would strand the first-play transport on a PLAY icon forever — the
-            //     timeControlStatus(.playing) edge only recovers from
-            //     .preparing/.buffering/.stalled, never from .ended. This was the LAST
-            //     stranded first-play path (seek/skip already set state directly).
-            // A real end-of-bulletin nil always follows a played segment (prevSeg != nil).
+            // ROOT-CAUSE GUARD (skip/prev false end-of-briefing). A nil reported here is
+            // often TRANSIENT, not a real end: skip()/skipBack()/seekToStoryUnit rebuild the
+            // queue (removeAllItems → re-enqueue), which drives currentItem → nil → newItem.
+            // Because this observer is DEFERRED (.receive(on: RunLoop.main)), that removeAllItems
+            // nil is delivered on a LATER runloop — AFTER the rebuild has already made a fresh
+            // item current AND after `resumeAfterSeekIfIntended` synchronously set playerState
+            // back to `.playing`. That defeats the `.buffering` guard below, and `prevSeg` is
+            // still the pre-skip segment (non-nil, seekToStoryUnit never clears currentSegment),
+            // so a NEXT/PREVIOUS while playing FALSELY fell through to the end branch:
+            // intent→paused (icon flips to PLAY) while audio kept playing, and playerState=.ended
+            // (so the next play() restarted the briefing).
+            //
+            // The reliable test for a REAL end is the LIVE queue, not the (possibly stale)
+            // reported item: a genuine end has NO current item now; a rebuild nil has already
+            // been superseded by a fresh currentItem. So if the player currently HAS an item,
+            // this nil is stale → ignore it. End-of-briefing can ONLY be reached when the live
+            // queue is genuinely exhausted.
+            if player?.currentItem != nil {
+                print("🎯TX KVO:currentItem→nil IGNORED (stale rebuild nil — live currentItem exists)")
+                return
+            }
+            // Belt (unchanged): fresh-queue INITIAL nil (prevSeg == nil) / mid-rebuild
+            // (.buffering) — the timeControlStatus(.playing) edge recovers those.
             guard playerState != .buffering, prevSeg != nil else {
                 print("🎯TX KVO:currentItem→nil IGNORED (spurious: state=\(txDesc(playerState)) prevSeg=\(prevSeg == nil ? "nil" : "set"))")
                 return
