@@ -4,10 +4,24 @@ The final-boss review over categorisation + ranking — an editor looking at the
 before it goes out. Same spirit as the connective-tissue LLM, but it runs on the RANKED
 candidate set (after cluster → categorise[#113] → rank, before selection).
 
-## What it does (one Haiku call)
+## What it reviews — laddered by tier (not a flat top-N)
 
-Reviews the top `REVIEW_N` (40) ranked candidates — the only stories that can surface even
-in the deepest bulletin (18) — and returns BOUNDED corrections only:
+Review DEPTH is scoped by newspaper tier so attention/cost concentrates where it matters:
+
+| Tier | Categories | Depth | Grouped by |
+|---|---|---|---|
+| 1 | top-stories, politics, business | top ~50 each | top-level |
+| 2 | world, health, science, environment | top ~20 each | top-level |
+| 3 / niche | technology, sport, culture (a specific club, …) | top ~5 each | leaf |
+| — | uncategorised (major hard news #113 left homeless) | top ~20 | — |
+
+Plus a **floor guarantee**: every distinct leaf contributes its top-2, so a story that can
+reach a bulletin via a selected category's guaranteed floor is never skipped even if it
+falls below its tier's depth. Total ≈ 320–400 stories (scales with the day's category
+spread). If that exceeds `CALL_BATCH` (200) it splits into tier **bands** — front page
+(tier 1 + uncategorised) first — so each Haiku call attends carefully rather than skimming.
+
+Per reviewed story it returns BOUNDED corrections only:
 
 - **Category** — fix a clearly-wrong category (belt-and-braces over #113).
 - **Significance** — nudge importance UP/DOWN by at most **±2.0** on the 0–10 axis, where the
@@ -41,19 +55,21 @@ ranking run, reused across every user, filter and regeneration.
 
 ## Cost (measured on prod)
 
-~4100 in + ~290 out tokens ⇒ **~$0.0056/call** (Haiku $1/$5). Cached per ranking run, so cost
-= (distinct ranking runs that produce a bulletin) × $0.0056 — a handful a day ⇒ pennies/day.
+323 reviewed over 2 tier-band calls ⇒ ~25.2k in + ~1.0k out tokens ⇒ **~$0.030/run** (Haiku
+$1/$5). Cached per ranking run, so cost = (distinct ranking runs that produce a bulletin) ×
+$0.03 — a handful a day ⇒ pennies/day.
 
 Config: `enable_editorial_pass` (default true).
 
 ## Verified on prod (read-only, real candidate set)
 
-40 reviewed, 6 changed, all bounded:
+1131 candidates → 323 reviewed (T1 151 / T2 60 / T3 112), 2 calls, 15 changed, all bounded:
 | story | before | after |
 |---|---|---|
-| PlayStation reputation (high coverage) | #2 technology.gaming | #30, culture.tv-film, −1 (trivial demoted) |
-| "How to get USA v Belgium tickets" | #18 | #40, −2 (listicle demoted) |
-| Trump crypto $1bn | #1 politics.us | #25 business.companies, −1 (recategorised) |
-| Microsoft AI company | #4 business | technology.companies (recategorised) |
-| China ethnic-unity law (under-covered) | #26 | **#1** top-stories.asia, +1 (major promoted) |
-| Russian attack kills 20+ in Kyiv | #33 politics.world | **#2** top-stories.europe, +1 (major promoted) |
+| "Spain v Austria LIVE" match-blog (front page!) | #33 top-stories.europe | **#1130**, sport.football.internationals, −2 |
+| PlayStation reputation (high coverage) | #2 technology.gaming | #25, −1 (opinion, not hard news) |
+| Taylor Swift donation (gossip) | #16 culture.celebrity | #91, −1 |
+| Microsoft AI company | #4 business | business.companies, −1 (recategorised) |
+| Hospital fire, fatalities (under-covered) | #29 top-stories.europe | **#2**, +1 (major, kept top story) |
+| China ethnic-unity law | #26 top-stories.asia | #21 **politics.world** (demoted off front page) |
+| Tucker Carlson (bad region) | #78 top-stories.middle-east | politics.us (recategorised) |

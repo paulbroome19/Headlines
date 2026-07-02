@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from core.pipeline.ranking.models import ScoredStory, StoryRankingCandidate
 from core.pipeline.data.bulletin import editorial as E
 from core.pipeline.data.bulletin.editorial import EditorialAdjustment, MAX_PROMOTIONS, SIG_CLAMP
-from core.pipeline.data.bulletin.editorial_review import apply_editorial
+from core.pipeline.data.bulletin.editorial_review import (
+    apply_editorial, _tiered_review, TIER_DEPTH, FLOOR_N,
+)
 
 NOW = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
 LEAVES = ["politics.uk", "politics.us", "business.companies", "technology.gaming",
@@ -59,6 +61,36 @@ def test_unknown_story_id_ignored():
     s = _story("a", "science", 5.0)
     changed = apply_editorial([s], {"ghost": EditorialAdjustment("ghost", "politics.uk", 1.0, "x")})
     assert changed == 0 and s.candidate.primary_category == "science"
+
+
+# ── tier-laddered review selection ───────────────────────────────────────────
+
+def test_tiered_depth_by_category_plus_floor_and_bands():
+    # 60 politics (T1, cap 50), 30 science (T2, cap 20), 8 arsenal (T3 leaf, cap 5).
+    pol = [_story(f"p{i}", "politics.uk", 100 - i) for i in range(60)]
+    sci = [_story(f"s{i}", "science", 60 - i) for i in range(30)]
+    ars = [_story(f"a{i}", "sport.football.premier-league.arsenal", 40 - i) for i in range(8)]
+    review, rank = _tiered_review(pol + sci + ars)
+    ids = {s.candidate.story_id for s, _ in review}
+    bands = {s.candidate.story_id: b for s, b in review}
+
+    # politics: top 50 by tier depth — but the FLOOR keeps each leaf's top-2 too; politics
+    # is one leaf here so depth 50 dominates. 60 present, 50 within depth + none extra.
+    assert sum(1 for i in ids if i.startswith("p")) == TIER_DEPTH[1]
+    assert sum(1 for i in ids if i.startswith("s")) == TIER_DEPTH[2]        # science top 20
+    assert sum(1 for i in ids if i.startswith("a")) == 5                    # niche leaf top 5
+    # tier-1 politics → band A (front-page critical); science + sport → band B
+    assert bands["p0"] == "A" and bands["s0"] == "B" and bands["a0"] == "B"
+    # global rank is by score across everything (politics highest)
+    assert rank["p0"] == 1
+
+
+def test_floor_includes_a_leaf_below_its_tier_depth():
+    # A niche leaf with only 1 story ranked far down still gets reviewed (floor top-2).
+    big = [_story(f"b{i}", "politics.uk", 100 - i) for i in range(50)]
+    niche = [_story("n1", "sport.tennis", 1.0)]   # rank ~51, tier 3 leaf
+    review, _ = _tiered_review(big + niche)
+    assert "n1" in {s.candidate.story_id for s, _ in review}
 
 
 # ── review_front_page: parsing + guards (mocked API) ─────────────────────────
