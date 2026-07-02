@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from .category_ranker import get_category_tier, get_category_weight
-from .config import BREAKTHROUGH_SOURCES
+from .config import BREAKTHROUGH_SOURCES, PRESET_STORY_RANGES
 from .models import ScoredStory, StoryRankingCandidate
 from .scorer import score_story
 from .thresholds import effective_tier, select_by_thresholds
@@ -95,13 +95,13 @@ def test_front_page_leads_with_hard_news_not_football():
     ]
     sel = select_by_thresholds(
         scored, include_top_stories=True, include_categories=None,
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     tiers = [effective_tier(s) for s in sel]
     assert tiers == sorted(tiers)                                  # tier is decisive
     lead_cats = [s.candidate.primary_category for s in sel[:3]]
     assert all(get_category_tier(c) == 1 for c in lead_cats)       # hard news leads
-    # the soft stories are present (never-empty preserved) but sink to the back
+    # the soft stories clear the front bar here, so they're present but sink to the back
     ids = [s.candidate.story_id for s in sel]
     for soft in ("gaming", "foot1", "foot2", "foot3"):
         assert ids.index(soft) > ids.index("trump")
@@ -114,7 +114,7 @@ def test_a_true_mega_story_can_lead():
     ]
     sel = select_by_thresholds(
         scored, include_top_stories=True, include_categories=None,
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     # Both Tier 1 now; the mega-story leads on coverage within the tier.
     assert sel[0].candidate.story_id == "wc-final"
@@ -127,7 +127,7 @@ def test_sport_follower_still_gets_sport():
     ]
     sel = select_by_thresholds(
         scored, include_top_stories=False, include_categories=["sport"],
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     assert {s.candidate.story_id for s in sel} == {"foot1", "foot2"}
 
@@ -153,7 +153,7 @@ def test_football_only_never_gets_hard_news_even_with_flag_true():
     sel = select_by_thresholds(
         _mixed_day(), include_top_stories=True,
         include_categories=["sport.football"],
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     cats = {s.candidate.primary_category for s in sel}
     assert cats and all(c.startswith("sport.football") for c in cats)
@@ -165,7 +165,7 @@ def test_business_and_politics_only_stays_within_selection():
     sel = select_by_thresholds(
         scored, include_top_stories=True,
         include_categories=["business", "politics"],
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     ids = {s.candidate.story_id for s in sel}
     assert ids == {"tariffs", "kroger", "election"}          # only business + politics
@@ -178,7 +178,7 @@ def test_top_stories_selected_still_gets_the_front_page():
     sel = select_by_thresholds(
         _mixed_day(), include_top_stories=True,
         include_categories=["top-stories"],
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     ids = [s.candidate.story_id for s in sel]
     assert "iran" in ids and "tariffs" in ids                # front page present
@@ -193,7 +193,7 @@ def test_multi_filter_keeps_newspaper_order_within_selection():
     sel = select_by_thresholds(
         _mixed_day(), include_top_stories=True,
         include_categories=["business", "sport.football"],
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     cats = [s.candidate.primary_category for s in sel]
     assert set().union(*[{c} for c in cats]) and all(
@@ -206,13 +206,13 @@ def test_multi_filter_keeps_newspaper_order_within_selection():
 
 def test_narrow_selection_stays_short_never_padded():
     """A topic selection with only a couple of qualifiers stays SHORT — it is never
-    backfilled up to target_count with unselected content."""
+    padded up to the range with unselected (or below-bar) content."""
     sel = select_by_thresholds(
         _mixed_day(), include_top_stories=True,
         include_categories=["sport.football"],
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
-    assert len(sel) == 2                                     # shorter than target, not padded
+    assert len(sel) == 2                                     # below the range min, not padded
 
 
 # ── guaranteed representation: a busy category never zeroes out a chosen one ─────
@@ -244,7 +244,7 @@ def test_football_represented_alongside_busy_politics_and_business():
     sel = select_by_thresholds(
         _busy_day(), include_top_stories=True,
         include_categories=["sport.football", "politics", "business"],
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     cats = _cats(sel)
     assert any(c.startswith("sport.football") for c in cats), "football must appear"
@@ -260,8 +260,8 @@ def test_quick_guarantees_one_per_filter_deep_guarantees_more():
     Deep guarantees more (≥2) — a chosen filter is never zeroed by length."""
     kwargs = dict(include_top_stories=True,
                   include_categories=["sport.football", "politics", "business"], now=NOW)
-    quick = select_by_thresholds(_busy_day(), preset="short", target_count=6, **kwargs)
-    deep  = select_by_thresholds(_busy_day(), preset="detailed", target_count=16, **kwargs)
+    quick = select_by_thresholds(_busy_day(), preset="short", **kwargs)
+    deep  = select_by_thresholds(_busy_day(), preset="detailed", **kwargs)
     # Quick: at least one football even though only 6 slots and football is lowest-ranked.
     assert sum(c.startswith("sport.football") for c in _cats(quick)) >= 1
     # Deep: the floor rises — both football stories are guaranteed in.
@@ -276,9 +276,53 @@ def test_empty_selected_filter_is_simply_absent():
     sel = select_by_thresholds(
         day, include_top_stories=True,
         include_categories=["sport.football", "politics", "business"],
-        preset="medium", target_count=10, now=NOW,
+        preset="medium", now=NOW,
     )
     cats = _cats(sel)
     assert not any(c.startswith("sport.football") for c in cats)   # nothing to include
     assert any(c.startswith("politics") for c in cats)
     assert any(c.startswith("business") for c in cats)
+
+
+# ── flexible length: the count flexes within the preset RANGE ────────────────────
+
+def _n_stories(cat: str, n: int, src: int = 12) -> list[ScoredStory]:
+    """n distinct, well-covered (bar-clearing) stories in one category."""
+    return [_score(_cand(f"{cat}-{i}", src, cat)) for i in range(n)]
+
+
+def test_rich_day_caps_at_the_range_max():
+    """A rich day (far more worthwhile stories than the ceiling) lands exactly at the
+    range MAX for every preset — the max is a hard ceiling, never exceeded."""
+    scored = _n_stories("politics.us", 40)
+    for preset in ("short", "medium", "detailed"):
+        lo, hi = PRESET_STORY_RANGES[preset]
+        sel = select_by_thresholds(
+            scored, include_top_stories=False, include_categories=["politics"],
+            preset=preset, now=NOW,
+        )
+        assert len(sel) == hi, f"{preset}: expected ceiling {hi}, got {len(sel)}"
+
+
+def test_moderate_day_lands_inside_the_range():
+    """A moderate supply of worthwhile stories lands strictly inside the range (neither
+    floor nor ceiling binds) — the exact count is the worthwhile count."""
+    lo, hi = PRESET_STORY_RANGES["medium"]                  # (8, 13)
+    scored = _n_stories("politics.us", 10)                  # 10 worthwhile → in (8,13)
+    sel = select_by_thresholds(
+        scored, include_top_stories=False, include_categories=["politics"],
+        preset="medium", now=NOW,
+    )
+    assert len(sel) == 10 and lo <= len(sel) <= hi
+
+
+def test_thin_day_lands_below_the_soft_min_never_padded():
+    """A thin day with fewer worthwhile stories than the min lands at that lower count —
+    the min is a SOFT floor, never forced by padding below-bar content."""
+    lo, hi = PRESET_STORY_RANGES["medium"]                  # (8, 13)
+    scored = _n_stories("politics.us", 4)                   # only 4 worthwhile (< min 8)
+    sel = select_by_thresholds(
+        scored, include_top_stories=False, include_categories=["politics"],
+        preset="medium", now=NOW,
+    )
+    assert len(sel) == 4 < lo                               # short, not padded up to min

@@ -32,7 +32,9 @@ from .config import (
     BREAKTHROUGH_SOURCES,
     COUNTRY_TIEBREAK_STRENGTH,
     DEFAULT_PRESET,
+    DEFAULT_STORY_RANGE,
     FRESH_CATEGORY_RELIEF,
+    PRESET_STORY_RANGES,
     THRESHOLDS,
     TOP_STORIES_REGIONS,
 )
@@ -54,14 +56,6 @@ def effective_tier(s: ScoredStory) -> int:
     if base > 1 and s.candidate.source_count >= BREAKTHROUGH_SOURCES:
         return 1
     return base
-
-
-# Top Stories is the "best across everything" front page — it must never come back
-# empty just because nothing cleared the (deliberately high) universal bar on a
-# thin/low-coverage day. When Top Stories is explicitly selected, guarantee the
-# front page fills up to this many highest-scored stories regardless of the bar.
-# Aligned with the summarise budget so a full bulletin can always be assembled.
-_FRONT_PAGE_MIN = 12
 
 
 # Guaranteed representation across selected filters. Selecting a filter is a PROMISE to
@@ -134,12 +128,12 @@ def select_by_thresholds(
     include_top_stories: bool,
     include_categories: list[str] | None,
     preset: str = DEFAULT_PRESET,
-    target_count: int | None = None,
+    count_range: tuple[int, int] | None = None,
     now: datetime | None = None,
 ) -> list[ScoredStory]:
     """
     Return the stories that clear any of their sources' thresholds for this preset,
-    deduped and length-controlled to `target_count` (Quick/Standard/Deep).
+    deduped, and length-controlled to the preset's RANGE (Quick/Standard/Deep).
 
     The briefing only ever contains stories matching the user's CHOSEN sources; the
     newspaper tiering orders within that set, it never reaches outside it.
@@ -148,8 +142,14 @@ def select_by_thresholds(
     selecting a filter is a promise to include it, so a busy category can never rank a
     chosen one down to zero. Each filter is guaranteed its top `_FLOOR_PER_FILTER[preset]`
     stories; the remaining slots fill by global rank (so depth follows importance — the
-    busiest category dominates the remainder). Length controls how many PER filter, not
-    which filters appear. A filter with no content is simply absent.
+    busiest category dominates the remainder). A filter with no content is simply absent.
+
+    FLEXIBLE LENGTH: the exact count flexes with the day's news rather than cutting a
+    worthwhile story to hit a fixed number. Only stories that clear their source's bar
+    (genuinely worth hearing) are included — the briefing is NEVER padded past that. It
+    fills up to the range's max (a HARD ceiling) and lands wherever the worthwhile content
+    runs out: a rich day near the max, a thin day near the min (or below it if there
+    genuinely isn't `min`-worth of qualifying content — the min is a SOFT floor).
 
     include_top_stories — the DEFAULT-only front-page flag. It admits the bare all-
                           topics front page ONLY when the user ticked no filters at all
@@ -161,11 +161,13 @@ def select_by_thresholds(
                           region's bucket (geo-filtered, country-weighted); anything
                           else → a topic category (lower bar). Top-Stories content
                           appears ONLY when top-stories/`top-stories.<region>` is here.
-    target_count        — desired bulletin length; defaults to the front-page floor.
+    count_range         — (min, max) bulletin length. `min` is the soft floor, `max` the
+                          hard ceiling; defaults to the preset's range. Callers over-size
+                          `max` (a reservoir) when they need extra depth to draw from.
     now                 — reference time for the fresh-category relief (injectable
                           for tests); defaults to now(UTC).
     """
-    target = target_count if target_count is not None else _FRONT_PAGE_MIN
+    lo, hi = count_range if count_range is not None else PRESET_STORY_RANGES.get(preset, DEFAULT_STORY_RANGE)
     reference_now = now or datetime.now(timezone.utc)
     bars = THRESHOLDS.get(preset) or THRESHOLDS[DEFAULT_PRESET]
     ts_bar = bars["top_stories"]
@@ -189,18 +191,10 @@ def select_by_thresholds(
     }
     topic_cats = [c for c in cats if not _is_top_stories_slug(c)]
 
-    def _matches_selection(s: ScoredStory) -> bool:
-        """True when a story belongs to one of the user's CHOSEN sources: the front
-        page (all topics), a chosen region bucket, or a ticked topic category. Scopes
-        the never-empty backfill so it can only ever pull stories the user actually
-        asked for — never unselected hard news padded in to hit the target length."""
-        if front_page:
-            return True
-        if s.candidate.geo_region in regions:
-            return True
-        cat = s.candidate.primary_category
-        return any(_matches_category(cat, tc) for tc in topic_cats)
-
+    # `qualifying` = every story that CLEARS its source's bar — i.e. is genuinely worth
+    # hearing. This is the ONLY pool length is drawn from: there is no below-bar padding,
+    # so the briefing is never filled past what's worth hearing (a thin day just lands
+    # short). A truly empty candidate set yields nothing.
     qualifying: list[ScoredStory] = []
     seen: set[str] = set()
     for s in scored:
@@ -223,27 +217,6 @@ def select_by_thresholds(
         if via_front or via_region or via_category:
             qualifying.append(s)
             seen.add(sid)
-
-    # Never-empty guarantee, STRICTLY SCOPED TO THE SELECTION. The front page (and a
-    # regional bucket) promises "the best across everything / across the region" — it
-    # must not come back thin just because little cleared the deliberately-high universal
-    # bar, so backfill with the highest-scored stories up to the target. Crucially the
-    # backfill pool is `_matches_selection` ONLY: a front-page/default selection means
-    # all topics (so any story is fair game — that IS the front page), a region selection
-    # fills only from that region. A pure TOPIC selection (e.g. Football only) does NOT
-    # enter this branch at all — it stays its natural length, simply SHORTER (or empty on
-    # a thin day), and is NEVER padded with unselected categories.
-    if (front_page or regions) and len(qualifying) < target:
-        for s in sorted(scored, key=region_adjusted_score, reverse=True):
-            if not _matches_selection(s):
-                continue
-            sid = s.candidate.story_id
-            if sid in seen:
-                continue
-            qualifying.append(s)
-            seen.add(sid)
-            if len(qualifying) >= target:
-                break
 
     # ── Guaranteed representation across selected filters ────────────────────────
     # `qualifying` now holds everything eligible. Selecting a filter is a PROMISE to
@@ -277,7 +250,7 @@ def select_by_thresholds(
 
     floor = _FLOOR_PER_FILTER.get(preset, _DEFAULT_FLOOR)
     # Order filters by their top story's importance so, if the floors can't all fit the
-    # target (more filters than slots), the most important filters win the scarce slots.
+    # ceiling (more filters than slots), the most important filters win the scarce slots.
     ordered_keys = sorted(
         buckets, key=lambda k: _by_score(buckets[k][0]), reverse=True
     )
@@ -286,10 +259,10 @@ def select_by_thresholds(
     picked: set[str] = set()
     # Phase 1 — guaranteed floor: up to `floor` top stories from each chosen filter.
     for rank_i in range(floor):
-        if len(selected) >= target:
+        if len(selected) >= hi:
             break
         for key in ordered_keys:
-            if len(selected) >= target:
+            if len(selected) >= hi:
                 break
             bucket = buckets[key]
             if len(bucket) > rank_i:
@@ -297,10 +270,14 @@ def select_by_thresholds(
                 if s.candidate.story_id not in picked:
                     selected.append(s)
                     picked.add(s.candidate.story_id)
-    # Phase 2 — fill the rest by global rank across the whole pool.
-    if len(selected) < target:
+    # Phase 2 — fill the rest by global rank, up to the range's MAX (hard ceiling). Every
+    # candidate here already cleared its bar (worth hearing), so we simply take the best
+    # ones until the ceiling or the worthwhile pool runs out — landing anywhere in the
+    # range. `lo` is a soft floor: it is reached whenever ≥ lo worthwhile stories exist
+    # (we include them all up to `hi`), but is never forced by padding below-bar content.
+    if len(selected) < hi:
         for s in sorted(qualifying, key=_by_score, reverse=True):
-            if len(selected) >= target:
+            if len(selected) >= hi:
                 break
             if s.candidate.story_id not in picked:
                 selected.append(s)
@@ -314,4 +291,4 @@ def select_by_thresholds(
     # Tiering decides ORDER and per-story depth, never whether a selected filter appears.
     selected.sort(key=_by_score, reverse=True)
     selected.sort(key=effective_tier)
-    return selected[:target]
+    return selected[:hi]
