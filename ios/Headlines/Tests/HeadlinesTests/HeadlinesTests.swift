@@ -6,6 +6,7 @@
 //
 
 import XCTest
+import UIKit
 import MediaPlayer
 @testable import Headlines
 
@@ -75,5 +76,15 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(LoaderTiming.minLoaderSeconds,
                        LoaderTiming.stageSeconds * Double(LoaderTiming.visibleStages),
                        accuracy: 0.001)
+    }
+
+    /// Fix 1: the real app icon is bundled as a standalone image set and resolves at
+    /// runtime, so the lock-screen now-playing artwork is the actual icon (not the old
+    /// drawn "HEADLINES" placeholder). This is what asset-catalog APP ICONS can't do.
+    func testLockScreenArtworkAssetLoads() throws {
+        let icon = try XCTUnwrap(UIImage(named: "LockScreenArtwork"),
+                                 "Bundled lock-screen artwork (app icon) must load at runtime")
+        XCTAssertEqual(icon.size.width, 1024, accuracy: 1)
+        XCTAssertEqual(icon.size.height, 1024, accuracy: 1)
     }
 }
