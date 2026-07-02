@@ -213,3 +213,72 @@ def test_narrow_selection_stays_short_never_padded():
         preset="medium", target_count=10, now=NOW,
     )
     assert len(sel) == 2                                     # shorter than target, not padded
+
+
+# ── guaranteed representation: a busy category never zeroes out a chosen one ─────
+
+def _busy_day() -> list[ScoredStory]:
+    """A politics/business-heavy morning with lots of hard news but only two football
+    stories — the crowding scenario: on rank alone, football would fall off entirely."""
+    return [
+        _score(_cand("pol1", 22, "politics.us")),
+        _score(_cand("pol2", 20, "politics.uk")),
+        _score(_cand("pol3", 18, "politics.europe")),
+        _score(_cand("pol4", 16, "politics.us")),
+        _score(_cand("biz1", 21, "business.markets")),
+        _score(_cand("biz2", 19, "business.economy")),
+        _score(_cand("biz3", 17, "business.companies")),
+        _score(_cand("biz4", 15, "business")),
+        _score(_cand("foot1", 11, "sport.football.internationals")),
+        _score(_cand("foot2", 9, "sport.football.premier-league")),
+    ]
+
+
+def _cats(sel):
+    return [s.candidate.primary_category for s in sel]
+
+
+def test_football_represented_alongside_busy_politics_and_business():
+    """Football + Politics + Business on a busy day: all three are present — football is
+    NOT crowded to zero by higher-ranked hard news (the reported crowding bug)."""
+    sel = select_by_thresholds(
+        _busy_day(), include_top_stories=True,
+        include_categories=["sport.football", "politics", "business"],
+        preset="medium", target_count=10, now=NOW,
+    )
+    cats = _cats(sel)
+    assert any(c.startswith("sport.football") for c in cats), "football must appear"
+    assert any(c.startswith("politics") for c in cats)
+    assert any(c.startswith("business") for c in cats)
+    # …and the busy categories still dominate the DEPTH (rank fills the remainder).
+    assert sum(c.startswith("politics") or c.startswith("business") for c in cats) > \
+           sum(c.startswith("sport.football") for c in cats)
+
+
+def test_quick_guarantees_one_per_filter_deep_guarantees_more():
+    """Length controls how many PER filter. Quick guarantees ≥1 of each selected filter;
+    Deep guarantees more (≥2) — a chosen filter is never zeroed by length."""
+    kwargs = dict(include_top_stories=True,
+                  include_categories=["sport.football", "politics", "business"], now=NOW)
+    quick = select_by_thresholds(_busy_day(), preset="short", target_count=6, **kwargs)
+    deep  = select_by_thresholds(_busy_day(), preset="detailed", target_count=16, **kwargs)
+    # Quick: at least one football even though only 6 slots and football is lowest-ranked.
+    assert sum(c.startswith("sport.football") for c in _cats(quick)) >= 1
+    # Deep: the floor rises — both football stories are guaranteed in.
+    assert sum(c.startswith("sport.football") for c in _cats(deep)) == 2
+
+
+def test_empty_selected_filter_is_simply_absent():
+    """A selected filter with no qualifying content is absent (nothing to include) —
+    the others are unaffected and nothing crashes."""
+    # No football stories today; user still selected football + politics + business.
+    day = [s for s in _busy_day() if not (s.candidate.primary_category or "").startswith("sport")]
+    sel = select_by_thresholds(
+        day, include_top_stories=True,
+        include_categories=["sport.football", "politics", "business"],
+        preset="medium", target_count=10, now=NOW,
+    )
+    cats = _cats(sel)
+    assert not any(c.startswith("sport.football") for c in cats)   # nothing to include
+    assert any(c.startswith("politics") for c in cats)
+    assert any(c.startswith("business") for c in cats)

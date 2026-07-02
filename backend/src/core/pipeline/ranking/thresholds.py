@@ -64,6 +64,15 @@ def effective_tier(s: ScoredStory) -> int:
 _FRONT_PAGE_MIN = 12
 
 
+# Guaranteed representation across selected filters. Selecting a filter is a PROMISE to
+# include it, so a busy category must never rank a chosen one down to zero: every
+# selected filter contributes at least this many of its top stories before the remaining
+# slots are filled by global rank. Length controls how many PER filter, not WHICH filters
+# appear — longer presets guarantee a little more depth per filter.
+_FLOOR_PER_FILTER = {"short": 1, "medium": 1, "detailed": 2}
+_DEFAULT_FLOOR = 1
+
+
 def _matches_category(primary_category: str | None, ticked: str) -> bool:
     if not primary_category:
         return False
@@ -130,12 +139,17 @@ def select_by_thresholds(
 ) -> list[ScoredStory]:
     """
     Return the stories that clear any of their sources' thresholds for this preset,
-    deduped, ordered by importance, and capped/backfilled to `target_count` (the
-    preset's length control — Quick/Standard/Deep). The result is the top-N by score;
-    length is a target, not an unstable by-product of where the bar lands.
+    deduped and length-controlled to `target_count` (Quick/Standard/Deep).
 
     The briefing only ever contains stories matching the user's CHOSEN sources; the
     newspaper tiering orders within that set, it never reaches outside it.
+
+    GUARANTEED REPRESENTATION: every selected filter with qualifying content appears —
+    selecting a filter is a promise to include it, so a busy category can never rank a
+    chosen one down to zero. Each filter is guaranteed its top `_FLOOR_PER_FILTER[preset]`
+    stories; the remaining slots fill by global rank (so depth follows importance — the
+    busiest category dominates the remainder). Length controls how many PER filter, not
+    which filters appear. A filter with no content is simply absent.
 
     include_top_stories — the DEFAULT-only front-page flag. It admits the bare all-
                           topics front page ONLY when the user ticked no filters at all
@@ -231,20 +245,73 @@ def select_by_thresholds(
             if len(qualifying) >= target:
                 break
 
-    # Newspaper order. FIRST sort within-tier by coverage (a hugely-covered story
-    # leads its tier regardless of country; country_weight is the secondary tiebreak;
-    # story_id keeps it deterministic) — THEN sort by tier, which is DECISIVE. Python's
-    # sort is stable, so the coverage order is preserved inside each tier. Result: the
-    # front page (Tier 1: top-stories/politics/business) leads, the middle (Tier 2) and
-    # back (Tier 3: sport/tech/culture) follow — unless a soft story broke through on
-    # exceptional coverage (see effective_tier). Category is the primary driver, coverage
-    # secondary — not the old ±14% tiebreak that soft-news coverage overwhelmed.
-    qualifying.sort(
-        key=lambda s: (s.normalized_score, region_adjusted_score(s), s.candidate.story_id),
-        reverse=True,
+    # ── Guaranteed representation across selected filters ────────────────────────
+    # `qualifying` now holds everything eligible. Selecting a filter is a PROMISE to
+    # include it, so a busy category (politics) must not rank a chosen one (football) down
+    # to zero. Assign each story to its MOST-SPECIFIC chosen filter, guarantee each such
+    # filter its top `floor` stories, then fill the REMAINING slots by global rank across
+    # the whole pool. Only the floor is equal — depth still follows importance (the
+    # busiest category dominates the remainder). A filter with no content is simply absent;
+    # a single filter (or the bare front page) reduces to pure rank.
+    def _bucket_key(s: ScoredStory) -> tuple[str, str] | None:
+        cat = s.candidate.primary_category
+        matching = [tc for tc in topic_cats if _matches_category(cat, tc)]
+        if matching:
+            return ("topic", max(matching, key=len))       # most specific ticked topic
+        if s.candidate.geo_region in regions:
+            return ("region", s.candidate.geo_region)
+        if front_page:
+            return ("front", "")                            # catch-all front page
+        return None
+
+    def _by_score(s: ScoredStory) -> tuple[float, float, str]:
+        return (s.normalized_score, region_adjusted_score(s), s.candidate.story_id)
+
+    buckets: dict[tuple[str, str], list[ScoredStory]] = {}
+    for s in qualifying:
+        key = _bucket_key(s)
+        if key is not None:
+            buckets.setdefault(key, []).append(s)
+    for b in buckets.values():
+        b.sort(key=_by_score, reverse=True)
+
+    floor = _FLOOR_PER_FILTER.get(preset, _DEFAULT_FLOOR)
+    # Order filters by their top story's importance so, if the floors can't all fit the
+    # target (more filters than slots), the most important filters win the scarce slots.
+    ordered_keys = sorted(
+        buckets, key=lambda k: _by_score(buckets[k][0]), reverse=True
     )
-    qualifying.sort(key=effective_tier)
-    # Cap to the preset's target length — the top-N by score. (Topic-only briefings that
-    # genuinely have fewer qualifiers stay short; a truly empty set stays empty.)
-    qualifying = qualifying[:target]
-    return qualifying
+
+    selected: list[ScoredStory] = []
+    picked: set[str] = set()
+    # Phase 1 — guaranteed floor: up to `floor` top stories from each chosen filter.
+    for rank_i in range(floor):
+        if len(selected) >= target:
+            break
+        for key in ordered_keys:
+            if len(selected) >= target:
+                break
+            bucket = buckets[key]
+            if len(bucket) > rank_i:
+                s = bucket[rank_i]
+                if s.candidate.story_id not in picked:
+                    selected.append(s)
+                    picked.add(s.candidate.story_id)
+    # Phase 2 — fill the rest by global rank across the whole pool.
+    if len(selected) < target:
+        for s in sorted(qualifying, key=_by_score, reverse=True):
+            if len(selected) >= target:
+                break
+            if s.candidate.story_id not in picked:
+                selected.append(s)
+                picked.add(s.candidate.story_id)
+
+    # Newspaper order on the chosen set: within-tier by coverage (country_weight is the
+    # secondary tiebreak; story_id keeps it deterministic), THEN by tier, which is
+    # DECISIVE (stable sort preserves the coverage order inside each tier). The front page
+    # (Tier 1) leads, middle (Tier 2) and back (Tier 3: sport/tech/culture) follow —
+    # unless a soft story broke through on exceptional coverage (see effective_tier).
+    # Tiering decides ORDER and per-story depth, never whether a selected filter appears.
+    selected.sort(key=_by_score, reverse=True)
+    selected.sort(key=effective_tier)
+    return selected[:target]
