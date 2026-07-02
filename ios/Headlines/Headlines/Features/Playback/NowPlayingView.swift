@@ -267,7 +267,7 @@ struct NowPlayingView: View {
             // Header strip
             HStack(spacing: 8) {
                 Circle()
-                    .fill(BoardColors.character.opacity(player.playerState == .playing ? 0.9 : 0.4))
+                    .fill(BoardColors.character.opacity(player.isPlaying ? 0.9 : 0.4))
                     .frame(width: 6, height: 6)
                 Text(boardHeader)
                     .font(.label(11)).tracking(2)
@@ -444,7 +444,7 @@ struct NowPlayingView: View {
     }
 
     private var playPauseButton: some View {
-        let isPlaying = player.playerState == .playing || player.playerState == .stalled
+        let isPlaying = player.isPlaying   // single source of truth (matches lock screen)
         let diameter: CGFloat = 76
         return Button(action: { player.togglePlayPause() }) {
             ZStack {

@@ -6,31 +6,31 @@
 //
 
 import XCTest
+import MediaPlayer
 @testable import Headlines
 
 final class HeadlinesTests: XCTestCase {
 
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
+    /// Requirement 4 (regression guard): all four transport controls are ENABLED on the
+    /// lock screen / Control Center after the player initialises — none greyed out.
+    /// Previous was the one that regressed (`previousTrackCommand.isEnabled = false`).
+    @MainActor
+    func testLockScreenTransportCommandsAllEnabled() {
+        _ = BulletinPlayer()   // init wires + enables the remote command center
+        let cc = MPRemoteCommandCenter.shared()
+        XCTAssertTrue(cc.playCommand.isEnabled,            "Play must be enabled")
+        XCTAssertTrue(cc.pauseCommand.isEnabled,           "Pause must be enabled")
+        XCTAssertTrue(cc.togglePlayPauseCommand.isEnabled, "Toggle (headset) must be enabled")
+        XCTAssertTrue(cc.nextTrackCommand.isEnabled,       "Next must be enabled")
+        XCTAssertTrue(cc.previousTrackCommand.isEnabled,   "Previous must be enabled (the regression)")
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    /// Requirement 2: a fresh (idle) player is not playing → the transport shows the
+    /// PLAY icon. `isPlaying` is the single definition both the in-app icon and the
+    /// lock-screen playback rate derive from.
+    @MainActor
+    func testFreshPlayerReportsNotPlaying() {
+        let player = BulletinPlayer()
+        XCTAssertFalse(player.isPlaying)
     }
-
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // Any test you write for XCTest can be annotated as throws and async.
-        // Mark your test throws to produce an unexpected failure when your test encounters an uncaught error.
-        // Mark your test async to allow awaiting for asynchronous code to complete. Check the results with assertions afterwards.
-    }
-
-    func testPerformanceExample() throws {
-        // This is an example of a performance test case.
-        self.measure {
-            // Put the code you want to measure the time of here.
-        }
-    }
-
 }
