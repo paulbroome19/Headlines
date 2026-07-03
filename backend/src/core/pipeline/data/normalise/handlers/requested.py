@@ -16,6 +16,7 @@ from core.pipeline.data.normalise.categorise.category_service import (
 )
 from core.pipeline.data.normalise.categorise.pool_reconcile import reconcile_with_pool
 from core.pipeline.data.ingest.pool_taxonomy import geo_region as _geo_region_for
+from core.platform.config.source_credibility import record_unseen_source
 
 
 def handle_normalise_requested(event: dict) -> None:
@@ -93,6 +94,10 @@ def handle_normalise_requested(event: dict) -> None:
 
             if exists:
                 continue
+
+            # Record any outlet not curated in source_credibility so unknown sources
+            # can be reviewed / LLM-tiered later. Log-only; no ranking effect.
+            record_unseen_source(r["publisher"])
 
             raw = r["raw"] or {}
             snippet = raw.get("description") or raw.get("content") or None

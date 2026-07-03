@@ -27,6 +27,12 @@ from .thresholds import select_by_thresholds
 NOW = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
 
 
+# A representative outlet per curated tier, so the fixtures express their intended
+# credibility through `sources` (authority now keys on outlet identity, not the
+# top_source_tier int). tier 1 → global flagship, 3 → recognised generalist, 9 → unknown.
+_TIER_SOURCE = {1: "BBC", 2: "NPR", 3: "iNews", 9: "Example Daily"}
+
+
 def _cand(sid: str, src: int, arts: int, mins_ago: int, cat: str, tier: int) -> StoryRankingCandidate:
     return StoryRankingCandidate(
         story_id=sid,
@@ -42,6 +48,7 @@ def _cand(sid: str, src: int, arts: int, mins_ago: int, cat: str, tier: int) -> 
         geo_region=None,
         pool_country="gb",
         top_source_tier=tier,
+        sources=(_TIER_SOURCE.get(tier, "Example Daily"),),
     )
 
 
@@ -84,24 +91,31 @@ def test_A_sport_follower_qualifies_on_every_preset():
         assert "A" in _ids(rows), f"A missing on {preset}"
 
 
-def test_A_on_quick_requires_the_relief():
-    """On Quick, England single-source clears ONLY because of the relief: with the
-    relief decayed to ~0 (story no longer fresh) it drops below the 7.0 category bar."""
-    scored = list(_scored().values())
+def test_marginal_fresh_follower_requires_the_relief():
+    """The relief mechanism on a genuinely MARGINAL fresh followed story. Under curated
+    authority a trusted tier-1 single-source story (A=BBC) now clears the Quick bar on
+    merit (see test_A_sport_follower_qualifies), so the marginal case is a mid-tier
+    single-source outlet: it clears the 7.0 category bar ONLY while fresh (via relief),
+    and drops back under once the relief decays."""
+    marginal = score_story(
+        _cand("M", 1, 1, 6, "sport.football.premier-league", 3),  # iNews, single-source, fresh
+        get_category_weight("sport.football.premier-league"), now=NOW,
+    )
+    scored = [marginal, *_scored().values()]
     # Baseline score is genuinely under the Quick category bar...
-    assert _scored()["A"].normalized_score < THRESHOLDS["short"]["category"]
-    # ...admitted while fresh...
+    assert marginal.normalized_score < THRESHOLDS["short"]["category"]
+    # ...admitted while fresh (via the relief)...
     fresh = select_by_thresholds(
         scored, include_top_stories=False, include_categories=["sport"],
         preset="short", now=NOW,
     )
-    assert "A" in _ids(fresh)
+    assert "M" in _ids(fresh)
     # ...but NOT once the relief has decayed away (evaluate far in the future).
     stale = select_by_thresholds(
         scored, include_top_stories=False, include_categories=["sport"],
         preset="short", now=NOW + timedelta(days=10),
     )
-    assert "A" not in _ids(stale)
+    assert "M" not in _ids(stale)
 
 
 def test_C_trivial_gaming_only_for_follower_never_front_page():

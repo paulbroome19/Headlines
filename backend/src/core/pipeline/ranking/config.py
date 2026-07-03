@@ -130,13 +130,28 @@ FRESHNESS_LAMBDA = 0.03
 # gaming blog post. Nudged 0.15→0.20 for that separation. ⚑ tune.
 CATEGORY_TIEBREAK_STRENGTH = 0.20
 
-# Source authority: a LIGHT lift by the best (most credible) outlet covering the
-# story, reusing the curated source_credibility tiers. This breaks ties in the
-# single-source tail — a lone Reuters/BBC/AP story outranks a lone gaming-blog one.
-# Bonus by tier (1 = wire/flagship … default = unknown); scaled by the strength.
-# Coverage still dominates; this only sorts near-ties. ⚑ tune.
-SOURCE_AUTHORITY_STRENGTH = 0.10
-TIER_AUTHORITY_BONUS: dict[int, float] = {1: 1.0, 2: 0.6, 3: 0.3}  # else 0.0
+# Source authority: a CURATED, per-category-modulated lift by the story's outlets
+# (see platform/config/source_credibility.resolve_authority). Trusted Western core
+# leads everywhere; specialists get extra weight in their home category; trusted
+# regional names only count when their region is selected. The class weights
+# (global/specialist/regional bonus ∈ [0,1]) live in source_credibility; the knobs
+# below control HOW MUCH authority moves rank.
+#   BONUS lift (importance axis, compute_importance): 1 + SOURCE_AUTHORITY_STRENGTH·bonus
+#     → tier-1 ×1.30, home specialist ≈×1.20. Applied to EVERY story so trusted names
+#     rise on both the front page and followed topics.
+#   UNKNOWN down-rank (front-page / region axis, thresholds.py only): untrusted /
+#     unknown-only stories are ×UNKNOWN_AUTHORITY_FACTOR so they can't clear the high
+#     top-stories bar or lead a general bulletin. Deliberately NOT applied to the
+#     followed-topic (via_category) path, so niche followed content stays supplementary
+#     rather than being evicted (keeps the fresh-category-relief behaviour intact).
+SOURCE_AUTHORITY_STRENGTH = 0.30   # trusted lift (was a flat 0.10). ⚑ tune.
+UNKNOWN_AUTHORITY_FACTOR = 0.60    # front-page down-rank for untrusted/unknown stories. ⚑ tune.
+TIER_AUTHORITY_BONUS: dict[int, float] = {1: 1.0, 2: 0.6, 3: 0.3}  # legacy; superseded by resolve_authority
+
+# Lead lock: the first N bulletin slots are pinned to importance rank and require a
+# lead-eligible (trusted) story, so the biggest story leads and an unknown
+# single-source item can never occupy a lead slot. Used by thresholds + connective.
+LEAD_PIN_COUNT = 3
 
 # 0–10 normalisation: score10 = 10 · importance / (importance + IMPORTANCE_HALF).
 # IMPORTANCE_HALF is the importance value that maps to 5/10. Calibrated against the
@@ -192,9 +207,11 @@ DEFAULT_TARGET_STORIES = 10
 TOP_STORIES_REGIONS: set[str] = {"uk", "us", "europe", "middle-east", "africa", "asia"}
 
 # country_weight (from docs/ingestion-pool-design.md, via pool_taxonomy) applied
-# as a LIGHT tiebreak — same principle as CATEGORY_TIEBREAK_STRENGTH. Bigger
-# markets break ties within a region; it NEVER overrides raw coverage. ⚑ tune.
-COUNTRY_TIEBREAK_STRENGTH = 0.15
+# as a tiebreak — same principle as CATEGORY_TIEBREAK_STRENGTH. Bigger markets break
+# ties within a region. Raised 0.15→0.25 alongside a gb bump (pool_taxonomy: gb→1.3)
+# to give a moderate UK lean, so BBC/Sky/Guardian surface first for a UK audience
+# without burying a clearly-bigger US/world story. ⚑ tune.
+COUNTRY_TIEBREAK_STRENGTH = 0.25
 
 # ── Depth by rank (four coarse tiers; word target feeds the summariser prompt) ──
 # Assigned by a story's position in the final ordered bulletin. Lead deep, tail

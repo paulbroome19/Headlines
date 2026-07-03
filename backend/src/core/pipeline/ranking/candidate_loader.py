@@ -267,6 +267,7 @@ def load_story_ranking_candidates(
                 geo_region=row.get("geo_region"),
                 pool_country=row.get("pool_country"),
                 top_source_tier=best_tier(list(row.get("sources") or [])),
+                sources=tuple(row.get("sources") or []),
             )
         )
 

@@ -41,7 +41,11 @@ _COUNTRY_REGION: dict[str, str] = {
 _GEO_LEAVES = {"uk", "us", "europe", "middle-east", "africa", "asia"}
 
 # ── Country importance weight (docs Part 3b) — for the Part-4 roll-up ─────────
-_HIGH = {"gb", "us", "de", "fr", "ua", "il", "cn", "in", "jp", "za", "ng", "br"}
+# gb sits in its own top band (1.3) for a moderate UK lean: for a UK audience,
+# UK-edition stories (BBC/Sky/Guardian) surface ahead of equal-scored US/world.
+# Paired with COUNTRY_TIEBREAK_STRENGTH=0.25 in ranking/config. ⚑ tune.
+_TOP = {"gb"}
+_HIGH = {"us", "de", "fr", "ua", "il", "cn", "in", "jp", "za", "ng", "br"}
 _MED = {"ie", "ca", "it", "es", "nl", "ch", "ru", "sa", "ae", "kr", "hk", "sg",
         "au", "ke", "ma", "mx", "ar"}
 
@@ -54,10 +58,13 @@ def geo_region(country: str | None) -> str | None:
 
 
 def country_weight(country: str | None) -> float:
-    """Importance weight (1.0 / 0.6 / 0.3) for cross-country roll-up ranking."""
+    """Importance weight (1.3 / 1.0 / 0.6 / 0.3) for cross-country roll-up ranking.
+    gb=1.3 gives the moderate UK lean; other big markets stay 1.0."""
     if not country:
         return 0.3
     c = country.strip().lower()
+    if c in _TOP:
+        return 1.3
     if c in _HIGH:
         return 1.0
     if c in _MED:

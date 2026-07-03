@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
+from core.platform.config.source_credibility import resolve_authority
+
 from .config import (
     CATEGORY_TIEBREAK_STRENGTH,
     CLUSTER_WEIGHT_CAP,
@@ -17,9 +19,30 @@ from .config import (
     SOURCE_AUTHORITY_STRENGTH,
     SOURCE_WEIGHT_CAP,
     SOURCE_WEIGHT_MULTIPLIER,
-    TIER_AUTHORITY_BONUS,
 )
 from .models import ScoredStory, StoryRankingCandidate
+
+
+def story_authority(
+    candidate: StoryRankingCandidate,
+    *,
+    selected_regions: frozenset[str] | set[str] | None = None,
+) -> tuple[float, bool]:
+    """
+    (authority bonus ∈ [0,1], lead_eligible) for a story's outlets in its category.
+
+    Trusted (global tier / home-or-away specialist / region-active regional) → bonus
+    > 0 and lead_eligible; unknown-only / excluded-only → (0.0, False). `selected_regions`
+    is None at scoring time (base authority); thresholds.py re-applies it with the
+    picked regions so region-whitelisted names activate.
+
+    The BONUS is applied here on the importance axis as a lift for trusted stories
+    (compute_importance). The hard UNKNOWN down-rank + lead gating are applied in
+    thresholds.py on the FRONT-PAGE / region axis only — so followed-topic stories
+    (via_category + fresh relief) keep their qualification and unknown items stay
+    supplementary rather than being evicted.
+    """
+    return resolve_authority(candidate.sources, candidate.primary_category, selected_regions)
 
 
 def _recency_score(last_seen_at: datetime, *, now: datetime | None = None) -> float:
@@ -71,8 +94,10 @@ def compute_importance(
       prominence       — 1 + PROMINENCE_K·log1p(article_count) + entity heft
       freshness        — bounded [FRESHNESS_MIN, 1]
       category_tiebreak— LIGHT: category_weight rescaled to ≈ ±14% (never a thumb)
-      source_authority — LIGHT: lift by the best outlet's credibility tier (breaks
-                         ties in the single-source tail; never overrides coverage)
+      source_authority — CURATED lift for TRUSTED outlets (tier-1 ×1.30, home
+                         specialist ≈×1.20); unknown → ×1.0 here. The hard unknown
+                         down-rank + lead gating are applied in thresholds.py on the
+                         front-page axis (so followed topics keep qualification).
 
     Returns (importance, normalized_score_0_to_10).
     """
@@ -82,10 +107,10 @@ def compute_importance(
     freshness = _freshness(candidate.last_seen_at, now=now)
     # Rescale the audience category weight (0.30–1.70) into a light nudge.
     category_tiebreak = 1.0 + CATEGORY_TIEBREAK_STRENGTH * (category_weight - 1.0)
-    # Light lift by the most-credible outlet on the story (tier 1 wire/flagship →
-    # full bonus, unknown → none). Sorts the equal-coverage tail sensibly.
-    authority_bonus = TIER_AUTHORITY_BONUS.get(candidate.top_source_tier, 0.0)
-    source_authority = 1.0 + SOURCE_AUTHORITY_STRENGTH * authority_bonus
+    # Curated per-category source authority BONUS — a lift for trusted outlets only
+    # (regions unknown at scoring time; regional whitelist re-applied in thresholds).
+    bonus, _ = story_authority(candidate)
+    source_authority = 1.0 + SOURCE_AUTHORITY_STRENGTH * bonus
 
     importance = coverage * prominence * freshness * category_tiebreak * source_authority
     normalized = 10.0 * importance / (importance + IMPORTANCE_HALF)
@@ -115,6 +140,9 @@ def score_story(
 
     # Day-level importance model — coverage-driven; the axis thresholds/depth use.
     importance, normalized = compute_importance(candidate, category_weight, now=now)
+    # Base lead-eligibility (regions unknown here; thresholds.py finalises it once the
+    # selected regions are known, so region-whitelisted names can become eligible).
+    _, lead_eligible = story_authority(candidate)
 
     return ScoredStory(
         candidate=candidate,
@@ -127,4 +155,5 @@ def score_story(
         cluster_weight=cluster,
         importance=importance,
         normalized_score=normalized,
+        lead_eligible=lead_eligible,
     )
