@@ -21,8 +21,13 @@ class StoryRankingCandidate:
     geo_region: str | None = None
     pool_country: str | None = None
     # Best (lowest-numbered = most credible) source tier among this story's outlets
-    # (curated source_credibility tiers). Default = unknown. Light ranking tiebreak.
+    # (curated source_credibility tiers). Default = unknown. Kept for now-playing
+    # attribution / back-compat.
     top_source_tier: int = 9
+    # The story's raw outlet display names — carried through so the ranker can apply
+    # per-outlet, per-category authority + the region-gated regional whitelist
+    # (source_credibility.resolve_authority). Empty for legacy candidates.
+    sources: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -40,8 +45,13 @@ class ScoredStory:
     source_weight: float
     cluster_weight: float
     # Day-level importance model (coverage-driven; see docs/ranking-depth-design.md).
-    importance: float = 0.0        # coverage · prominence · freshness · category_tiebreak
+    importance: float = 0.0        # coverage · prominence · freshness · category_tiebreak · source_authority
     normalized_score: float = 0.0  # importance mapped to 0–10 (the threshold axis)
+    # True if a trusted/active outlet makes this story eligible for a lead slot
+    # (global tier / specialist / region-active regional). Unknown-only or
+    # excluded-only stories are False → supplementary, never lead. Region-gated
+    # eligibility is finalised in thresholds.py once selected regions are known.
+    lead_eligible: bool = False
 
 
 @dataclass(slots=True)
