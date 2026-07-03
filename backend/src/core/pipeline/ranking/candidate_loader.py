@@ -220,6 +220,12 @@ def load_story_ranking_candidates(
             ON rep.story_id = sas.story_id
         LEFT JOIN primary_story_entities pse
             ON pse.story_id = sas.story_id
+        -- Airtight DROP: a story the LLM categoriser deliberately dropped (no honest
+        -- taxonomy home — crime/accident/unlisted region) carries a NULL category. It is
+        -- already out of every topic filter; exclude it here too so it can't surface on the
+        -- front-page/top-stories path, which scores by coverage without a category check.
+        -- No category ⇒ not a candidate.
+        WHERE rep.category_primary IS NOT NULL
         -- story_id ASC is a deterministic tie-break: stories with equal
         -- last_seen_at would otherwise order non-deterministically, so
         -- regenerating a bulletin could reshuffle which stories appear.
