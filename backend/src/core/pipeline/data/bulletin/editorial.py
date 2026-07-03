@@ -29,7 +29,7 @@ import urllib.request
 from dataclasses import dataclass
 
 from core.platform.config.settings import settings
-from core.pipeline.data.normalise.categorise.llm_categoriser import guard_valid, offered_targets
+from core.pipeline.data.normalise.categorise.llm_categoriser import guard_valid
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,6 @@ def review_front_page(
     adjustment for ONLY the stories the editor changed. Empty dict on any failure."""
     if not stories:
         return {}
-    offered = offered_targets(valid_leaves)
     raw = _post_anthropic(build_system(valid_leaves), build_user(stories))
     if raw is None:
         return {}
@@ -176,7 +175,7 @@ def review_front_page(
             continue
         # category: keep only a valid target (belt-and-braces — never persist junk).
         cat = it.get("category")
-        cat = guard_valid(str(cat).strip(), offered) if cat else None
+        cat = guard_valid(str(cat).strip(), valid_leaves) if cat else None
         try:
             sig = _clamp(float(it.get("significance", 0)))
         except (ValueError, TypeError):

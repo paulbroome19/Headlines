@@ -141,3 +141,19 @@ def load_valid_category_slugs() -> frozenset[str]:
         data = yaml.safe_load(f) or {}
     raw: dict[str, Any] = data.get("categories", {})
     return frozenset(_flatten_categories(raw))
+
+
+@lru_cache(maxsize=1)
+def load_category_aliases() -> dict[str, str]:
+    """
+    Map a generic/near-miss category slug the model might write to the canonical LEAF it
+    should resolve to (categories.yml `aliases:` section). Used ONLY for sports that exist
+    as a single specific league — e.g. basketball is only `sport.nba`, so `sport.basketball`
+    (or `basketball`) snaps to `sport.nba` rather than dropping. Semantic, not structural,
+    so it lives in the taxonomy, not in code.
+    """
+    cats_path = Path(__file__).parent.parent / "taxonomy" / "categories.yml"
+    with open(cats_path, "r") as f:
+        data = yaml.safe_load(f) or {}
+    raw: dict[str, Any] = data.get("aliases", {}) or {}
+    return {str(k).strip(): str(v).strip() for k, v in raw.items()}

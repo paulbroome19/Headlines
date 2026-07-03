@@ -8,13 +8,14 @@ from .categorisation_repo import content_hash
 LEAVES = [
     "politics.uk", "politics.us", "politics.world",
     "business.markets", "business.companies", "health", "science",
-    "sport.football.premier-league.arsenal", "sport.cricket.international",
+    "sport.football.premier-league.arsenal", "sport.football.internationals",
+    "sport.cricket.internationals", "sport.nba", "sport.nfl",
     "technology.gaming", "technology.companies", "top-stories.uk",
 ]
 OFFERED = L.offered_targets(LEAVES)   # leaves + top-level buckets
 
 
-# ── valid-slug guard: correctness over coverage (keep / drop, never reroute) ──
+# ── valid-slug guard: keep / snap-to-leaf / drop (never reroute to a coarse ancestor) ──
 
 def test_offered_targets_are_leaves_plus_top_levels():
     assert "politics.uk" in OFFERED            # a leaf
@@ -23,22 +24,39 @@ def test_offered_targets_are_leaves_plus_top_levels():
 
 
 def test_valid_leaf_and_offered_parent_are_kept():
-    assert L.guard_valid("politics.uk", OFFERED) == "politics.uk"
-    assert L.guard_valid("business", OFFERED) == "business"   # genuine general bucket
+    assert L.guard_valid("politics.uk", LEAVES) == "politics.uk"
+    assert L.guard_valid("business", LEAVES) == "business"   # genuine general bucket
 
 
-def test_offtaxonomy_subject_is_DROPPED_not_rerouted():
-    # ice hockey / a region we don't offer — no honest fit → drop, NOT reroute to a parent
-    assert L.guard_valid("sport.nhl", OFFERED) is None
-    assert L.guard_valid("top-stories.north-america", OFFERED) is None
-    assert L.guard_valid("sport.cricket.internationals", OFFERED) is None  # plural gap → drop
+def test_near_miss_snaps_to_a_real_leaf():
+    # plural/singular drift → snap to the canonical leaf
+    assert L.guard_valid("sport.cricket.international", LEAVES) == "sport.cricket.internationals"
+    assert L.guard_valid("sport.football.international", LEAVES) == "sport.football.internationals"
+    # spurious intermediate segment → snap to the real leaf
+    assert L.guard_valid("sport.basketball.nba", LEAVES) == "sport.nba"
+    # spurious child on a leaf that has none → snap to the leaf
+    assert L.guard_valid("health.pediatrics", LEAVES) == "health"
+
+
+def test_single_league_sport_alias_snaps_to_its_leaf():
+    # basketball / American football exist only as one league → generic parent snaps, not drops
+    assert L.guard_valid("sport.basketball", LEAVES) == "sport.nba"
+    assert L.guard_valid("basketball", LEAVES) == "sport.nba"
+    assert L.guard_valid("sport.american-football", LEAVES) == "sport.nfl"
+
+
+def test_offtaxonomy_subject_is_DROPPED_never_snapped_to_a_coarse_ancestor():
+    # no near-miss resolves to a real leaf → drop; NEVER snap up to a coarse bucket
+    assert L.guard_valid("sport.nhl", LEAVES) is None          # ice hockey — no leaf; not → 'sport'
+    assert L.guard_valid("top-stories.north-america", LEAVES) is None  # unlisted region
+    assert L.guard_valid("technology.robotics", LEAVES) is None  # not a leaf; not → 'technology'
 
 
 def test_none_sentinel_and_legacy_slugs_dropped():
-    assert L.guard_valid("none", OFFERED) is None
-    assert L.guard_valid("world.europe", OFFERED) is None
-    assert L.guard_valid("entertainment.celebrity", OFFERED) is None
-    assert L.guard_valid("climate", OFFERED) is None
+    assert L.guard_valid("none", LEAVES) is None
+    assert L.guard_valid("world.europe", LEAVES) is None
+    assert L.guard_valid("entertainment.celebrity", LEAVES) is None
+    assert L.guard_valid("climate", LEAVES) is None
 
 
 # ── tolerant JSON parser ─────────────────────────────────────────────────────
