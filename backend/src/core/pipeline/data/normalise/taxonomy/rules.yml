@@ -308,7 +308,7 @@ rules:
       - "international break"
       - "nations league"
 
-  sport.cricket.international:
+  sport.cricket.internationals:
     keywords:
       - "test match"
       - "odi"

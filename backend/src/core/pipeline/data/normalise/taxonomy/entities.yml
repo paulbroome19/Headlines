@@ -622,7 +622,7 @@ entities:
     aliases:
       - "england cricket"
     categories:
-      - "sport.cricket.international"
+      - "sport.cricket.internationals"
 
   the-hundred:
     display_name: "The Hundred"
@@ -638,7 +638,7 @@ entities:
     aliases:
       - "the ashes"
     categories:
-      - "sport.cricket.international"
+      - "sport.cricket.internationals"
 
   # ============================================================
   # SPORT - RUGBY

@@ -87,18 +87,53 @@ def offered_targets(leaves: list[str]) -> set[str]:
     return set(leaves) | tops
 
 
-def guard_valid(primary: str, offered: set[str]) -> str | None:
-    """VALID-SLUG GUARD — CORRECTNESS OVER COVERAGE. A story is kept ONLY if its primary
-    is something we actually offer (a real leaf, or a whole top-level bucket it genuinely
-    belongs to). Anything else — an off-taxonomy subject (ice hockey, crime, a region we
-    don't offer) or the DROP sentinel — returns None, and the story is EXCLUDED. We do NOT
-    reroute an unfitting slug up to a coarse ancestor: better to omit than mis-file."""
+def _snap_to_leaf(slug: str, leaves: set[str]) -> str | None:
+    """Snap a plausible-but-invalid slug to a REAL LEAF when it's an obvious near-miss —
+    NEVER to a coarse ancestor. Handles the model's common slips:
+      • a taxonomy ALIAS — a single-league sport's generic name (sport.basketball → sport.nba),
+      • plural/singular drift on the last segment (sport.football.international →
+        sport.football.internationals),
+      • a spurious intermediate segment (sport.basketball.nba → sport.nba),
+      • a spurious child on a leaf that has none (health.pediatrics → health).
+    Returns the leaf, or None if nothing normalises to a real leaf (then we drop)."""
+    from .category_loader import load_category_aliases
+    aliased = load_category_aliases().get(slug)
+    if aliased and aliased in leaves:      # semantic single-league alias (taxonomy-owned)
+        return aliased
+    parts = slug.split(".")
+    candidates: list[str] = []
+    # 1. toggle trailing 's' on the last segment (same depth — most specific)
+    last = parts[-1]
+    toggled = last[:-1] if last.endswith("s") else last + "s"
+    candidates.append(".".join(parts[:-1] + [toggled]))
+    # 2. drop a spurious intermediate segment (keeps specificity)
+    if len(parts) >= 3:
+        for i in range(1, len(parts) - 1):
+            candidates.append(".".join(parts[:i] + parts[i + 1:]))
+    # 3. drop a spurious child (the parent) — accepted below ONLY if it is itself a LEAF
+    if len(parts) >= 2:
+        candidates.append(".".join(parts[:-1]))
+    for c in candidates:
+        if c in leaves:            # a REAL LEAF only — never a coarse (non-leaf) ancestor
+            return c
+    return None
+
+
+def guard_valid(primary: str, valid_leaves: list[str]) -> str | None:
+    """VALID-SLUG GUARD — CORRECTNESS OVER COVERAGE. A story is kept when its primary is
+    something we actually offer (a real leaf, or a whole top-level bucket it genuinely
+    belongs to), OR when a near-miss slug SNAPS to a real leaf (see _snap_to_leaf: plural
+    drift, a spurious level — but never a coarse ancestor). Anything else — an off-taxonomy
+    subject (ice hockey, crime, a region we don't offer) or the DROP sentinel — returns
+    None and the story is EXCLUDED."""
     if not primary:
         return None
     p = primary.strip()
     if p.lower() == DROP:
         return None
-    return p if p in offered else None
+    if p in offered_targets(valid_leaves):
+        return p
+    return _snap_to_leaf(p, set(valid_leaves))
 
 
 def _model() -> str:
@@ -251,9 +286,10 @@ def classify_story(
     raw_primary, secondary, confidence, reason = parsed
 
     # ── VALID-SLUG GUARD — CORRECTNESS OVER COVERAGE ─────────────────────────────
-    # Keep ONLY on a genuine offered target; otherwise DROP (exclude). Never reroute an
-    # off-taxonomy subject up to a coarse ancestor.
-    primary = guard_valid(raw_primary, offered)
+    # Keep on a genuine offered target, or SNAP a near-miss to a real leaf (plural drift,
+    # a spurious level); otherwise DROP. Never reroute an off-taxonomy subject to a coarse
+    # ancestor.
+    primary = guard_valid(raw_primary, valid_leaves)
     if primary is None:
         logger.info("llm_categoriser DROP %r (no taxonomy fit) for %r", raw_primary, title[:60])
         # Preserve the model's reason for visibility (dry-run / logs); still a DROP result.

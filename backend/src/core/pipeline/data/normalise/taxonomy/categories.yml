@@ -110,7 +110,7 @@ categories:
       internationals:
 
     cricket:
-      international:
+      internationals:
       the-hundred:
       county:
       ipl:
@@ -154,3 +154,14 @@ categories:
     nfl:
 
     nba:
+
+# Category-slug ALIASES: a generic slug the model may write → the canonical LEAF it should
+# resolve to. Only for sports that exist as a SINGLE specific league, so the generic sport
+# name is unambiguous (basketball = NBA, American football = NFL). Consulted by the
+# categoriser's snap-to-leaf guard so these don't drop. NOT for multi-league sports
+# (football/cricket/golf/motorsport/rugby have several leaves — no single target).
+aliases:
+  sport.basketball: sport.nba
+  basketball: sport.nba
+  sport.american-football: sport.nfl
+  american-football: sport.nfl
