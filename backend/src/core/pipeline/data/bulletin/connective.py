@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 from core.platform.config.settings import settings
 from core.pipeline.data.bulletin.intros import _extract_hook
+from core.pipeline.ranking.config import LEAD_PIN_COUNT
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +47,35 @@ def _model() -> str:
 @dataclass(frozen=True)
 class ConnectiveResult:
     greeting: str
-    order: list[str]              # story_ids in the model's chosen running order (permutation of input ids)
+    order: list[str]              # story_ids in the FINAL running order (lead-locked; a permutation of input ids)
     transitions: dict[str, str]   # story_id -> transition text that plays BEFORE that story; first is ""
     outro: str
+
+
+def _apply_lead_lock(
+    input_ids: list[str], llm_order: list[str], transitions_raw: dict
+) -> tuple[list[str], dict[str, str]]:
+    """
+    Enforce the lead lock on the LLM's running order and realign transitions.
+
+    `input_ids` is the stories in IMPORTANCE rank order (index 0 = biggest). The first
+    LEAD_PIN_COUNT slots are pinned to that rank order so the biggest story leads and the
+    LLM can't float a minor story up; the LLM's relative order governs only the tail.
+
+    A transition bridges FROM the preceding story, so after reordering any bridge whose
+    predecessor changed is blanked to "" (a clean pause) rather than previewing the wrong
+    story; the first story is always "" (the greeting leads into it). Pure + deterministic.
+    """
+    pinned = input_ids[:LEAD_PIN_COUNT]
+    pinned_set = set(pinned)
+    order = pinned + [sid for sid in llm_order if sid not in pinned_set]
+
+    transitions = {sid: str(transitions_raw.get(sid, "")) for sid in order}
+    llm_prev = {llm_order[i]: llm_order[i - 1] for i in range(1, len(llm_order))}
+    for i, sid in enumerate(order):
+        if i == 0 or llm_prev.get(sid) != order[i - 1]:
+            transitions[sid] = ""
+    return order, transitions
 
 
 def _time_of_day(hour: int) -> str:
@@ -139,10 +166,13 @@ def _build_prompt(
         )
         + "\n"
         "RUNNING ORDER:\n"
-        f"Choose the best narrative order for the {n} stories. Your 'order' array MUST be a "
-        f"permutation of exactly these ids: [{ids_list}] — all {n} ids, each exactly once, "
-        "none added, none dropped. Reorder them however makes the best broadcast sense "
-        "(e.g. grouping thematically related stories, building to a strong closer).\n\n"
+        f"Your 'order' array MUST be a permutation of exactly these ids: [{ids_list}] — all "
+        f"{n} ids, each exactly once, none added, none dropped. The ids are given in IMPORTANCE "
+        f"rank order. The FIRST {min(LEAD_PIN_COUNT, n)} must stay FIRST, in that exact order — "
+        "they are the day's biggest stories and the bulletin must lead with them (the lead "
+        "reflects importance, not narrative preference). Reorder ONLY the remaining stories "
+        "for the best broadcast flow (group thematically related ones, build to a strong "
+        "closer).\n\n"
         "TRANSITIONS:\n"
         "Return a 'transitions' object mapping EVERY story id to the bridge that plays "
         "immediately BEFORE that story in YOUR chosen order.\n"
@@ -268,24 +298,22 @@ def generate_connective(
         order_raw = parsed["order"]
         if not isinstance(order_raw, list):
             raise ValueError("order is not a list")
-        order = [str(x) for x in order_raw]
-        if set(order) != set(input_ids) or len(order) != len(input_ids):
+        llm_order = [str(x) for x in order_raw]
+        if set(llm_order) != set(input_ids) or len(llm_order) != len(input_ids):
             raise ValueError(
-                f"order {order!r} is not a permutation of input ids {input_ids!r}"
+                f"order {llm_order!r} is not a permutation of input ids {input_ids!r}"
             )
 
-        # Validate transitions: must be a dict with an entry for every id in order.
+        # Validate transitions: must be a dict with an entry for every id.
         transitions_raw = parsed["transitions"]
         if not isinstance(transitions_raw, dict):
             raise ValueError("transitions is not a dict")
-        for sid in order:
+        for sid in llm_order:
             if sid not in transitions_raw:
                 raise ValueError(f"transitions missing entry for story id {sid!r}")
-        transitions = {sid: str(transitions_raw[sid]) for sid in order}
 
-        # Coerce first story's transition to "" — the greeting leads directly into it.
-        if order:
-            transitions[order[0]] = ""
+        # Lead lock + transition realignment (pure, unit-tested — see _apply_lead_lock).
+        order, transitions = _apply_lead_lock(input_ids, llm_order, transitions_raw)
 
     except (KeyError, IndexError, ValueError, json.JSONDecodeError, TypeError) as e:
         logger.warning(
