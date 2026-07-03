@@ -48,8 +48,8 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: s * 1.5), 1)
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: s * 2.5), 2)
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: s * 3.5), 3)
-        // Each paced stage spans exactly stageSeconds (~3.5s) — deliberate, none dwells alone.
-        XCTAssertEqual(LoaderTiming.stageSeconds, 3.5, accuracy: 0.001)
+        // Each paced stage spans exactly stageSeconds (~4.5s) — deliberate, none dwells alone.
+        XCTAssertEqual(LoaderTiming.stageSeconds, 4.5, accuracy: 0.001)
     }
 
     /// The bug this guards: a slow manifest must NOT strand the loader on stage 1. Only the

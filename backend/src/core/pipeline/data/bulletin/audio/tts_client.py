@@ -3,12 +3,16 @@ TTS client abstraction. Supports elevenlabs and openai providers.
 Uses stdlib urllib — no new dependencies.
 
 Configuration (environment variables):
-  TTS_PROVIDER         elevenlabs | openai   (default: elevenlabs)
-  TTS_VOICE            voice id / name       (default: 19STyYD15bswVz51nqLf — ElevenLabs voice)
-  TTS_MODEL            model id              (default: eleven_turbo_v2_5)
-  TTS_AUDIO_FORMAT     format string         (default: mp3_44100_128)
-  ELEVENLABS_API_KEY   required when provider=elevenlabs
-  OPENAI_API_KEY       required when provider=openai
+  TTS_PROVIDER            elevenlabs | openai   (default: elevenlabs)
+  TTS_VOICE               voice id / name       (default: 19STyYD15bswVz51nqLf — ElevenLabs voice)
+  TTS_MODEL               model id              (default: eleven_multilingual_v2)
+  TTS_AUDIO_FORMAT        format string         (default: mp3_44100_128)
+  TTS_STABILITY           ElevenLabs 0.0–1.0    (default: 0.5)
+  TTS_SIMILARITY_BOOST    ElevenLabs 0.0–1.0    (default: 0.75)
+  TTS_STYLE               ElevenLabs 0.0–1.0    (default: 0.15)
+  TTS_USE_SPEAKER_BOOST   true | false          (default: true)
+  ELEVENLABS_API_KEY      required when provider=elevenlabs
+  OPENAI_API_KEY          required when provider=openai
 """
 from __future__ import annotations
 
@@ -31,7 +35,7 @@ _OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech"
 _DEFAULT_PROVIDER = "elevenlabs"
 _DEFAULT_VOICE_ELEVENLABS = "19STyYD15bswVz51nqLf"   # keep in sync with settings.tts_voice
 _DEFAULT_VOICE_OPENAI = "onyx"
-_DEFAULT_MODEL_ELEVENLABS = "eleven_turbo_v2_5"
+_DEFAULT_MODEL_ELEVENLABS = "eleven_multilingual_v2"   # keep in sync with settings.tts_model
 _DEFAULT_MODEL_OPENAI = "tts-1"
 _DEFAULT_FORMAT_ELEVENLABS = "mp3_44100_128"
 _DEFAULT_FORMAT_OPENAI = "mp3"
@@ -262,9 +266,19 @@ def _elevenlabs(text: str, *, voice: str, model: str, audio_format: str) -> byte
     url = _ELEVENLABS_TTS_URL.format(voice_id=voice)
     # output_format as query param (ElevenLabs recommends this)
     url = f"{url}?output_format={audio_format}"
+    # voice_settings sent explicitly (ElevenLabs-specific, so read from settings here
+    # alongside the api_key rather than threaded through synthesize()). Omitting them
+    # lets ElevenLabs fall back to the voice's stored defaults, which differ from the
+    # tuned playground sliders and sound more robotic. Env-overridable for tuning by ear.
     body = json.dumps({
         "text": text,
         "model_id": model,
+        "voice_settings": {
+            "stability": settings.tts_stability,
+            "similarity_boost": settings.tts_similarity_boost,
+            "style": settings.tts_style,
+            "use_speaker_boost": settings.tts_use_speaker_boost,
+        },
     }).encode()
 
     req = urllib.request.Request(
