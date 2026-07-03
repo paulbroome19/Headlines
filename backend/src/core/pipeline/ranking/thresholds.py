@@ -25,6 +25,7 @@ import math
 from datetime import datetime, timezone
 
 from core.pipeline.data.ingest.pool_taxonomy import country_weight
+from core.platform.config.source_credibility import resolve_authority
 
 from .category_ranker import get_category_tier
 from .config import (
@@ -33,8 +34,10 @@ from .config import (
     COUNTRY_TIEBREAK_STRENGTH,
     DEFAULT_PRESET,
     FRESH_CATEGORY_RELIEF,
+    LEAD_PIN_COUNT,
     THRESHOLDS,
     TOP_STORIES_REGIONS,
+    UNKNOWN_AUTHORITY_FACTOR,
 )
 from .models import ScoredStory
 
@@ -84,6 +87,23 @@ def region_adjusted_score(s: ScoredStory) -> float:
     cw = country_weight(s.candidate.pool_country)
     factor = 1.0 + COUNTRY_TIEBREAK_STRENGTH * (cw - 1.0)
     return s.normalized_score * factor
+
+
+def _lead_eligible(s: ScoredStory, regions: frozenset[str] | set[str]) -> bool:
+    """Whether a trusted/active outlet makes this story eligible to LEAD, given the
+    explicitly-selected regions. Global tier / specialist → always; region-whitelisted
+    → only when its region is in `regions`; unknown-only / excluded-only → never.
+    Re-evaluated here (not the scorer's region-less flag) so regional names activate."""
+    return resolve_authority(s.candidate.sources, s.candidate.primary_category, regions)[1]
+
+
+def _authority_mult(s: ScoredStory, regions: frozenset[str] | set[str]) -> float:
+    """Front-page / region authority multiplier: 1.0 for trusted/active stories, a hard
+    UNKNOWN_AUTHORITY_FACTOR down-rank for the untrusted/unknown tail. Applied to the
+    front-page & regional bars/ordering ONLY — never to via_category, so followed-topic
+    qualification (and the fresh-category relief) is untouched. The trusted BONUS lift is
+    already baked into normalized_score by the scorer; this only demotes the tail."""
+    return 1.0 if _lead_eligible(s, regions) else UNKNOWN_AUTHORITY_FACTOR
 
 
 def _fresh_category_relief(s: ScoredStory, now: datetime) -> float:
@@ -197,8 +217,14 @@ def select_by_thresholds(
         cat = s.candidate.primary_category
         region = s.candidate.geo_region
 
-        via_front = front_page and score >= ts_bar
-        via_region = (region in regions) and region_adjusted_score(s) >= ts_bar
+        # Front-page / region qualification is authority-gated: an untrusted single-source
+        # outlet is down-ranked (×UNKNOWN_AUTHORITY_FACTOR) so it can't clear the high
+        # universal bar and lead a general bulletin; region-whitelisted names activate
+        # here (mult 1.0) when their region is selected. via_category is deliberately
+        # NOT gated (raw score) so followed-topic content keeps its qualification.
+        mult = _authority_mult(s, regions)
+        via_front = front_page and score * mult >= ts_bar
+        via_region = (region in regions) and region_adjusted_score(s) * mult >= ts_bar
         # Fresh followed-topic relief: a genuinely-breaking story clears its OWN
         # (already-lower) category bar a little sooner. via_category ONLY — via_front
         # / via_region above are untouched, so front-page composition and the final
@@ -219,8 +245,14 @@ def select_by_thresholds(
     # fills only from that region. A pure TOPIC selection (e.g. Football only) does NOT
     # enter this branch at all — it stays its natural length, simply SHORTER (or empty on
     # a thin day), and is NEVER padded with unselected categories.
+    backfilled: set[str] = set()
     if (front_page or regions) and len(qualifying) < target:
-        for s in sorted(scored, key=region_adjusted_score, reverse=True):
+        # Fill remaining slots (never DISPLACE a bar-passing story) with the next-best
+        # by authority-adjusted score, so a trusted near-miss is preferred over an
+        # unknown one. Backfilled stories are marked supplementary below.
+        for s in sorted(
+            scored, key=lambda x: region_adjusted_score(x) * _authority_mult(x, regions), reverse=True
+        ):
             if not _matches_selection(s):
                 continue
             sid = s.candidate.story_id
@@ -228,23 +260,48 @@ def select_by_thresholds(
                 continue
             qualifying.append(s)
             seen.add(sid)
+            backfilled.add(sid)
             if len(qualifying) >= target:
                 break
 
-    # Newspaper order. FIRST sort within-tier by coverage (a hugely-covered story
-    # leads its tier regardless of country; country_weight is the secondary tiebreak;
-    # story_id keeps it deterministic) — THEN sort by tier, which is DECISIVE. Python's
-    # sort is stable, so the coverage order is preserved inside each tier. Result: the
-    # front page (Tier 1: top-stories/politics/business) leads, the middle (Tier 2) and
-    # back (Tier 3: sport/tech/culture) follow — unless a soft story broke through on
-    # exceptional coverage (see effective_tier). Category is the primary driver, coverage
-    # secondary — not the old ±14% tiebreak that soft-news coverage overwhelmed.
-    qualifying.sort(
-        key=lambda s: (s.normalized_score, region_adjusted_score(s), s.candidate.story_id),
-        reverse=True,
-    )
-    qualifying.sort(key=effective_tier)
-    # Cap to the preset's target length — the top-N by score. (Topic-only briefings that
-    # genuinely have fewer qualifiers stay short; a truly empty set stays empty.)
+    # Newspaper order via a single composite key (ascending):
+    #   1. bar-passing qualifiers BEFORE backfilled (supplementary) — injection fills
+    #      remaining slots, it never displaces a qualifying story;
+    #   2. effective_tier DECISIVE (front page leads, back trails);
+    #   3. authority-adjusted normalized_score within tier (unknown tail demoted ×0.60);
+    #   4. country-weighted score (the UK lean tiebreak); then story_id for determinism.
+    def _order_key(s: ScoredStory) -> tuple:
+        mult = _authority_mult(s, regions)
+        return (
+            s.candidate.story_id in backfilled,
+            effective_tier(s),
+            -(s.normalized_score * mult),
+            -(region_adjusted_score(s) * mult),
+            s.candidate.story_id,
+        )
+
+    qualifying.sort(key=_order_key)
+
+    # Lead lock: the first LEAD_PIN_COUNT slots must be LEAD-ELIGIBLE bar-passing
+    # stories, so the biggest trusted story leads and an unknown single-source item can
+    # never lead a general bulletin (it may still appear, supplementary, below). If a
+    # region is selected, its whitelisted names are lead-eligible here.
+    lead_ids: list[str] = []
+    for s in qualifying:
+        sid = s.candidate.story_id
+        if sid in backfilled:
+            continue
+        if _lead_eligible(s, regions):
+            lead_ids.append(sid)
+            if len(lead_ids) >= LEAD_PIN_COUNT:
+                break
+    if lead_ids:
+        lead_set = set(lead_ids)
+        leads = [s for s in qualifying if s.candidate.story_id in lead_set]
+        rest = [s for s in qualifying if s.candidate.story_id not in lead_set]
+        qualifying = leads + rest
+
+    # Cap to the preset's target length — the top-N. (Topic-only briefings that genuinely
+    # have fewer qualifiers stay short; a truly empty set stays empty.)
     qualifying = qualifying[:target]
     return qualifying
