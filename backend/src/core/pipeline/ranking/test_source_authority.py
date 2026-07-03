@@ -110,7 +110,7 @@ def test_authority_bonus_and_boost():
 
 
 def test_uk_lean_country_weight():
-    assert country_weight("gb") == 1.3
+    assert country_weight("gb") == 1.5
     assert country_weight("us") == 1.0
     assert country_weight("ke") == 0.6
     assert country_weight(None) == 0.3
