@@ -101,8 +101,17 @@ class Settings(BaseSettings):
     # TTS
     tts_provider: str = "elevenlabs"
     tts_voice: str = "19STyYD15bswVz51nqLf"   # ElevenLabs voice (default; override via TTS_VOICE env)
-    tts_model: str = "eleven_turbo_v2_5"
+    tts_model: str = "eleven_multilingual_v2"
     tts_audio_format: str = "mp3_44100_128"
+    # ElevenLabs voice_settings — sent explicitly so API output matches the tuned
+    # playground sound (omitting them falls back to the voice's stored defaults,
+    # which differ from the playground sliders and sound more robotic). All four are
+    # env-overridable (TTS_STABILITY, TTS_SIMILARITY_BOOST, TTS_STYLE,
+    # TTS_USE_SPEAKER_BOOST) so the voice can be tuned by ear without a redeploy.
+    tts_stability: float = 0.5
+    tts_similarity_boost: float = 0.75
+    tts_style: float = 0.15
+    tts_use_speaker_boost: bool = True
     elevenlabs_api_key: str | None = None
     openai_api_key: str | None = None
 

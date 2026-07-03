@@ -1282,10 +1282,10 @@ enum LoaderTiming {
     // window — it's the only stage allowed to hold, absorbing the wait when generation
     // runs long. If generation is faster, the gate dismisses on readiness (no forced hold
     // beyond `minLoaderSeconds`).
-    static let stageSeconds: Double = 3.5        // each paced stage — deliberate + readable
-    static let pacedStages: Int = 4              // evenly-timed stages covering ~0–14s
+    static let stageSeconds: Double = 4.5        // each paced stage — deliberate + readable (bumped 3.5→4.5 to absorb slower multilingual_v2 generation)
+    static let pacedStages: Int = 4              // evenly-timed stages covering ~0–18s
     static var visibleStages: Int { pacedStages + 1 }   // + a final dwell stage for overrun
-    static var expectedSeconds: Double { stageSeconds * Double(pacedStages) }   // ~14s
+    static var expectedSeconds: Double { stageSeconds * Double(pacedStages) }   // ~18s
     // Small floor so a cached/instant briefing shows a readable stage or two rather than
     // flashing — but NOT the full window (a fast briefing dismisses on ready).
     static var minLoaderSeconds: Double { stageSeconds * 2 }
