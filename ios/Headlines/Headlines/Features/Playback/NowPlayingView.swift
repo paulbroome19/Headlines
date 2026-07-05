@@ -205,18 +205,15 @@ struct NowPlayingView: View {
     /// Determinate progress bar in the scrubber's position. `fill` (0–1) is the
     /// elapsed-driven, evenly-paced value from LoaderTiming — NOT backend progress — so it
     /// advances smoothly in quarters and never sits frozen while the manifest loads.
+    /// No numeric counter: the split-flap board flicker is the hero motion; the bar just
+    /// fills quietly as reassurance — one moving thing, not a competing percentage.
     private func loaderProgressBar(fill: Double) -> some View {
-        let pct = Int((fill * 100).rounded())
-        return VStack(spacing: 10) {
+        VStack(spacing: 10) {
             HStack {
                 Text("ASSEMBLING YOUR BRIEFING")
                     .font(.label(11)).tracking(2)
                     .foregroundColor(inkMuted)
                 Spacer()
-                Text("\(pct)%")
-                    .font(.label(11)).tracking(1)
-                    .foregroundColor(ink)
-                    .monospacedDigit()
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
