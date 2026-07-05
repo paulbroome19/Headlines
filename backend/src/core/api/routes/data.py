@@ -65,10 +65,12 @@ router = APIRouter(prefix="/data", tags=["data"])
 _SEGMENT_POLL_INTERVAL = 0.25   # seconds between cache-check polls
 _SEGMENT_POLL_MAX      = 40     # 40 × 0.25s = 10s max wait
 
-# "Safe to start" playback when the first N segments (intro + first story, for the
-# current intro/story/transition/... structure) have audio ready — a head-start so
-# real-time speech stays ahead of ~1-2s/segment background generation. Tunable.
-_SAFE_START_LEAD_SEGMENTS = 2
+# "Safe to start" playback once the first N STORIES are fully synthesised — every
+# segment up to and including the Nth story segment (intro + those stories + the
+# transitions between them). Two stories buffered gives real-time speech a head-start
+# so the rest keep generating in the background and stream in with no mid-briefing gap
+# when the earlier stories finish. Tunable.
+_SAFE_START_STORIES = 2
 
 # Maximum ranked stories to summarise on-demand per Generate press.
 # Covers a 5-min bulletin (typically 5–6 stories) with headroom for category filtering.
@@ -1011,9 +1013,9 @@ def get_bulletin_readiness(bulletin_id: int):
     Reports, for a bulletin iOS already has the id for (from the manifest), which
     segments' audio is READY (cached) vs PENDING (still generating) vs FAILED
     (genuinely failed after retries), plus whether it is SAFE_TO_START playback
-    now — the first `_SAFE_START_LEAD_SEGMENTS` segments (intro + first story)
-    have audio, so real-time speech stays ahead of ~1-2s/segment background
-    generation while the rest finish.
+    now — the first `_SAFE_START_STORIES` stories (intro + those stories + the
+    transitions between them) have audio, so real-time speech stays ahead of
+    ~1-2s/segment background generation while the rest stream in.
 
     iOS polls this ~0.5-1s after the manifest returns to drive a real progress
     bar and flip to playback at `safe_to_start`. Additive — does NOT change the
@@ -1076,7 +1078,16 @@ def get_bulletin_readiness(bulletin_id: int):
     ready_count = sum(1 for x in out_segments if x["state"] == "ready")
     failed_count = sum(1 for x in out_segments if x["state"] == "failed")
 
-    lead = min(_SAFE_START_LEAD_SEGMENTS, total)
+    # Safe to start once the first _SAFE_START_STORIES stories are ready: play gaplessly
+    # through them (intro + those stories + the transitions between) while the remaining
+    # stories keep synthesising in the background and stream into the queue.
+    story_positions = [i for i, x in enumerate(out_segments) if x["type"] == "story"]
+    if len(story_positions) >= _SAFE_START_STORIES:
+        lead = story_positions[_SAFE_START_STORIES - 1] + 1   # through the Nth story segment
+    elif story_positions:
+        lead = story_positions[-1] + 1                        # fewer stories than N → all of them
+    else:
+        lead = total                                          # no story segments → the whole thing
     safe_to_start = lead > 0 and all(out_segments[i]["state"] == "ready" for i in range(lead))
 
     # ── Named audio-phase milestones (ordered) the loader advances a bar against ──
@@ -1103,7 +1114,7 @@ def get_bulletin_readiness(bulletin_id: int):
     elif all_ready:
         stage = "ready"
     elif safe_to_start:
-        stage = "buffered"       # dismiss-eligible: intro + first story buffered
+        stage = "buffered"       # dismiss-eligible: first 2 stories buffered
     elif audio_started:
         stage = "audio_generating"
     else:
