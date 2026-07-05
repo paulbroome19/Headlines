@@ -260,11 +260,10 @@ struct SplitFlapLoadingView: View {
         started = true
         startDate = Date()
 
-        let rigid = UIImpactFeedbackGenerator(style: .rigid)
-        rigid.prepare()
+        Haptics.prepareBoard()
 
         if reduceMotion {
-            rigid.impactOccurred()
+            Haptics.boardSettle()
             DispatchQueue.main.asyncAfter(deadline: .now() + Config.holdDuration, execute: onComplete)
             return
         }
@@ -282,9 +281,9 @@ struct SplitFlapLoadingView: View {
             }
         }
 
-        // The "boom": rigid tap as the last centre flap clicks home.
+        // Soft tick as the last centre flap clicks home — the word settling into place.
         DispatchQueue.main.asyncAfter(deadline: .now() + board.boomTime) {
-            rigid.impactOccurred()
+            Haptics.boardSettle()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + board.totalDuration, execute: onComplete)
     }
