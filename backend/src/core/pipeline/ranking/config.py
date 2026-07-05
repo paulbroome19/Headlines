@@ -76,15 +76,10 @@ CATEGORY_TIERS: dict[str, int] = {
 }
 # Unknown / uncategorised slugs sit at the back — they must never lead the paper.
 DEFAULT_TIER = 3
-
-# Break-through: a Tier 2/3 story is promoted to the front page (Tier 1) ONLY if its
-# distinct-source coverage clears this HIGH bar — i.e. it is genuinely dominating the
-# news cycle (a World Cup final: the whole press led with it), not merely a well-clustered
-# ordinary sport/tech story. Calibrated against live data: ordinary football/tech
-# clustering tops out around 8–11 distinct sources, so this sits clearly above it —
-# nothing soft breaks through on a normal day, only a true everyone's-leading-with-it
-# event. ⚑ tune as coverage richens (raise if soft product stories start leaking in).
-BREAKTHROUGH_SOURCES = 28
+# NOTE: CATEGORY_TIERS is no longer used to ORDER the bulletin (the threshold +
+# filter-order model orders by the user's filter sequence, not newspaper tier). It is
+# retained only for the LLM editorial pass (editorial_review.get_category_tier), which
+# scopes review depth by tier. The break-through-to-front-page mechanism is removed.
 
 ENTITY_TYPE_WEIGHTS: dict[str, float] = {
     "company": 1.25,
@@ -161,17 +156,16 @@ LEAD_PIN_COUNT = 3
 # as coverage richens (the raw ceiling rises on multi-source days).
 IMPORTANCE_HALF = 0.9
 
-# ── Threshold-per-source selection (personalisation lives HERE, not in ranking) ──
-# A story qualifies if its 0–10 score clears the bar of ANY source it belongs to
-# (Top Stories = high universal bar; each ticked topic category = its own lower bar).
-# The bar is now REACHABLE (see IMPORTANCE_HALF) so via_front actually fires. LENGTH is
-# not driven by the bar (thin data makes bar-counts unstable) — it's PRESET_TARGET_STORIES.
-THRESHOLDS: dict[str, dict[str, float]] = {
-    #            Top Stories (front page, all topics)   ticked topic category
-    "short":    {"top_stories": 8.0,                    "category": 7.0},
-    "medium":   {"top_stories": 7.5,                    "category": 6.5},
-    "detailed": {"top_stories": 7.0,                    "category": 6.0},
-}
+# ── Threshold + filter-order selection (personalisation lives HERE) ──────────────
+# A preset is a QUALITY BAR (not a count): a story qualifies for a selected category
+# when its 0–10 normalized_score clears the preset's bar. Quick = high bar (only the
+# big stuff), Standard = middle, Deep = lower bar (more depth). One bar per preset,
+# applied uniformly to every selected source (front page, region bucket, topic). Bars
+# calibrated against live prod scores (max reachable ~8.6, bulk 6–7) so each preset
+# yields a genuinely different, non-empty bulletin. Length is an OUTPUT of what clears
+# the bar, bounded per-category by PRESET_DEPTH and globally by MAX_BULLETIN_STORIES.
+# ⚑ recalibrate as coverage richens (the raw score ceiling rises on multi-source days).
+PRESET_BAR: dict[str, float] = {"short": 7.0, "medium": 6.4, "detailed": 6.0}
 DEFAULT_PRESET = "medium"
 
 # ── Fresh followed-topic bar relief (thresholds.py select_by_thresholds) ─────────
@@ -190,13 +184,17 @@ DEFAULT_PRESET = "medium"
 FRESH_CATEGORY_RELIEF = 0.4     # max category-bar reduction for a brand-new story
 BREAKING_TAU_HOURS = 0.75       # decay e-fold ≈ 45 min (~0.51·max at 30 min, ~0.26 at 1 h)
 
-# Per-preset TARGET story count — the real "length" control (time-anchored: Quick≈5m /
-# Standard≈10m / Deep≈15m). Selection returns the top-N by score (qualifiers first,
-# backfilled to the target), so the three presets are DISTINCT lengths and never empty
-# while stories exist. Flexes honestly: a thin day still fills to the target from the
-# next-best; a rich day caps at it.
-PRESET_TARGET_STORIES: dict[str, int] = {"short": 6, "medium": 10, "detailed": 16}
-DEFAULT_TARGET_STORIES = 10
+# ── Representation depth + hard ceiling (the size lever, replacing count targets) ──
+# Per-preset MAX stories PER selected top-level category. Selection fills round-robin
+# in filter order (each category's best before any category's next), so breadth sets
+# the floor and depth sets how far down each category goes. NOT a promise: a category
+# with fewer qualifiers contributes fewer; a thin day is honestly shorter. Deep goes
+# deeper per category than Quick, giving distinct sizes even when the ceiling binds.
+PRESET_DEPTH: dict[str, int] = {"short": 3, "medium": 4, "detailed": 8}
+# Global hard ceiling on total bulletin size — a cap, not a promise (a monster news day
+# can't produce a 40-minute bulletin). Capping drops the DEEPEST stories of the most
+# over-represented categories first (a by-product of the round-robin fill order).
+MAX_BULLETIN_STORIES = 20
 
 # ── Top-Stories-by-region roll-up (Part 4) ───────────────────────────────────
 # Regions with a dedicated top-stories.<region> bucket (the taxonomy geo axis).

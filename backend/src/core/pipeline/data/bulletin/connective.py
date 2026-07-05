@@ -139,16 +139,16 @@ def _build_prompt(
         )
         + "\n"
         "RUNNING ORDER:\n"
-        f"Choose the best narrative order for the {n} stories. Your 'order' array MUST be a "
-        f"permutation of exactly these ids: [{ids_list}] — all {n} ids, each exactly once, "
-        "none added, none dropped. Reorder them however makes the best broadcast sense "
-        "(e.g. grouping thematically related stories, building to a strong closer).\n\n"
+        f"The running order is FIXED — the stories play in exactly the order given above: "
+        f"[{ids_list}]. Do NOT reorder them: the order reflects the listener's chosen filter "
+        "priorities (their top categories first, sport last), not narrative preference. Your "
+        "'order' array MUST equal that sequence exactly.\n\n"
         "TRANSITIONS:\n"
         "Return a 'transitions' object mapping EVERY story id to the bridge that plays "
-        "immediately BEFORE that story in YOUR chosen order.\n"
-        "- The FIRST story in your 'order' MUST have \"\" — the greeting leads directly into it.\n"
+        "immediately BEFORE that story in the FIXED order.\n"
+        "- The FIRST story MUST have \"\" — the greeting leads directly into it.\n"
         + (
-            "- Each subsequent bridge references real content from the previous story in YOUR order.\n"
+            "- Each subsequent bridge references real content from the previous story in the fixed order.\n"
             if n > 1
             else ""
         )
@@ -178,8 +178,8 @@ def _build_prompt(
         "- Keep names naturally spelled (a downstream layer handles problem names).\n\n"
         "Output ONLY valid JSON in this exact shape — no markdown fences, no commentary:\n"
         "{\"greeting\":\"...\",\"order\":" + example_order + ",\"transitions\":" + example_transitions + ",\"outro\":\"...\"}\n"
-        "Remember: 'order' is YOUR chosen permutation of all story ids (reorder as you see fit); "
-        "'transitions' maps every id to its pre-story bridge ('\"\"' for the first story in your order)."
+        "Remember: 'order' MUST equal the given fixed sequence of ids (do NOT reorder); "
+        "'transitions' maps every id to its pre-story bridge ('\"\"' for the first story)."
     )
 
 
@@ -263,18 +263,12 @@ def generate_connective(
         if not outro:
             raise ValueError("outro is empty")
 
-        # Validate order: must be a list that is a strict permutation of input ids.
-        input_ids = [str(s["story_id"]) for s in stories]
-        order_raw = parsed["order"]
-        if not isinstance(order_raw, list):
-            raise ValueError("order is not a list")
-        order = [str(x) for x in order_raw]
-        if set(order) != set(input_ids) or len(order) != len(input_ids):
-            raise ValueError(
-                f"order {order!r} is not a permutation of input ids {input_ids!r}"
-            )
+        # Running order is FIXED to the given filter-sequence order (top-stories → … →
+        # sport). The LLM no longer reorders — it only writes greeting/transitions/outro —
+        # so we take the input order verbatim and ignore any 'order' the model returned.
+        order = [str(s["story_id"]) for s in stories]
 
-        # Validate transitions: must be a dict with an entry for every id in order.
+        # Validate transitions: must be a dict with an entry for every id.
         transitions_raw = parsed["transitions"]
         if not isinstance(transitions_raw, dict):
             raise ValueError("transitions is not a dict")

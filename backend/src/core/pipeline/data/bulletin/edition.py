@@ -30,12 +30,14 @@ from sqlalchemy.orm import Session
 
 from core.pipeline.data.bulletin.connective import uk_now
 from core.pipeline.data.bulletin.repos.user_story_state_repo import UserStoryStateRepo
+from core.pipeline.ranking.config import MAX_BULLETIN_STORIES
 from core.pipeline.ranking.depth import depth_for_rank
+from core.pipeline.ranking.thresholds import _bucket_index, _selection_context, cap_bulletin
 
-# Absolute ceiling on stories held in an edition — a safety cap only. The effective
-# size is the caller's preset target (Quick/Standard/Deep); this just bounds it so a
-# huge target can never blow up the edition. Set to the largest preset target (Deep=16).
-EDITION_MAX = 16
+# Absolute ceiling on stories held in an edition — the global hard cap. The effective
+# size is set by the preset's per-category depth (cap_bulletin); this just bounds the
+# total so a huge news day can never blow up the edition.
+EDITION_MAX = MAX_BULLETIN_STORIES
 
 
 def reconcile_edition(
@@ -132,48 +134,58 @@ def resolve_daily_edition(
     *,
     profile_id: int,
     request_hash: str,
-    fresh_ordered: list[dict],
-    fresh_depths: dict[str, tuple[str, int]],
-    target: int,
+    reservoir: list,
+    include_top_stories: bool,
+    include_categories: list[str] | None,
+    preset: str,
 ) -> tuple[list[dict], dict[str, tuple[str, int]]]:
     """
-    Return the stable (ordered, depths) for this profile's edition of the day,
-    reconciled against the fresh selection, and persist it. Same shape as
-    _threshold_select_with_depth so the downstream assembly is unchanged.
+    Return the stable (ordered, depths) for this profile's edition of the day, reconciled
+    against the fresh selection, and persist it. Same shape the assembler expects.
 
-    target — the preset's story count (Quick/Standard/Deep). The edition is capped to
-    it AFTER dropping already-heard/skipped stories, so freed slots refill from the
-    deeper reservoir in `fresh_ordered` (which the caller sized larger than target)
-    rather than shrinking the bulletin. Bounded by EDITION_MAX as a safety ceiling.
+    `reservoir` is the FULL filter-ordered qualifier list (ScoredStory) from
+    qualify_and_order. We drop already-heard/skipped stories, balance the UNHEARD
+    reservoir into the display set (cap_bulletin: per-category depth + global ceiling in
+    filter order), then reconcile against the stored edition for stability (keep stored
+    unheard, splice a genuinely bigger new lead, refill freed slots from the balanced set).
+    Balancing on the UNHEARD reservoir is what lets heard slots refill from deeper
+    candidates instead of shrinking the bulletin. Running order is the FILTER SEQUENCE.
     """
-    cap = min(target, EDITION_MAX)
     edition_date = uk_now().date()
     repo = UserDailyEditionRepo(db)
     existing = repo.get_story_ids(profile_id, edition_date, request_hash)
 
-    fresh_ids = [o["story_id"] for o in fresh_ordered]
-    # "Done with" = heard (consumed) OR skipped-early (rejected). Filter these EVERYWHERE
-    # — including the first edition of a new day — so a story the user has genuinely dealt
-    # with never comes back (across regenerations AND across the day boundary), while
-    # unheard (queued) stories still persist.
+    # "Done with" = heard (consumed) OR skipped-early (rejected) — filtered EVERYWHERE so a
+    # dealt-with story never returns (across regenerations AND the day boundary); unheard
+    # (queued) stories persist.
     dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
 
-    # Cap AFTER dropping (not before) so heard/skipped stories are replaced from the
-    # reservoir's deeper candidates — the target is a length target, not a hard slice of
-    # the top-N that erodes as the user works through it.
+    # Balance the unheard reservoir into this preset's display set (depth + ceiling).
+    unheard = [s for s in reservoir if s.candidate.story_id not in dropped]
+    balanced = cap_bulletin(
+        unheard, include_top_stories=include_top_stories,
+        include_categories=include_categories, preset=preset,
+    )
+    balanced_ids = [s.candidate.story_id for s in balanced]
+
     if existing is None:
-        final_ids = [sid for sid in fresh_ids if sid not in dropped][:cap]
+        final_ids = balanced_ids
     else:
-        final_ids = reconcile_edition(existing, fresh_ids, dropped, max_size=cap)
+        final_ids = reconcile_edition(existing, balanced_ids, dropped, max_size=EDITION_MAX)
 
     repo.upsert(profile_id, edition_date, request_hash, final_ids)
 
-    # Rebuild (ordered, depths) for the final set. Category comes from the fresh
-    # selection where present, else from data.stories (kept-but-not-in-fresh).
-    cat_by_id: dict[str, str | None] = {o["story_id"]: o.get("primary_category") for o in fresh_ordered}
+    # Category per id: from the reservoir where present, else data.stories (a stored story
+    # kept for stability that has since dropped out of the fresh reservoir).
+    cat_by_id: dict[str, str | None] = {s.candidate.story_id: s.candidate.primary_category for s in reservoir}
     missing = [sid for sid in final_ids if sid not in cat_by_id]
     if missing:
         cat_by_id.update(_categories_for(db, missing))
+
+    # Running order = FILTER SEQUENCE (top-stories block → … → sport), by SELECTED-source
+    # bucket. Stable sort preserves the reconciled within-bucket order (rank + stability).
+    _, _, topic_cats = _selection_context(include_top_stories, include_categories)
+    final_ids.sort(key=lambda sid: _bucket_index(cat_by_id.get(sid), topic_cats))
 
     ordered: list[dict] = []
     depths: dict[str, tuple[str, int]] = {}

@@ -9,8 +9,12 @@ calibrated for ~5.5 min (the summaries hit their targets; the targets were half 
 """
 from __future__ import annotations
 
-from .config import PRESET_TARGET_STORIES
 from .depth import depth_words_for_rank
+
+# A representative Standard briefing length for the duration budget (the threshold +
+# filter-order model sizes by depth×breadth, not a fixed count; a typical multi-category
+# Standard lands around here).
+_STANDARD_STORIES = 10
 
 _WPM = 156.0                 # measured ElevenLabs rate (bulletin #103: 882 words / 5:39)
 _WRAPPER_WORDS = 270         # intro + ~9 transitions + outro for a ~10-story bulletin
@@ -21,7 +25,7 @@ def _story_words(n_stories: int) -> int:
 
 
 def test_medium_briefing_targets_about_ten_minutes():
-    n = PRESET_TARGET_STORIES["medium"]   # 10
+    n = _STANDARD_STORIES   # 10
     total_words = _story_words(n) + _WRAPPER_WORDS
     minutes = total_words / _WPM
     # Near ~10 min (allow 8.5–11.5 for LLM variance / wpm drift). The old targets gave

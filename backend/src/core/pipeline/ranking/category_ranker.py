@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Iterable
 
 from .config import (
@@ -8,6 +9,25 @@ from .config import (
     DEFAULT_CATEGORY_WEIGHT,
     DEFAULT_TIER,
 )
+
+
+@lru_cache(maxsize=1)
+def _filter_order() -> dict[str, int]:
+    """Map each TOP-LEVEL category slug → its position in the picker (the categories.yml
+    key order, which the iOS picker renders): top-stories, politics, business, technology,
+    culture, science, health, environment, sport. Derived from the single canonical
+    source so it can never drift from the picker."""
+    from core.pipeline.data.normalise.categorise.category_loader import load_category_groups
+    return {g["slug"]: i for i, g in enumerate(load_category_groups())}
+
+
+def filter_category_index(category_slug: str | None) -> int:
+    """The bulletin RUNNING-ORDER position for a story's category: the index of its
+    TOP-LEVEL group in the filter sequence (top-stories first … sport last). e.g.
+    top-stories.us / politics.world / sport.football.premier-league → 0 / 1 / 8.
+    Unknown categories sort to the end."""
+    top = (category_slug or "").split(".", 1)[0]
+    return _filter_order().get(top, 10_000)
 
 
 def get_category_tier(category_slug: str | None) -> int:
