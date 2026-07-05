@@ -225,3 +225,39 @@ struct FlapCell: View {
         .shadow(color: .black.opacity(0.6), radius: 2, y: 1.5)
     }
 }
+
+// MARK: - Haptics
+
+/// The app's single, sparing haptic vocabulary — physical and premium, never noisy.
+/// Only four moments have feedback; everything else (scrolling, ordinary taps) stays
+/// silent on purpose. Nothing uses `.heavy`.
+///
+/// System setting: UIKit feedback generators are gated by the OS "System Haptics" toggle
+/// (Settings ▸ Sounds & Haptics), so when the user turns haptics off these produce nothing
+/// — the system preference is respected with no extra code and no readable API needed.
+///
+/// Generators are long-lived and reused; `prepare*()` warms the Taptic Engine just before an
+/// imminent event so the tap lands with zero perceptible latency. All calls are main-thread
+/// (SwiftUI actions / main-queue timers), as feedback generators require.
+enum Haptics {
+    private static let lightImpact  = UIImpactFeedbackGenerator(style: .light)
+    private static let softImpact   = UIImpactFeedbackGenerator(style: .soft)
+    private static let selectionGen = UISelectionFeedbackGenerator()
+
+    /// Light tap — user presses play/pause.
+    static func play() { lightImpact.impactOccurred() }
+
+    /// Soft tick — a Solari word settling into place. ONE per settle, never per flap.
+    static func boardSettle() { softImpact.impactOccurred(intensity: 0.7) }
+
+    /// Gentle success thud — the briefing is ready. A fuller soft landing than the tick.
+    static func briefingReady() { softImpact.impactOccurred(intensity: 1.0) }
+
+    /// Selection feedback — filter toggles and length cards. The crisp, quiet selection
+    /// tick (UISelectionFeedbackGenerator is the canonical primitive for a changed choice).
+    static func selection() { selectionGen.selectionChanged() }
+
+    static func prepareTransport() { lightImpact.prepare() }
+    static func prepareSelection() { selectionGen.prepare() }
+    static func prepareBoard()     { softImpact.prepare() }
+}

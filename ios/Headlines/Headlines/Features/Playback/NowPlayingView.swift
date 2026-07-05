@@ -56,6 +56,11 @@ struct NowPlayingView: View {
             }
             .padding(.horizontal, 20)
         }
+        .onAppear { Haptics.prepareTransport() }
+        // Gentle success thud the instant the briefing becomes ready to play.
+        .onChange(of: player.loaderComplete) { _, ready in
+            if ready { Haptics.briefingReady() }
+        }
     }
 
     // MARK: - Top bar (back + masthead)
@@ -459,7 +464,7 @@ struct NowPlayingView: View {
     private var playPauseButton: some View {
         let isPlaying = player.isPlaying   // single source of truth (matches lock screen)
         let diameter: CGFloat = 76
-        return Button(action: { player.togglePlayPause() }) {
+        return Button(action: { Haptics.play(); player.togglePlayPause() }) {
             ZStack {
                 Circle()
                     .fill(RadialGradient(

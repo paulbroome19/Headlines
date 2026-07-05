@@ -125,7 +125,10 @@ struct LengthStepView: View {
                                 action: { Task { await finish() } })
             }
         }
-        .onAppear { selected = BriefingLength(rawValue: briefingLengthRaw) ?? .standard }
+        .onAppear {
+            selected = BriefingLength(rawValue: briefingLengthRaw) ?? .standard
+            Haptics.prepareSelection()   // warm the engine for the length-card taps
+        }
     }
 
     private func finish() async {
@@ -165,7 +168,10 @@ struct LengthPicker: View {
                 .foregroundColor(LightColors.ink.opacity(0.45))
                 .padding(.horizontal, BottomActionBar.pageMargin)
             ForEach(BriefingLength.allCases) { option in
-                Button { selected = option } label: {
+                Button {
+                    if selected != option { Haptics.selection() }   // selection tick on length change
+                    selected = option
+                } label: {
                     HStack(spacing: 14) {
                         Image(systemName: selected == option ? "largecircle.fill.circle" : "circle")
                             .font(.system(size: 20))

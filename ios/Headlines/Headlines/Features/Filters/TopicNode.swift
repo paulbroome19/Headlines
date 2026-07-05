@@ -90,6 +90,7 @@ final class FilterTreeModel: ObservableObject {
     /// Cascade: turning a parent ON lights every descendant; OFF clears them.
     /// A node that is currently `partial` (or `off`) flips to fully ON.
     func toggleSelect(_ id: String) {
+        Haptics.selection()   // crisp selection tick on every filter toggle (both trees)
         roots = roots.map { walkSelect($0, target: id) }
     }
 
