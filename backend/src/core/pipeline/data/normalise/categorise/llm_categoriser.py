@@ -36,7 +36,13 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.anthropic.com/v1/messages"
 _API_VERSION = "2023-06-01"
-_MAX_TOKENS = 200
+# The answer is a single small JSON object (~40-70 output tokens even with two long
+# secondary slugs + a 6-word reason). We cap well above that so the JSON always
+# COMPLETES — the parser only needs the object to close (raw_decode) — while cutting off
+# the verbose reasoning paragraph the model used to append and bill us for. Lowering this
+# from 200 is safe: trailing prose is discarded anyway, so the only failure mode is
+# truncating the JSON itself, which 96 tokens comfortably clears.
+_MAX_TOKENS = 96
 _TIMEOUT_SECONDS = 20
 
 # A story must clear this to override to a confident primary. Below it we still return
@@ -140,10 +146,11 @@ def _model() -> str:
     return settings.fallback_model  # Haiku (claude-haiku-4-5-…)
 
 
-def build_system(valid_leaves: list[str]) -> str:
-    """The STATIC instruction + valid-leaf catalog. Identical for every story in a run,
-    so it is sent as a cache_control'd system block — Anthropic prompt-caches it and each
-    subsequent story pays ~0.1x for this (much larger) half of the prompt (see cost model)."""
+def _rules_core(valid_leaves: list[str]) -> str:
+    """The STATIC instruction + valid-leaf catalog, WITHOUT the output-format clause.
+    Shared verbatim by the single- and batch-story system prompts — the large half of the
+    prompt (taxonomy catalog + rules) whose input tokens we amortise by classifying many
+    stories per call (see classify_stories_batch)."""
     leaves = sorted(valid_leaves)
     tops = sorted({leaf.split(".")[0] for leaf in leaves})
     catalog = "\n".join(leaves)
@@ -181,10 +188,43 @@ def build_system(valid_leaves: list[str]) -> str:
         "country the politics concerns; anywhere else (India, Africa, Asia, Middle East, "
         "global) → politics.world.\n"
         "- secondary: 0-2 other allowed slugs that also apply. Omit if none.\n\n"
-        "Respond with JSON only:\n"
-        '{"primary": "<allowed slug or none>", "secondary": ["<allowed slug>", ...], '
-        '"confidence": <0.0-1.0>, "reason": "<6 words max>"}'
     )
+
+
+# Single-story output clause: one strict JSON object, no prose (the model used to append a
+# reasoning paragraph we paid for; `reason` ≤6 words is the only justification).
+_SINGLE_FORMAT = (
+    "OUTPUT FORMAT — this is strict. Return ONLY the single JSON object below and "
+    "NOTHING ELSE: no preamble, no explanation, no reasoning, no prose or commentary "
+    "before or after it. The `reason` field (6 words max) is the ONLY place for "
+    "justification. Emit the object and STOP immediately after the closing brace.\n"
+    '{"primary": "<allowed slug or none>", "secondary": ["<allowed slug>", ...], '
+    '"confidence": <0.0-1.0>, "reason": "<6 words max>"}'
+)
+
+# Batch output clause: one JSON array, one object per story, each carrying its index `i` so
+# results stay aligned even if the model reorders or omits one.
+_BATCH_FORMAT = (
+    "OUTPUT FORMAT — this is strict. You will receive SEVERAL stories, each tagged with an "
+    "index [i]. Classify EVERY story independently on its own content. Return ONLY a single "
+    "JSON ARRAY — no preamble, no prose, nothing before or after it — with one object per "
+    "story, each carrying its integer `i` matching the story's tag. `reason` is 6 words max. "
+    "Emit the array and STOP immediately after the closing bracket.\n"
+    '[{"i": 0, "primary": "<allowed slug or none>", "secondary": ["<allowed slug>", ...], '
+    '"confidence": <0.0-1.0>, "reason": "<6 words max>"}, ...]'
+)
+
+
+def build_system(valid_leaves: list[str]) -> str:
+    """Single-story system prompt: shared rules core + the one-object output clause."""
+    return _rules_core(valid_leaves) + _SINGLE_FORMAT
+
+
+def build_system_batch(valid_leaves: list[str]) -> str:
+    """Batch system prompt: the SAME rules core + the JSON-array output clause. The rules
+    core (the expensive taxonomy catalog) is sent once per call regardless of how many
+    stories the call classifies — this is the input-token amortisation."""
+    return _rules_core(valid_leaves) + _BATCH_FORMAT
 
 
 def build_user(*, title: str, snippets: list[str], pool_topic: str | None,
@@ -204,13 +244,48 @@ def build_user(*, title: str, snippets: list[str], pool_topic: str | None,
     )
 
 
-def _post_anthropic(system: str, user: str) -> dict | None:
+def build_user_batch(stories: list[dict]) -> str:
+    """The dynamic half for a MULTI-story call: each story tagged [i] with title, optional
+    context, and its weak hints. Each `stories` item is {title, snippets, pool_topic,
+    pool_country}. The model returns one array element per tag (see _BATCH_FORMAT)."""
+    blocks: list[str] = []
+    for i, s in enumerate(stories):
+        body = " ".join(x.strip() for x in (s.get("snippets") or []) if x and x.strip())[:700]
+        hints = []
+        if s.get("pool_topic"):
+            hints.append(f"pool topic (weak hint, may be wrong): {s['pool_topic']}")
+        if s.get("pool_country"):
+            hints.append(f"source country (weak hint for region): {s['pool_country']}")
+        hint_str = "; ".join(hints) or "(none)"
+        blocks.append(
+            f"[{i}] Title: {s['title']}"
+            + (f"\n    Context: {body}" if body else "")
+            + f"\n    Hints: {hint_str}"
+        )
+    return (
+        "Classify EACH of the following stories. Return one JSON array element per story, "
+        "each with the matching `i`.\n\n" + "\n\n".join(blocks)
+    )
+
+
+def _batch_max_tokens(n: int) -> int:
+    """Output budget for a batch: ~55 tokens/story of JSON + array scaffolding, with
+    headroom so the array always CLOSES (a truncated array fails to parse → per-story
+    fallback). Well below what the amortised input saving costs."""
+    return 48 + 72 * n
+
+
+def _post_anthropic(system: str, user: str, max_tokens: int = _MAX_TOKENS) -> dict | None:
     api_key = settings.anthropic_api_key
     if not api_key:
         return None
     data = json.dumps({
         "model": _model(),
-        "max_tokens": _MAX_TOKENS,
+        "max_tokens": max_tokens,
+        # Categorisation is a DETERMINISTIC classification task — temperature 0 removes the
+        # sampling noise (the API default is 1.0, which made re-runs disagree ~1/3 of the
+        # time) and keeps multi-story batches consistent with the single-story result.
+        "temperature": 0,
         # Cache the large static catalog/rules; only the small per-story block is fresh.
         "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": user}],
@@ -255,6 +330,77 @@ def _parse(raw: dict, valid: set[str]) -> tuple[str, list[str], float, str] | No
     return primary, secondary, confidence, reason
 
 
+def _parse_item(item: dict) -> tuple[str, list[str], float, str] | None:
+    """One object → (primary, secondary, confidence, reason), or None if unusable."""
+    try:
+        primary = str(item["primary"]).strip()
+        secondary = [str(s).strip() for s in (item.get("secondary") or [])]
+        confidence = float(item.get("confidence", 0.0))
+        reason = str(item.get("reason", "")).strip()
+    except (KeyError, ValueError, TypeError):
+        return None
+    return primary, secondary, confidence, reason
+
+
+def _parse_batch(raw: dict, n: int) -> list[tuple[str, list[str], float, str] | None]:
+    """Decode a batch response into an n-length list aligned to the input order. Each object
+    carries its `i`; we place it there so a reordered/missing/extra element can't misalign
+    the rest. Elements with no `i` fall back to positional order only when the array length
+    matches n. Any story left None → the caller falls back (majority vote) for THAT story."""
+    out: list[tuple[str, list[str], float, str] | None] = [None] * n
+    try:
+        text = raw["content"][0]["text"].strip()
+        if text.startswith("```"):
+            text = "\n".join(l for l in text.splitlines() if not l.strip().startswith("```"))
+        start = text.find("[")
+        if start == -1:
+            raise ValueError("no JSON array in response")
+        arr, _ = json.JSONDecoder().raw_decode(text[start:])
+        if not isinstance(arr, list):
+            raise ValueError("response is not a JSON array")
+    except (KeyError, IndexError, ValueError, TypeError, json.JSONDecodeError) as e:
+        logger.warning("llm_categoriser malformed batch response: %s", e)
+        return out
+
+    positional = len(arr) == n and all(isinstance(it, dict) and "i" not in it for it in arr)
+    for pos, item in enumerate(arr):
+        if not isinstance(item, dict):
+            continue
+        idx = pos if positional else item.get("i")
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < n and out[idx] is None:
+            out[idx] = _parse_item(item)
+    return out
+
+
+def _finalise(
+    raw_primary: str, secondary: list[str], confidence: float, reason: str,
+    valid_leaves: list[str], *, title: str = "",
+) -> StoryCategorisation:
+    """Apply the valid-slug guard to a parsed answer → a guaranteed-valid KEEP result or a
+    DROPPED result. Shared by the single- and batch-story paths."""
+    offered = offered_targets(valid_leaves)
+    primary = guard_valid(raw_primary, valid_leaves)
+    if primary is None:
+        logger.info("llm_categoriser DROP %r (no taxonomy fit) for %r", raw_primary, title[:60])
+        return StoryCategorisation(
+            primary=DROP, secondaries=[], confidence=confidence,
+            reason=reason or "no taxonomy fit", method="llm-drop", raw_slug=raw_primary,
+        )
+    secondary = [s for s in secondary if s in offered and s != primary][:2]
+    return StoryCategorisation(
+        primary=primary,
+        secondaries=secondary,
+        confidence=confidence,
+        reason=reason,
+        method="llm-primary" if primary == raw_primary else "llm-primary-rerouted",
+        raw_slug=raw_primary,
+    )
+
+
 def classify_story(
     *,
     title: str,
@@ -286,24 +432,36 @@ def classify_story(
     raw_primary, secondary, confidence, reason = parsed
 
     # ── VALID-SLUG GUARD — CORRECTNESS OVER COVERAGE ─────────────────────────────
-    # Keep on a genuine offered target, or SNAP a near-miss to a real leaf (plural drift,
-    # a spurious level); otherwise DROP. Never reroute an off-taxonomy subject to a coarse
-    # ancestor.
-    primary = guard_valid(raw_primary, valid_leaves)
-    if primary is None:
-        logger.info("llm_categoriser DROP %r (no taxonomy fit) for %r", raw_primary, title[:60])
-        # Preserve the model's reason for visibility (dry-run / logs); still a DROP result.
-        return StoryCategorisation(
-            primary=DROP, secondaries=[], confidence=confidence,
-            reason=reason or "no taxonomy fit", method="llm-drop", raw_slug=raw_primary,
-        )
-    secondary = [s for s in secondary if s in offered and s != primary][:2]
+    # Keep on a genuine offered target, or SNAP a near-miss to a real leaf; otherwise DROP.
+    # Never reroute an off-taxonomy subject to a coarse ancestor.
+    return _finalise(raw_primary, secondary, confidence, reason, valid_leaves, title=title)
 
-    return StoryCategorisation(
-        primary=primary,
-        secondaries=secondary,
-        confidence=confidence,
-        reason=reason,
-        method="llm-primary" if primary == raw_primary else "llm-primary-rerouted",
-        raw_slug=raw_primary,
-    )
+
+def classify_stories_batch(
+    stories: list[dict],
+    valid_leaves: list[str],
+) -> list[StoryCategorisation | None]:
+    """Classify MANY stories in ONE Anthropic call — the input-token amortisation.
+
+    `stories` is a list of {title, snippets, pool_topic, pool_country}. Returns a list of
+    the SAME length and order, each element:
+      • a StoryCategorisation (KEEP or DROPPED) — a valid decision, or
+      • None — that story couldn't be read from the response (API/parse miss); the caller
+        falls back for THAT story only, exactly as for classify_story returning None.
+
+    A whole-call failure returns all-None. Each story is still classified at most once ever
+    because callers (categorise_stories) batch only content-hash cache MISSES and persist
+    each result to the cache."""
+    if not stories:
+        return []
+    system = build_system_batch(valid_leaves)
+    user = build_user_batch(stories)
+    raw = _post_anthropic(system, user, max_tokens=_batch_max_tokens(len(stories)))
+    if raw is None:
+        return [None] * len(stories)
+    parsed = _parse_batch(raw, len(stories))
+    return [
+        _finalise(p[0], p[1], p[2], p[3], valid_leaves, title=stories[i].get("title", ""))
+        if p is not None else None
+        for i, p in enumerate(parsed)
+    ]

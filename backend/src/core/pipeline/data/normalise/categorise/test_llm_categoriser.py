@@ -137,6 +137,76 @@ def test_classify_none_on_api_failure_is_distinct_from_drop(monkeypatch):
     assert r is None   # API failure → None (fallback), NOT DROPPED (exclude)
 
 
+# ── batch parser + classify_stories_batch (multi-story, one call) ─────────────
+
+def test_parse_batch_aligns_by_index_even_when_reordered():
+    txt = ('[{"i":1,"primary":"science","secondary":[],"confidence":0.8,"reason":"b"},'
+           '{"i":0,"primary":"health","secondary":[],"confidence":0.9,"reason":"a"}]')
+    out = L._parse_batch(_raw(txt), 2)
+    assert out[0][0] == "health" and out[1][0] == "science"
+
+
+def test_parse_batch_missing_element_is_none():
+    txt = '[{"i":0,"primary":"health","secondary":[],"confidence":0.9,"reason":"a"}]'
+    out = L._parse_batch(_raw(txt), 2)
+    assert out[0][0] == "health" and out[1] is None   # index 1 absent → None (caller falls back)
+
+
+def test_parse_batch_positional_fallback_without_index():
+    txt = ('[{"primary":"health","secondary":[],"confidence":0.9,"reason":"a"},'
+           '{"primary":"science","secondary":[],"confidence":0.8,"reason":"b"}]')
+    out = L._parse_batch(_raw(txt), 2)
+    assert out[0][0] == "health" and out[1][0] == "science"
+
+
+def test_parse_batch_tolerates_fence_and_trailing_prose():
+    txt = '```json\n[{"i":0,"primary":"health","secondary":[],"confidence":0.9,"reason":"a"}]\n```\nDone.'
+    out = L._parse_batch(_raw(txt), 1)
+    assert out[0][0] == "health"
+
+
+def test_parse_batch_malformed_returns_all_none():
+    assert L._parse_batch(_raw("not json at all"), 3) == [None, None, None]
+
+
+def _mock_post_batch(monkeypatch, payload_text: str):
+    monkeypatch.setattr(L, "_post_anthropic",
+                        lambda system, user, max_tokens=L._MAX_TOKENS: _raw(payload_text))
+
+
+def test_classify_batch_keep_and_drop_per_story(monkeypatch):
+    # story 0 → valid leaf (KEEP); story 1 → off-taxonomy hockey slug (DROP)
+    _mock_post_batch(monkeypatch,
+        '[{"i":0,"primary":"politics.uk","secondary":["top-stories.uk"],"confidence":0.95,"reason":"uk gov"},'
+        '{"i":1,"primary":"sport.nhl","secondary":[],"confidence":0.9,"reason":"hockey"}]')
+    stories = [
+        {"title": "No 10 statement", "snippets": [], "pool_topic": "nation", "pool_country": "gb"},
+        {"title": "Oilers move on", "snippets": [], "pool_topic": "sports", "pool_country": "us"},
+    ]
+    res = L.classify_stories_batch(stories, LEAVES)
+    assert res[0].primary == "politics.uk" and res[0].method == "llm-primary"
+    assert res[0].secondaries == ["top-stories.uk"]
+    assert res[1].primary == L.DROP and res[1].method == "llm-drop"
+
+
+def test_classify_batch_whole_call_failure_is_all_none(monkeypatch):
+    monkeypatch.setattr(L, "_post_anthropic", lambda system, user, max_tokens=L._MAX_TOKENS: None)
+    stories = [{"title": "x", "snippets": [], "pool_topic": None, "pool_country": None}]
+    assert L.classify_stories_batch(stories, LEAVES) == [None]
+
+
+def test_classify_batch_empty_input():
+    assert L.classify_stories_batch([], LEAVES) == []
+
+
+def test_build_user_batch_tags_each_story_with_index():
+    u = L.build_user_batch([
+        {"title": "A", "snippets": ["s"], "pool_topic": "business", "pool_country": "gb"},
+        {"title": "B", "snippets": [], "pool_topic": None, "pool_country": None},
+    ])
+    assert "[0] Title: A" in u and "[1] Title: B" in u
+
+
 # ── content hash ─────────────────────────────────────────────────────────────
 
 def test_content_hash_stable_and_sensitive():
