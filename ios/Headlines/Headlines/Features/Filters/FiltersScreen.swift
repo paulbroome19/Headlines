@@ -361,7 +361,7 @@ struct ProfileFiltersView: View {
 
             case .failed(let msg):
                 VStack(spacing: 14) {
-                    Text("COULDN'T LOAD YOUR FILTERS")
+                    Text("COULDN'T LOAD YOUR TOPICS")
                         .font(.label(13)).tracking(1.5)
                         .foregroundColor(LightColors.ink.opacity(0.7))
                     Text(msg)
@@ -420,7 +420,7 @@ struct ProfileFiltersView: View {
                 insetDivider
                 hubRow("Length")  { route = .length }
                 insetDivider
-                hubRow("Filters") { route = .filters }
+                hubRow("Topics") { route = .filters }
             }
             .padding(.top, 20)
 

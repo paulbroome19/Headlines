@@ -20,8 +20,10 @@ from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
 from core.pipeline.ranking.scorer import score_story
 from core.pipeline.ranking.category_ranker import get_category_weight
 from core.pipeline.ranking.thresholds import cap_bulletin, qualify_and_order
-from core.pipeline.ranking.depth import depth_for_rank
+from core.pipeline.ranking.depth import depth_for_rank, depth_words_for_rank
 from core.pipeline.ranking.config import DEFAULT_PRESET
+from core.pipeline.data.profile.repos.profile_repo import ProfileRepo
+from core.platform.config.source_credibility import rank_sources
 from core.pipeline.data.summarise.repos.story_summary_repo import StorySummaryRepo
 from core.pipeline.data.bulletin.repos.bulletin_repo import BulletinRepo
 from core.pipeline.data.bulletin.repos.user_story_state_repo import (
@@ -197,6 +199,126 @@ def get_latest_summaries():
             }
             for s in summaries
         ],
+    }
+
+
+# Words/minute for the Home preview's minutes estimate (measured ElevenLabs rate;
+# matches test_depth_duration). The estimate uses the depth word model so it tracks the
+# real briefing length; exact minutes come from the generated bulletin.
+_HOME_PREVIEW_WPM = 156
+
+
+def _standfirst(summary_text: str | None) -> str | None:
+    """A short newspaper standfirst from a cached summary — the first sentence (or a
+    ~160-char trim at a word boundary). None when there's no cached summary yet."""
+    s = (summary_text or "").strip()
+    if not s:
+        return None
+    first = s.split(". ", 1)[0].strip()
+    if 40 <= len(first) <= 200:
+        return first if first.endswith((".", "!", "?")) else first + "."
+    if len(s) <= 180:
+        return s
+    cut = s[:160].rsplit(" ", 1)[0].rstrip(",;: ")
+    return cut + "…"
+
+
+@router.get("/profiles/{profile_id}/home-preview")
+def get_home_preview(profile_id: int):
+    """
+    Cheap, READ-ONLY Home front-page preview: the real top-ranked stories for the user's
+    SELECTED categories (headline + standfirst + sources + category) plus an estimated
+    total minutes and the selected story count — WITHOUT generating audio, calling any
+    LLM, or writing user_story_state.
+
+    Mirrors the bulletin's selection exactly (qualify_and_order + cap_bulletin, with
+    already-heard/skipped stories dropped read-only) so the preview matches what the
+    briefing will contain. The editorial LLM pass is intentionally skipped (kept cheap);
+    the mechanical selection is authoritative for a preview. Duration is a faithful
+    estimate from the depth word model (never seconds); exact minutes come from the
+    generated briefing.
+    """
+    with SessionLocal() as db:
+        profile = ProfileRepo(db).get_by_id(profile_id)
+        if profile is None:
+            raise HTTPException(status_code=404, detail=f"Profile {profile_id} not found")
+        candidates = load_story_ranking_candidates(db)
+        dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
+
+    preset = _preset_from_minutes(profile.get("max_duration_minutes", 5))
+    scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
+
+    reservoir = qualify_and_order(
+        scored,
+        include_top_stories=True,
+        include_categories=profile["include_categories"],
+        preset=preset,
+    )
+    excludes = list(profile.get("exclude_categories") or [])
+
+    def _excluded(cat: str | None) -> bool:
+        return bool(cat) and any(cat == e or cat.startswith(e + ".") for e in excludes)
+
+    reservoir = [
+        s for s in reservoir
+        if not _excluded(s.candidate.primary_category) and s.candidate.story_id not in dropped
+    ]
+    display = cap_bulletin(
+        reservoir,
+        include_top_stories=True,
+        include_categories=profile["include_categories"],
+        preset=preset,
+    )
+
+    story_count = len(display)
+    # Minutes estimate from the depth word targets (lead/major/standard/brief) + wrapper
+    # (intro + outro + per-gap transitions), the same model that sizes the real briefing.
+    story_words = sum(depth_words_for_rank(i) for i in range(story_count))
+    wrapper_words = (70 + 40 + 18 * max(0, story_count - 1)) if story_count else 0
+    total_minutes = max(1, round((story_words + wrapper_words) / _HOME_PREVIEW_WPM)) if story_count else 0
+
+    # Join standfirst (cached summaries) + ranked sources for the displayed stories only.
+    top = display[:6]
+    ids = [s.candidate.story_id for s in top]
+    standfirst_by_id: dict[str, str | None] = {}
+    sources_by_id: dict[str, list[str]] = {}
+    if ids:
+        with SessionLocal() as db:
+            sum_rows = db.execute(text("""
+                SELECT DISTINCT ON (story_id::text) story_id::text AS sid, summary_text
+                FROM data.story_summaries
+                WHERE story_id::text = ANY(:ids) AND summary_text IS NOT NULL
+                ORDER BY story_id::text, created_at DESC
+            """), {"ids": ids}).fetchall()
+            standfirst_by_id = {sid: _standfirst(txt) for sid, txt in sum_rows}
+            src_rows = db.execute(text("""
+                SELECT story_id::text AS sid, source
+                FROM data.normalisation_articles
+                WHERE story_id::text = ANY(:ids)
+                  AND source IS NOT NULL AND source <> '' AND source <> 'unknown'
+            """), {"ids": ids}).fetchall()
+        raw_by_story: dict[str, list[str]] = {}
+        for sid, src in src_rows:
+            raw_by_story.setdefault(sid, []).append(src)
+        sources_by_id = {sid: rank_sources(srcs, limit=3) for sid, srcs in raw_by_story.items()}
+
+    stories = [
+        {
+            "story_id": s.candidate.story_id,
+            "headline": s.candidate.title or "",
+            "category": s.candidate.primary_category,
+            "standfirst": standfirst_by_id.get(s.candidate.story_id),
+            "sources": sources_by_id.get(s.candidate.story_id, []),
+        }
+        for s in top
+    ]
+
+    return {
+        "profile_id": profile_id,
+        "name": profile.get("name"),
+        "story_count": story_count,
+        "total_minutes": total_minutes,
+        "stories": stories,
     }
 
 
