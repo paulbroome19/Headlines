@@ -46,3 +46,19 @@ def test_old_short_targets_would_fail_the_budget():
     bands = [old["lead"]] + [old["major"]] * 2 + [old["standard"]] * 4 + [old["brief"]] * 3
     minutes = (sum(bands) + _WRAPPER_WORDS) / _WPM
     assert minutes < 8.5
+
+
+# ── Home-preview minutes estimate: calibrated to real briefings + scales ─────────
+
+from core.api.routes.data import _preview_minutes
+
+
+def test_preview_minutes_scales_and_is_reasonable():
+    # Monotonic in story count, and no wild over-estimate on small briefings (the bug:
+    # 6 stories estimated 7m for a real ~5m). Calibrated model tracks real within ~1 min.
+    vals = {n: _preview_minutes(n) for n in (0, 5, 8, 12, 16, 20)}
+    assert vals[0] == 0
+    assert vals[5] <= 6 and vals[12] <= 10 and vals[20] <= 14     # not the old 7/11/14 over-estimate
+    seq = [vals[n] for n in (5, 8, 12, 16, 20)]
+    assert seq == sorted(seq)                                     # non-decreasing
+    assert seq[-1] - seq[0] >= 6                                  # genuinely scales (5→20 grows)
