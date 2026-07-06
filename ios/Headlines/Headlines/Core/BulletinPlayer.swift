@@ -127,6 +127,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// dismisses — the justified final jump. Reset per load.
     @Published private(set) var loaderComplete = false
 
+    /// STREAMING: per-segment-index audio readiness (from /readiness), driving the Netflix-style
+    /// running-order rings + grey→black rows. Bumps trigger the list to re-render.
+    @Published private(set) var segmentReady: [Int: Bool] = [:]
+
     // MARK: Accessors
 
     /// THE single displayed play/pause truth, on every surface (in-app icon, lock-screen
@@ -200,6 +204,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private var itemObservations = [ObjectIdentifier: AnyCancellable]()
     private var itemSegmentMap   = [ObjectIdentifier: ManifestSegment]()
     private var nextEnqueueIdx   = 0
+    // STREAMING: enqueue hit a not-yet-synthesised (nil-url) segment and is HOLDING; the
+    // readiness poll resumes it once that segment's audio arrives.
+    private var _heldEnqueue     = false
+    private var _readinessPollTask: Task<Void, Never>?
+    private var _allReady        = false
 
     // MARK: Private — stall detection
 
@@ -253,20 +262,19 @@ final class BulletinPlayer: NSObject, ObservableObject {
             )
             manifest = m
             _bulletinId = m.bulletinId
-            segments = m.segments
-            _storySegments = segments.filter { $0.isStory }
-            _storyUnits = Self.buildStoryUnits(from: segments)
-            _totalStoryDurationSeconds = _storyUnits.reduce(0) { $0 + $1.totalDurationSeconds }
-            // Full audio timeline: cumulative start per segment + total (intro..outro).
-            _fullStartByIndex = [:]
-            var acc = 0.0
-            for seg in segments {
-                _fullStartByIndex[seg.index] = acc
-                acc += seg.durationSeconds
+            // STREAMING skeleton: fill nil durations with per-type ESTIMATES so the scrubber +
+            // timeline read sensibly from the first frame; real durations overwrite them as
+            // /readiness reports each synthesised segment. `url` stays nil (isReady is url-based)
+            // until that segment is actually ready.
+            segments = m.segments.map { seg in
+                var s = seg
+                if s.durationMs == nil { s.durationMs = Int(Self.estimatedSeconds(seg) * 1000) }
+                return s
             }
-            _totalDurationSeconds = acc
+            segmentReady = [:]
+            _allReady = false
+            rebuildTimeline()
             playbackElapsedSeconds = 0
-            storyCount = _storySegments.count
             storyIndex = 0
             currentUnitIndex = 0
             globalPositionPct = 0
@@ -274,7 +282,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
             #if DEBUG
             print("🎙 BulletinPlayer: manifest ok — \(segments.count) segments, \(storyCount) stories")
             for seg in segments {
-                print("   [\(seg.index)] \(seg.type.padding(toLength: 12, withPad: " ", startingAt: 0))  \(seg.url.split(separator: "/").last ?? "?")")
+                print("   [\(seg.index)] \(seg.type.padding(toLength: 12, withPad: " ", startingAt: 0))  \(seg.url?.split(separator: "/").last.map(String.init) ?? "pending")")
             }
             #endif
 
@@ -337,6 +345,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
                         playerState = .failed("This briefing was delayed — a segment couldn't be prepared.")
                         return
                     }
+                    applyReadiness(r)               // STREAMING: fill ready segments' urls/durations
                     applyReadinessMilestones(&model, r)
                     loadProgress = model.progress
                     if r.safeToStart { break }
@@ -387,6 +396,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // first load. handleTimeControlStatus still handles genuine stalls/resumes.
         loadProgress = 1.0
         playerState = .playing
+        // Keep polling readiness during playback so later segments' urls arrive (the gate above
+        // only polled until safe_to_start), the running-order rings fill, and any held enqueue
+        // resumes ahead of the playhead.
+        startPlaybackReadinessPoll()
     }
 
     private func applyReadinessMilestones(_ model: inout LoadProgressModel, _ r: BulletinReadiness) {
@@ -408,6 +421,91 @@ final class BulletinPlayer: NSObject, ObservableObject {
             model.reachedMilestone(floor: min(pf, LoadProgressModel.preStartCap),
                                    nextCap: LoadProgressModel.preStartCap)
         }
+    }
+
+    // MARK: - Streaming readiness (skeleton manifest → per-segment audio arrives incrementally)
+
+    private struct AckResponse: Decodable {}
+
+    private static func estimatedSeconds(_ seg: ManifestSegment) -> Double {
+        if let ms = seg.durationMs, ms > 0 { return Double(ms) / 1000.0 }
+        switch seg.type {
+        case "story": return 45
+        case "intro": return 18
+        case "outro": return 14
+        default:      return 4      // transition
+        }
+    }
+
+    /// Rebuild the derived timeline (story units, per-segment starts, totals) from the current
+    /// segments — on load and whenever /readiness overwrites an estimated duration with the real.
+    private func rebuildTimeline() {
+        _storySegments = segments.filter { $0.isStory }
+        _storyUnits = Self.buildStoryUnits(from: segments)
+        _totalStoryDurationSeconds = _storyUnits.reduce(0) { $0 + $1.totalDurationSeconds }
+        _fullStartByIndex = [:]
+        var acc = 0.0
+        for seg in segments {
+            _fullStartByIndex[seg.index] = acc
+            acc += seg.durationSeconds
+        }
+        _totalDurationSeconds = acc
+        storyCount = _storySegments.count
+    }
+
+    /// Merge a readiness snapshot: fill ready segments' url + real duration (matched by FULL
+    /// index), flag them ready for the running-order list, rebuild the timeline, and resume a
+    /// held enqueue. Returns whether everything is now ready (so the poll can stop).
+    @discardableResult
+    private func applyReadiness(_ r: BulletinReadiness) -> Bool {
+        var changed = false
+        for rs in r.segments where rs.index >= 0 && rs.index < segments.count && rs.isReady {
+            if segments[rs.index].url == nil, let u = rs.url, !u.isEmpty {
+                segments[rs.index].url = u
+                changed = true
+            }
+            if let d = rs.durationMs, d > 0, segments[rs.index].durationMs != d {
+                segments[rs.index].durationMs = d
+                changed = true
+            }
+            if segmentReady[rs.index] != true { segmentReady[rs.index] = true }
+        }
+        if changed { rebuildTimeline() }
+        if _heldEnqueue { _heldEnqueue = false; enqueueNext() }   // a held segment may now be ready
+        _allReady = (r.allReady == true)
+        return _allReady
+    }
+
+    /// Poll /readiness during PLAYBACK (the gate stops polling at safe_to_start) so later
+    /// segments' urls arrive, the rings fill, and any held enqueue resumes. Stops when all ready.
+    private func startPlaybackReadinessPoll() {
+        _readinessPollTask?.cancel()
+        guard let bid = _bulletinId, !_allReady else { return }
+        _readinessPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)   // ~1s
+                guard let self else { return }
+                guard let r: BulletinReadiness = try? await self.client.get("data/bulletins/\(bid)/readiness")
+                else { continue }
+                let done = await MainActor.run { self.applyReadiness(r) }
+                if done { return }
+            }
+        }
+    }
+
+    /// Tap/skip to a not-yet-ready story: bump it to the FRONT of the background synthesis queue
+    /// (the server applies forward-then-backfill). Best-effort; the readiness poll fills the rest.
+    private func prioritise(storyId: String) {
+        guard let bid = _bulletinId else { return }
+        Task { [weak self] in
+            struct Body: Encodable { let story_id: String }
+            _ = try? await self?.client.post("data/bulletins/\(bid)/prioritise", body: Body(story_id: storyId)) as AckResponse?
+        }
+    }
+
+    /// Is this story unit's audio ready to play? (drives the list ring + grey→black).
+    func isUnitReady(_ unit: StoryUnit) -> Bool {
+        segmentReady[unit.storySegment.index] == true || unit.storySegment.url != nil
     }
 
     /// Seek to a story unit's start and begin playing it. Used by the tracklist so
@@ -704,6 +802,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     private func stopInternal(sendEvents: Bool) {
         if sendEvents { sendSummary() }
+        _readinessPollTask?.cancel()
+        _readinessPollTask = nil
+        _heldEnqueue = false
+        _allReady = false
+        segmentReady = [:]
         teardownQueuePlayer()
         manifest       = nil
         segments       = []
@@ -739,10 +842,18 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private func enqueueNext() {
         guard let p = player, nextEnqueueIdx < segments.count else { return }
         let seg = segments[nextEnqueueIdx]
-        nextEnqueueIdx += 1
 
-        guard let url = URL(string: seg.url) else {
-            enqueueNext()   // skip malformed URL, try next
+        // STREAMING: a not-yet-synthesised segment has no url — HOLD here (don't advance/skip).
+        // The readiness poll calls enqueueNext again the moment this segment's url arrives.
+        guard let urlStr = seg.url else {
+            _heldEnqueue = true
+            return
+        }
+        nextEnqueueIdx += 1
+        _heldEnqueue = false
+
+        guard let url = URL(string: urlStr) else {
+            enqueueNext()   // malformed URL → skip
             return
         }
 
@@ -950,6 +1061,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
         let clamped = max(0, min(index, _storyUnits.count - 1))
         guard clamped < _storyUnits.count, let p = player else { return }
         let unit = _storyUnits[clamped]
+
+        // STREAMING: jumping to a not-yet-synthesised story bumps it to the FRONT of the
+        // background synthesis queue (server: forward-then-backfill). Playback then holds
+        // (buffering) on the pending segment until the readiness poll fills its url.
+        if unit.storySegment.url == nil, let sid = unit.storySegment.storyId {
+            prioritise(storyId: sid)
+        }
 
         // Bump the navigation token: any earlier in-flight seek's async completion will
         // now no-op, so rapid taps can't clobber each other (no stale resume / double

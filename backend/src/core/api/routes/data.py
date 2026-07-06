@@ -23,6 +23,7 @@ from core.pipeline.ranking.thresholds import cap_bulletin, qualify_and_order
 from core.pipeline.ranking.depth import depth_for_rank, depth_words_for_rank
 from core.pipeline.ranking.config import DEFAULT_PRESET
 from core.pipeline.data.profile.repos.profile_repo import ProfileRepo
+from core.platform.config.settings import settings
 from core.platform.config.source_credibility import rank_sources
 from core.pipeline.data.summarise.repos.story_summary_repo import StorySummaryRepo
 from core.pipeline.data.bulletin.repos.bulletin_repo import BulletinRepo
