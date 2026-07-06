@@ -20,7 +20,12 @@ from core.pipeline.data.bulletin.audio.tts_client import (
 )
 from core.pipeline.data.bulletin.audio.segment_synth import synthesize_segment
 from core.pipeline.data.bulletin.audio.repos.segment_audio_repo import SegmentAudioRepo
-from core.api.routes.data import _do_assemble_and_audio, _get_or_assemble_bulletin
+from core.api.routes.data import (
+    _do_assemble_and_audio,
+    _get_or_assemble_bulletin,
+    prepare_bulletin_for_manifest,
+    run_background_assembly,
+)
 from core.platform.config.source_credibility import rank_sources
 
 # How many ranked outlets to surface under the now-playing card (no "+N").
@@ -242,6 +247,112 @@ class ManifestRequest(BaseModel):
     include_top_stories: bool = True
 
 
+def _build_full_manifest(
+    plan: dict,
+    *,
+    profile_id: int,
+    voice: str,
+    model: str,
+    audio_fmt: str,
+    ext: str,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Build the COMPLETE manifest (all segment urls + durations) from a fully-assembled
+    bulletin plan, enqueueing background TTS for any cache misses. This is the unchanged
+    cache-hit path — a bulletin whose script is already assembled."""
+    # Insert queued rows — COMMITTED before background tasks. iOS may fire a 'started'
+    # event as soon as the manifest is received.
+    story_segs = [
+        {
+            "story_id": int(seg["story_id"]),
+            "story_hash": compute_script_hash(seg["text"]),
+        }
+        for seg in plan["segments"]
+        if seg.get("type") == "story" and seg.get("story_id") and (seg.get("text") or "").strip()
+    ]
+    with SessionLocal() as db:
+        UserStoryStateRepo(db).insert_queued_batch(
+            profile_id=profile_id,
+            bulletin_id=plan["bulletin_id"],
+            story_segments=story_segs,
+        )
+        db.commit()
+
+    all_texts = [seg["text"] for seg in plan["segments"] if (seg.get("text") or "").strip()]
+    all_hashes = [compute_script_hash(t) for t in all_texts]
+    with SessionLocal() as db:
+        cached_map = SegmentAudioRepo(db).get_cached_batch(
+            script_hashes=all_hashes, voice=voice, model=model, audio_format=audio_fmt,
+        )
+
+    for text_val, h in zip(all_texts, all_hashes):
+        if h not in cached_map:
+            seg_type = next(
+                (s.get("type", "story") for s in plan["segments"] if (s.get("text") or "") == text_val),
+                "story",
+            )
+            background_tasks.add_task(
+                synthesize_segment, text_val,
+                segment_type=seg_type, voice=voice, model=model, audio_format=audio_fmt,
+            )
+
+    base_url = settings.public_api_base_url.rstrip("/")
+    titles_by_story_id = {
+        str(s["story_id"]): s.get("headline") or "" for s in plan.get("stories_list", [])
+    }
+
+    story_ids_for_sources = [
+        str(seg["story_id"])
+        for seg in plan["segments"]
+        if seg.get("type") == "story" and seg.get("story_id")
+    ]
+    sources_by_story_id: dict[str, list[str]] = {}
+    if story_ids_for_sources:
+        with SessionLocal() as db:
+            src_rows = db.execute(text("""
+                SELECT story_id::text AS sid, source
+                FROM data.normalisation_articles
+                WHERE story_id::text = ANY(:ids)
+                  AND source IS NOT NULL AND source <> '' AND source <> 'unknown'
+            """), {"ids": story_ids_for_sources}).fetchall()
+        raw_by_story: dict[str, list[str]] = {}
+        for sid, src in src_rows:
+            raw_by_story.setdefault(sid, []).append(src)
+        sources_by_story_id = {
+            sid: rank_sources(srcs, limit=_SOURCE_ATTRIBUTION_LIMIT)
+            for sid, srcs in raw_by_story.items()
+        }
+
+    manifest_segments: list[dict[str, Any]] = []
+    for i, seg in enumerate(plan["segments"], start=0):
+        text_val = seg.get("text") or ""
+        if not text_val.strip():
+            continue
+        h = compute_script_hash(text_val)
+        row = cached_map.get(h)
+        duration_ms = (
+            round(row["duration_seconds"] * 1000)
+            if row and row.get("duration_seconds")
+            else round(estimate_duration_seconds(text_val) * 1000)
+        )
+        item: dict[str, Any] = {
+            "index": i, "type": seg.get("type", "story"),
+            "url": f"{base_url}/data/segments/{h}.{ext}", "duration_ms": duration_ms,
+        }
+        if seg.get("type") == "story" and seg.get("story_id"):
+            item["story_hash"] = h
+            item["story_id"] = seg["story_id"]
+            item["title"] = titles_by_story_id.get(str(seg["story_id"]), "")
+            item["sources"] = sources_by_story_id.get(str(seg["story_id"]), [])
+        manifest_segments.append(item)
+
+    return {
+        "bulletin_id": plan["bulletin_id"],
+        "ranking_run_id": plan["ranking_run_id"],
+        "segments": manifest_segments,
+    }
+
+
 @router.post("/{profile_id}/manifest")
 def get_manifest(
     profile_id: int,
@@ -285,8 +396,11 @@ def get_manifest(
             deleted, profile_id,
         )
 
-    # Steps 2+3: Assembly with story exclusion baked in.
-    plan = _get_or_assemble_bulletin(
+    # Steps 2+3: SELECTION only (fast) — return a bulletin_id up front. Summarise, connective,
+    # and TTS run in the BACKGROUND (run_background_assembly), prioritising intro + story 1 +
+    # story 2, so /readiness is pollable immediately and safe_to_start@2 flips in ~15-25s
+    # instead of ~80s (the loader never hangs on "tidying up").
+    prep = prepare_bulletin_for_manifest(
         profile_id=profile_id,
         include_categories=profile["include_categories"],
         exclude_categories=profile["exclude_categories"],
@@ -295,115 +409,39 @@ def get_manifest(
         include_top_stories=req.include_top_stories,
     )
 
-    # Step 3: Insert queued rows — COMMITTED before any background tasks start.
-    # iOS may fire a 'started' event as soon as the manifest is received.
-    story_segs = [
-        {
-            "story_id": int(seg["story_id"]),
-            "story_hash": compute_script_hash(seg["text"]),
-        }
-        for seg in plan["segments"]
-        if seg.get("type") == "story" and seg.get("story_id") and (seg.get("text") or "").strip()
-    ]
-    with SessionLocal() as db:
-        UserStoryStateRepo(db).insert_queued_batch(
+    if prep["mode"] == "cached":
+        # Fully-assembled bulletin already exists → return the complete manifest (unchanged).
+        plan = _get_or_assemble_bulletin(
             profile_id=profile_id,
-            bulletin_id=plan["bulletin_id"],
-            story_segments=story_segs,
+            include_categories=profile["include_categories"],
+            exclude_categories=profile["exclude_categories"],
+            max_duration_minutes=profile.get("max_duration_minutes", 5),
+            name=profile["name"],
+            include_top_stories=req.include_top_stories,
         )
-        db.commit()
-
-    # Step 4: Single batch cache check for all non-empty segments.
-    all_texts = [
-        seg["text"] for seg in plan["segments"] if (seg.get("text") or "").strip()
-    ]
-    all_hashes = [compute_script_hash(t) for t in all_texts]
-    with SessionLocal() as db:
-        cached_map = SegmentAudioRepo(db).get_cached_batch(
-            script_hashes=all_hashes,
-            voice=voice,
-            model=model,
-            audio_format=audio_fmt,
+        return _build_full_manifest(
+            plan, profile_id=profile_id, voice=voice, model=model,
+            audio_fmt=audio_fmt, ext=ext, background_tasks=background_tasks,
         )
 
-    # Step 5: Enqueue background TTS for every cache miss.
-    for text_val, h in zip(all_texts, all_hashes):
-        if h not in cached_map:
-            seg_type = next(
-                (s.get("type", "story") for s in plan["segments"] if (s.get("text") or "") == text_val),
-                "story",
-            )
-            background_tasks.add_task(
-                synthesize_segment,
-                text_val,
-                segment_type=seg_type,
-                voice=voice,
-                model=model,
-                audio_format=audio_fmt,
-            )
+    # Streaming path: kick off the background assembly (new skeleton only — an in-progress
+    # row from a concurrent request is joined, not re-run) and return the SKELETON manifest:
+    # running order + titles now, urls/durations arriving via /readiness as segments synthesise.
+    if prep.get("dispatch"):
+        background_tasks.add_task(run_background_assembly, **prep["bg"])
 
-    # Step 6: Build manifest.
-    base_url = settings.public_api_base_url.rstrip("/")
-
-    # Build title lookup from stories_list for story segments
-    titles_by_story_id = {
-        str(s["story_id"]): s.get("headline") or ""
-        for s in plan.get("stories_list", [])
-    }
-
-    # Source attribution: rank each story's outlets by curated credibility and
-    # surface the top 2–3 under the now-playing card (BBC before a minor blog).
-    story_ids_for_sources = [
-        str(seg["story_id"])
-        for seg in plan["segments"]
-        if seg.get("type") == "story" and seg.get("story_id")
-    ]
-    sources_by_story_id: dict[str, list[str]] = {}
-    if story_ids_for_sources:
-        with SessionLocal() as db:
-            src_rows = db.execute(text("""
-                SELECT story_id::text AS sid, source
-                FROM data.normalisation_articles
-                WHERE story_id::text = ANY(:ids)
-                  AND source IS NOT NULL AND source <> '' AND source <> 'unknown'
-            """), {"ids": story_ids_for_sources}).fetchall()
-        raw_by_story: dict[str, list[str]] = {}
-        for sid, src in src_rows:
-            raw_by_story.setdefault(sid, []).append(src)
-        sources_by_story_id = {
-            sid: rank_sources(srcs, limit=_SOURCE_ATTRIBUTION_LIMIT)
-            for sid, srcs in raw_by_story.items()
-        }
-
-    # The bulletin opens directly with the greeting — no "Headlines." sting.
-    manifest_segments: list[dict[str, Any]] = []
-
-    for i, seg in enumerate(plan["segments"], start=0):
-        text_val = seg.get("text") or ""
-        if not text_val.strip():
-            continue
-        h   = compute_script_hash(text_val)
-        row = cached_map.get(h)
-        duration_ms = (
-            round(row["duration_seconds"] * 1000)
-            if row and row.get("duration_seconds")
-            else round(estimate_duration_seconds(text_val) * 1000)
-        )
+    skeleton_segments: list[dict[str, Any]] = []
+    for i, seg in enumerate(prep["segments"]):
         item: dict[str, Any] = {
-            "index":       i,
-            "type":        seg.get("type", "story"),
-            "url":         f"{base_url}/data/segments/{h}.{ext}",
-            "duration_ms": duration_ms,
+            "index": i, "type": seg.get("type", "story"), "url": None, "duration_ms": None,
         }
         if seg.get("type") == "story" and seg.get("story_id"):
-            item["story_hash"] = h
-            item["story_id"]   = seg["story_id"]
-            item["title"]      = titles_by_story_id.get(str(seg["story_id"]), "")
-            item["sources"]    = sources_by_story_id.get(str(seg["story_id"]), [])
-        manifest_segments.append(item)
+            item["story_id"] = str(seg["story_id"])
+            item["title"] = seg.get("title") or ""
+        skeleton_segments.append(item)
 
     return {
-        "bulletin_id":    plan["bulletin_id"],
-        "ranking_run_id": plan["ranking_run_id"],
-        "segments":       manifest_segments,
+        "bulletin_id": prep["bulletin_id"],
+        "ranking_run_id": prep["ranking_run_id"],
+        "segments": skeleton_segments,
     }
