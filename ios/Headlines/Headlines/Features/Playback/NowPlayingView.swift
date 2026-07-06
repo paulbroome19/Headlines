@@ -32,6 +32,9 @@ struct NowPlayingView: View {
     @State private var loaderLines: [String] = []
     /// When the loader first appeared — anchors the per-stage minimum dwell (#7).
     @State private var loaderStart = Date()
+    /// Shared-element namespace: the loader board + progress bar MORPH into the
+    /// now-playing card + scrubber (one continuous motion, not a screen swap).
+    @Namespace private var morph
 
     var body: some View {
         ZStack {
@@ -53,6 +56,12 @@ struct NowPlayingView: View {
                         playerBody
                     }
                 }
+                // Drive the shared-element morph: when playerState leaves .preparing the
+                // board + progress bar (matched on `morph`) settle into the now-playing card
+                // + scrubber as one motion. Reduce Motion → a plain crossfade, no spring.
+                .animation(reduceMotion ? .easeInOut(duration: 0.3)
+                                        : .spring(response: 0.55, dampingFraction: 0.86),
+                           value: player.playerState)
             }
             .padding(.horizontal, 20)
         }
@@ -193,13 +202,29 @@ struct NowPlayingView: View {
             .padding(.top, 16)
             .padding(.bottom, 14)
 
-            LoaderStatusBoard(text: text, band: lineIndex, reduceMotion: reduceMotion)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 18)
+            // The flicker RESOLVES into the real first-story headline: on loaderComplete
+            // (set ~0.5s before playback starts) the status grid crossfades into the SAME
+            // `headlineFlapCells` the playback card uses — so by the time the state flips,
+            // the board content already matches its destination and the morph is seamless.
+            Group {
+                if player.loaderComplete {
+                    headlineFlapCells
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 18)
+                        .transition(.opacity)
+                } else {
+                    LoaderStatusBoard(text: text, band: lineIndex, reduceMotion: reduceMotion)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 18)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.45), value: player.loaderComplete)
         }
         .background(boardMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+        .matchedGeometryEffect(id: "morphBoard", in: morph)
     }
 
     /// Determinate progress bar in the scrubber's position. `fill` (0–1) is the
@@ -228,6 +253,8 @@ struct NowPlayingView: View {
             .frame(height: 4)
         }
         .padding(.horizontal, 4)
+        // Becomes the scrubber: matched frame morphs into `scrubberSection` on the flip.
+        .matchedGeometryEffect(id: "morphScrubber", in: morph)
     }
 
     /// Calm, human fail state — never a status code or raw error. The ↻ machined
@@ -269,9 +296,13 @@ struct NowPlayingView: View {
             Spacer(minLength: 18)
             scrubberSection
             Spacer(minLength: 20)
+            // Below-card controls have no loader counterpart — they reveal (fade + rise)
+            // as the board settles, so the card gains its instrument rather than cutting in.
             transport
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             Spacer(minLength: 18)
             tracklist
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
         }
     }
 
@@ -324,6 +355,8 @@ struct NowPlayingView: View {
         .background(boardMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+        // Morph destination: the loader board settles into this card (same id as loaderBoard).
+        .matchedGeometryEffect(id: "morphBoard", in: morph)
     }
 
     /// The flap-material fill for the embedded board — same charcoal gradient +
@@ -435,6 +468,8 @@ struct NowPlayingView: View {
                     .foregroundColor(ink)
             }
         }
+        // Morph destination for the loader's progress bar (same id as loaderProgressBar).
+        .matchedGeometryEffect(id: "morphScrubber", in: morph)
     }
 
     // MARK: - Transport
