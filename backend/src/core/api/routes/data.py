@@ -75,7 +75,9 @@ _SEGMENT_POLL_MAX      = 40     # 40 × 0.25s = 10s max wait
 # transitions between them). Two stories buffered gives real-time speech a head-start
 # so the rest keep generating in the background and stream in with no mid-briefing gap
 # when the earlier stories finish. Tunable.
-_SAFE_START_STORIES = 2
+_SAFE_START_STORIES = 2   # start-pack SIZE: intro + story 1 + story 2 synthesised together
+_SAFE_START_GATE = 1      # playback START gate: intro + story 1 ready (story 2 lands in parallel,
+                          #                      well before story 1's audio ends)
 
 # Maximum ranked stories to summarise on-demand per Generate press.
 # Covers a 5-min bulletin (typically 5–6 stories) with headroom for category filtering.
@@ -1064,9 +1066,13 @@ def prepare_bulletin_for_manifest(
             ).scalar()
             is_first = (prior == 0)
 
+        # EDITORIAL DEFERRED: pass ranking_run_id=None so the skeleton selection skips the
+        # Haiku editorial pass — it's cached per run but a cold miss / Anthropic timeout could
+        # otherwise block bulletin_id for up to ~20s. The base coverage + curated-authority +
+        # UK-lean + filter-sequence order is authoritative for the streaming running order.
         reservoir = _select_reservoir(
             db, include_top_stories=include_top_stories, include_categories=include_categories,
-            exclude_categories=exclude_categories, preset=preset, ranking_run_id=ranking_run_id,
+            exclude_categories=exclude_categories, preset=preset, ranking_run_id=None,
         )
         if profile_id is not None:
             ordered, depths = resolve_daily_edition(
@@ -1150,9 +1156,11 @@ def _fill_prefix_and_synth(bulletin_id: int, prefix_segments: list[dict],
 
 def _synth_remaining(bulletin_id: int, segments: list[dict],
                      voice: str, model: str, audio_fmt: str) -> None:
-    """Synthesise every segment after the start-pack, honouring a skip-priority hint: before
-    each, if a story was bumped (Redis key), synthesise that story's segment next."""
-    already = set(range(min(4, len(segments))))   # intro + story1 + transition + story2
+    """Synthesise every segment after the start-pack, honouring a tap/skip priority hint with
+    the FORWARD-THEN-BACKFILL rule: when a story N is bumped (Redis key), synthesise N next,
+    then everything AFTER N in order (N+1, N+2, … end), then BACKFILL the skipped gap (the
+    earlier still-unready ones). Example (10 stories, jump to 7): 7, 8, 9, 10, then 3, 4, 5, 6."""
+    already = set(range(min(4, len(segments))))   # intro + story1 + transition + story2 (start-pack)
     remaining = [i for i in range(len(segments)) if i not in already]
     story_idx = {
         str(s.get("story_id")): i
@@ -1161,8 +1169,13 @@ def _synth_remaining(bulletin_id: int, segments: list[dict],
     }
     while remaining:
         prio = _get_synth_priority(bulletin_id)
-        nxt = story_idx.get(prio) if (prio and story_idx.get(prio) in remaining) else remaining[0]
-        remaining.remove(nxt)
+        pidx = story_idx.get(prio) if prio else None
+        if pidx is not None and pidx in remaining:
+            # Reorder the queue: the bumped story + everything after it, then the earlier gap.
+            forward = [i for i in remaining if i >= pidx]
+            backfill = [i for i in remaining if i < pidx]
+            remaining = forward + backfill
+        nxt = remaining.pop(0)
         seg = segments[nxt]
         if (seg.get("text") or "").strip():
             synthesize_segment(seg["text"], segment_type=seg.get("type", "story"),
@@ -1499,8 +1512,8 @@ def get_bulletin_readiness(bulletin_id: int):
     # through them (intro + those stories + the transitions between) while the remaining
     # stories keep synthesising in the background and stream into the queue.
     story_positions = [i for i, x in enumerate(out_segments) if x["type"] == "story"]
-    if len(story_positions) >= _SAFE_START_STORIES:
-        lead = story_positions[_SAFE_START_STORIES - 1] + 1   # through the Nth story segment
+    if len(story_positions) >= _SAFE_START_GATE:
+        lead = story_positions[_SAFE_START_GATE - 1] + 1       # through the gate-th story segment
     elif story_positions:
         lead = story_positions[-1] + 1                        # fewer stories than N → all of them
     else:
@@ -1575,6 +1588,23 @@ def get_bulletin_readiness(bulletin_id: int):
         "milestones": milestones,
         "progress": progress,                 # 0–100 hint (nice-to-have; safe_to_start still dismisses)
     }
+
+
+# ── Tap-to-prioritise (Netflix-style per-story readiness) ───────────────────────
+
+class PrioritiseRequest(BaseModel):
+    story_id: str
+
+
+@router.post("/bulletins/{bulletin_id}/prioritise")
+def prioritise_story(bulletin_id: int, req: PrioritiseRequest):
+    """Bump a not-yet-synthesised story to the FRONT of the background synthesis queue when
+    the listener taps/jumps to it. `_synth_remaining` reads this and applies the
+    forward-then-backfill order (bumped story + everything after it, then the earlier gap).
+    Best-effort: no-ops gracefully if the bulletin is already fully synthesised or Redis is
+    unavailable."""
+    set_synth_priority(bulletin_id, str(req.story_id))
+    return {"ok": True, "bulletin_id": bulletin_id, "prioritised": str(req.story_id)}
 
 
 # ── Bulletin event tracking ────────────────────────────────────────────────────
