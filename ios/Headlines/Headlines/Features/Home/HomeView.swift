@@ -51,19 +51,15 @@ struct HomeView: View {
                 VStack(spacing: 0) {
                     lightTopBar
 
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            lastUpdatedStamp
-                            boardTablet(cellSz: cellSz)
-                                .padding(.bottom, 10)
-                        }
+                    // The board is a FIXED, contained tablet filling the space between the top
+                    // bar and the action bar — its header (greeting/date/"YOUR TOP STORIES") is
+                    // pinned and only the story list scrolls WITHIN it (see boardTablet).
+                    boardTablet(cellSz: cellSz)
                         .padding(.horizontal, pageMargin)
-                    }
-                    .refreshable { await onRefresh() }
+                        .padding(.bottom, 12)
 
                     assembleBar
                         .padding(.horizontal, pageMargin)
-                        .padding(.top, 8)
                         .padding(.bottom, 6)
                 }
             }
@@ -100,22 +96,11 @@ struct HomeView: View {
         #endif
     }
 
-    // MARK: - Pull-to-refresh stamp (revealed at the top of the scroll)
-
-    private var lastUpdatedStamp: some View {
-        Text(lastUpdated.map { "LAST UPDATED \(timeStamp($0))" } ?? " ")
-            .font(.label(10)).tracking(2)
-            .foregroundColor(LightColors.ink.opacity(0.35))
-            .frame(maxWidth: .infinity)
-            .padding(.top, 4)
-            .padding(.bottom, 10)
-    }
-
     // MARK: - The dark board tablet (the front page)
 
     private func boardTablet(cellSz: CGSize) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Personalised greeting on the app's REAL flap tiles (flick + settle on entry).
+            // ── PINNED header — stays put; does not scroll ──
             SolariGreeting(rows: greetingRows, cellSz: cellSz, gap: cellGap)
 
             Spacer().frame(height: 14)
@@ -130,26 +115,32 @@ struct HomeView: View {
             Text("YOUR TOP STORIES")
                 .font(.label(11)).tracking(2.5)
                 .foregroundColor(cream.opacity(0.5))
-            Spacer().frame(height: 16)
+            Spacer().frame(height: 14)
 
-            if let stories = preview?.stories, !stories.isEmpty {
-                storyBlock(stories[0], lead: true)
-                ForEach(Array(stories.dropFirst().prefix(3))) { story in
-                    Spacer().frame(height: 18)
-                    creamRule
-                    Spacer().frame(height: 18)
-                    storyBlock(story, lead: false)
+            // ── SCROLLING story list — the ONLY thing that moves, contained inside the board ──
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let stories = preview?.stories, !stories.isEmpty {
+                        storyBlock(stories[0], lead: true)
+                        ForEach(Array(stories.dropFirst().prefix(3))) { story in
+                            Spacer().frame(height: 18)
+                            creamRule
+                            Spacer().frame(height: 18)
+                            storyBlock(story, lead: false)
+                        }
+                    } else {
+                        // Quiet, on-brand placeholder while the real top stories fetch — faint
+                        // cream hairline bars where the stories will land, with a slow sweep.
+                        TopStoriesShimmer(cream: cream)
+                            .padding(.vertical, 6)
+                    }
+                    Spacer().frame(height: 6)   // breathing room so the last story never clips
                 }
-            } else {
-                // Quiet, on-brand placeholder while the real top stories fetch — faint
-                // cream hairline bars, laid out where the stories will land, with a slow
-                // highlight sweeping across. No spinner; matches the dark board's calm.
-                TopStoriesShimmer(cream: cream)
-                    .padding(.vertical, 6)
             }
+            .refreshable { await onRefresh() }
         }
         .padding(boardPad)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .boardCard(cornerRadius: boardCorner)
     }
 
@@ -187,39 +178,37 @@ struct HomeView: View {
     // MARK: - Bottom action (light page, separate from the board)
 
     private var assembleBar: some View {
-        VStack(spacing: 14) {
-            // "6 MIN · 5 STORIES" framed by light-grey rules — time first, whole minutes,
-            // story count. From the REAL selection (nil → subtle placeholder while loading).
-            VStack(spacing: 9) {
+        // One compact row, sized to the disc: a tight left column (rule · meta · label · rule)
+        // whose hairline rules pull in from the right (they stop at the disc), and the go-disc
+        // on the far right. No sprawling block below.
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
                 greyRule
-                Text(metaLine)
-                    .font(.label(11)).tracking(2.5)
-                    .foregroundColor(LightColors.ink.opacity(0.5))
-                greyRule
-            }
-
-            // Below the rule: the label (now mono) on the left, arrow disc on the far right.
-            HStack(spacing: 14) {
-                Text("Assemble your full briefing")
-                    .font(.label(14)).tracking(1.5)
-                    .foregroundColor(LightColors.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Spacer(minLength: 12)
-
-                Button(action: onGenerate) {
-                    MachinedDisc(diameter: discDiam) {
-                        ForwardArrow()
-                            .stroke(cream, style: StrokeStyle(lineWidth: discDiam * 0.06,
-                                                              lineCap: .round, lineJoin: .round))
-                            .frame(width: discDiam * 0.40, height: discDiam * 0.34)
-                            .offset(x: discDiam * 0.02)
-                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(metaLine)                                  // "6 MIN · 5 STORIES"
+                        .font(.label(11)).tracking(2.5)
+                        .foregroundColor(LightColors.ink.opacity(0.5))
+                    Text("Assemble your full briefing")
+                        .font(.label(13)).tracking(1.0)
+                        .foregroundColor(LightColors.ink.opacity(0.42))   // lighter grey
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .buttonStyle(MachinedDiscButtonStyle())
-                .frame(width: discDiam, height: discDiam)
-                .accessibilityLabel("Assemble your full briefing")
+                greyRule
             }
+            .frame(maxWidth: .infinity, alignment: .leading)         // rules span to just before the disc
+
+            Button(action: onGenerate) {
+                MachinedDisc(diameter: discDiam) {
+                    ForwardArrow()
+                        .stroke(cream, style: StrokeStyle(lineWidth: discDiam * 0.06,
+                                                          lineCap: .round, lineJoin: .round))
+                        .frame(width: discDiam * 0.40, height: discDiam * 0.34)
+                        .offset(x: discDiam * 0.02)
+                }
+            }
+            .buttonStyle(MachinedDiscButtonStyle())
+            .frame(width: discDiam, height: discDiam)
+            .accessibilityLabel("Assemble your full briefing")
         }
     }
 

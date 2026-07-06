@@ -58,7 +58,11 @@ extension View {
     /// gradient, matte grain, a hairline top-edge highlight and a soft drop
     /// shadow. Shared by the Home greeting hero and the onboarding cards so the
     /// contained instrument is identical everywhere.
-    func boardCard(cornerRadius: CGFloat = 18) -> some View {
+    /// `flush`: for a board that fills its region and reads as ONE continuous surface with the
+    /// page (e.g. the Home tablet), use a soft, near-halo-free shadow so the board's edge
+    /// doesn't cast a darker off-white band onto the page beside/below it. Default keeps the
+    /// original floating-card shadow (onboarding cards).
+    func boardCard(cornerRadius: CGFloat = 18, flush: Bool = false) -> some View {
         background {
             ZStack {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -75,7 +79,8 @@ extension View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.05), lineWidth: 1)
             }
-            .shadow(color: .black.opacity(0.22), radius: 22, y: 12)
+            .shadow(color: .black.opacity(flush ? 0.10 : 0.22),
+                    radius: flush ? 12 : 22, y: flush ? 4 : 12)
         }
     }
 }
