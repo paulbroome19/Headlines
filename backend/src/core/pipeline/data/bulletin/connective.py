@@ -183,6 +183,37 @@ def _build_prompt(
     )
 
 
+def _post_messages(prompt: str, *, max_tokens: int) -> dict | None:
+    """POST one user message to the connective Sonnet model; return the parsed JSON
+    response dict, or None on missing key / HTTP / network failure (caller falls back)."""
+    api_key = settings.anthropic_api_key
+    if not api_key:
+        logger.debug("connective: ANTHROPIC_API_KEY not set — skipping LLM generation")
+        return None
+    body = json.dumps({
+        "model": _model(),
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(
+        _API_URL, data=body,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": _API_VERSION,
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        logger.warning("connective: LLM unavailable (HTTP %s: %s) — falling back", e.code, e.reason)
+    except Exception as e:
+        logger.warning("connective: LLM unavailable (%s) — falling back", e)
+    return None
+
+
 def generate_connective(
     *,
     stories: list[dict],
@@ -202,46 +233,9 @@ def generate_connective(
     now:               current UK time (from uk_now()).
     is_first_bulletin: True on the listener's very first bulletin.
     """
-    api_key = settings.anthropic_api_key
-    if not api_key:
-        logger.debug(
-            "connective: ANTHROPIC_API_KEY not set — skipping LLM connective generation"
-        )
-        return None
-
     prompt = _build_prompt(stories=stories, name=name, now=now, is_first_bulletin=is_first_bulletin)
-    body = json.dumps({
-        "model": _model(),
-        "max_tokens": _MAX_TOKENS,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-
-    req = urllib.request.Request(
-        _API_URL,
-        data=body,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": _API_VERSION,
-            "content-type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
-            raw = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        reason = f"HTTP {e.code}: {e.reason}"
-        logger.warning(
-            "connective: LLM unavailable/malformed (%s) — falling back to templates",
-            reason,
-        )
-        return None
-    except Exception as e:
-        logger.warning(
-            "connective: LLM unavailable/malformed (%s) — falling back to templates",
-            e,
-        )
+    raw = _post_messages(prompt, max_tokens=_MAX_TOKENS)
+    if raw is None:
         return None
 
     try:
@@ -293,3 +287,108 @@ def generate_connective(
         len(order), order, _model(),
     )
     return ConnectiveResult(greeting=greeting, order=order, transitions=transitions, outro=outro)
+
+
+# ── Incremental connective (streaming assembly) ──────────────────────────────
+# The streaming path generates the OPENING (greeting + the story-1→2 transition) first,
+# from just the top two summaries, so playback can start; the REST (remaining transitions
+# + outro) is generated in the background once the other stories are summarised. The rest
+# call is handed the already-written opening verbatim and told to CONTINUE that exact voice,
+# so the join is seamless — no tonal reset between the first transition and the rest.
+
+
+def _build_rest_prompt(
+    *,
+    stories: list[dict],
+    prior_greeting: str,
+    prior_transitions: dict[str, str],
+    name: str | None,
+    now: datetime,
+) -> str:
+    """Prompt for the REMAINING transitions (stories 3..N) + outro, continuing the voice
+    of an already-written greeting + first transition."""
+    hour = now.hour
+    time_word = _time_of_day(hour)
+    order = [str(s["story_id"]) for s in stories]
+    remaining = order[2:]  # story 1 leads from the greeting; story 2's bridge is already written
+
+    lines: list[str] = []
+    for s in stories:
+        sid = str(s["story_id"])
+        hook = _extract_hook(s)
+        descriptor = s.get("headline") or hook or "(no descriptor)"
+        category = (s.get("primary_category") or "general").split(".")[0]
+        lines.append(f"  Story {sid}: [{category}] {descriptor!r}\n    Hook: {hook!r}")
+    stories_block = "\n".join(lines)
+
+    lead_id = order[0] if order else ""
+    second_id = order[1] if len(order) > 1 else ""
+    written = (
+        f"GREETING (already written — do NOT rewrite):\n{prior_greeting!r}\n"
+        + (f"TRANSITION before story {second_id} (already written):\n{prior_transitions.get(second_id, '')!r}\n"
+           if second_id else "")
+    )
+    remaining_ids = ", ".join(f'"{sid}"' for sid in remaining)
+    example = json.dumps({sid: "..." for sid in remaining})
+
+    return (
+        "You are the SAME calm, intelligent briefing host who has already written the opening "
+        "of this bulletin (below). CONTINUE in exactly that voice — same warmth, rhythm, and "
+        "register. Do not reset the tone; the listener should not hear a seam.\n\n"
+        f"Listener's name: {name if name else 'none (skip personalisation)'}\n"
+        f"UK time of day: {time_word} (hour {hour}).\n\n"
+        f"{written}\n"
+        f"Full running order (FIXED, do not reorder): [{', '.join(order)}]\n"
+        f"Stories:\n{stories_block}\n\n"
+        "YOUR TASK: write ONLY (a) the transition that plays immediately BEFORE each of these "
+        f"remaining stories, in this fixed order: [{remaining_ids}], and (b) the outro.\n"
+        "- Each bridge references real content from the PREVIOUS story in the fixed order "
+        f"(the story before it), starting from the one after story {second_id}.\n"
+        "- Vary naturally; never formulaic. Handle tonal shifts (e.g. into a sports result) with "
+        "grace — never \"On a lighter note!\". Some bridges can be very short.\n"
+        "OUTRO: close warmly, name optional. Point at a SPECIFIC story to follow if any, never a "
+        f"characterisation of the day. UK time-aware sign-off ({time_word}). No story counts, no "
+        "durations, no commentary on the day's news volume.\n"
+        "TTS: numbers/times as spoken words (\"fourteen hundred\", not \"1400\").\n\n"
+        "Output ONLY valid JSON in this exact shape — no markdown fences, no commentary:\n"
+        '{"transitions":' + example + ',"outro":"..."}'
+    )
+
+
+def generate_connective_rest(
+    *,
+    stories: list[dict],
+    prior_greeting: str,
+    prior_transitions: dict[str, str],
+    name: str | None,
+    now: datetime,
+) -> tuple[dict[str, str], str] | None:
+    """Generate the remaining transitions (stories 3..N) + outro, continuing the opening's
+    voice. Returns ({story_id: transition}, outro) covering stories from index 2 onward, or
+    None on failure (caller falls back to templates for those bridges)."""
+    order = [str(s["story_id"]) for s in stories]
+    remaining = order[2:]  # empty for a 1-2 story bulletin → only the outro is generated
+    prompt = _build_rest_prompt(stories=stories, prior_greeting=prior_greeting,
+                                prior_transitions=prior_transitions, name=name, now=now)
+    raw = _post_messages(prompt, max_tokens=_MAX_TOKENS)
+    if raw is None:
+        return None
+    try:
+        text_content = raw["content"][0]["text"].strip()
+        if text_content.startswith("```"):
+            text_content = "\n".join(
+                l for l in text_content.splitlines() if not l.strip().startswith("```")
+            )
+        parsed = json.loads(text_content)
+        outro = str(parsed["outro"]).strip()
+        if not outro:
+            raise ValueError("outro is empty")
+        transitions_raw = parsed.get("transitions") or {}
+        if not isinstance(transitions_raw, dict):
+            raise ValueError("transitions is not a dict")
+        transitions = {sid: str(transitions_raw[sid]) for sid in remaining if sid in transitions_raw}
+    except (KeyError, IndexError, ValueError, json.JSONDecodeError, TypeError) as e:
+        logger.warning("connective_rest: malformed (%s) — falling back to templates", e)
+        return None
+    logger.info("connective_rest: generated  remaining=%d  outro_len=%d", len(transitions), len(outro))
+    return transitions, outro

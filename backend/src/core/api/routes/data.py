@@ -23,6 +23,7 @@ from core.pipeline.ranking.thresholds import cap_bulletin, qualify_and_order
 from core.pipeline.ranking.depth import depth_for_rank, depth_words_for_rank
 from core.pipeline.ranking.config import DEFAULT_PRESET
 from core.pipeline.data.profile.repos.profile_repo import ProfileRepo
+from core.platform.config.settings import settings
 from core.platform.config.source_credibility import rank_sources
 from core.pipeline.data.summarise.repos.story_summary_repo import StorySummaryRepo
 from core.pipeline.data.bulletin.repos.bulletin_repo import BulletinRepo
@@ -31,7 +32,8 @@ from core.pipeline.data.bulletin.repos.user_story_state_repo import (
     compute_new_state,
 )
 from core.pipeline.data.bulletin.assembler import assemble
-from core.pipeline.data.bulletin.connective import generate_connective, uk_now
+from core.pipeline.data.bulletin.connective import ConnectiveResult
+from core.pipeline.data.bulletin.connective import generate_connective, generate_connective_rest, uk_now
 from core.pipeline.data.bulletin.edition import resolve_daily_edition
 from core.pipeline.data.bulletin.editorial_review import apply_editorial, editorial_adjustments
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
@@ -52,7 +54,9 @@ from core.pipeline.data.bulletin.audio.tts_client import (
     tts_model,
     tts_audio_format,
 )
-from core.pipeline.data.bulletin.audio.segment_synth import synthesize_segments, synthesize_segment
+from core.pipeline.data.bulletin.audio.segment_synth import (
+    synthesize_segments, synthesize_segment, synthesize_parallel,
+)
 from core.pipeline.data.summarise.handlers.rank_completed import ensure_story_summaries
 from core.pipeline.data.bulletin.audio.repos.segment_audio_repo import SegmentAudioRepo
 from core.pipeline.data.bulletin.audio.repos.segment_audio_failure_repo import SegmentAudioFailureRepo
@@ -72,7 +76,9 @@ _SEGMENT_POLL_MAX      = 40     # 40 × 0.25s = 10s max wait
 # transitions between them). Two stories buffered gives real-time speech a head-start
 # so the rest keep generating in the background and stream in with no mid-briefing gap
 # when the earlier stories finish. Tunable.
-_SAFE_START_STORIES = 2
+_SAFE_START_STORIES = 2   # start-pack SIZE: intro + story 1 + story 2 synthesised together
+_SAFE_START_GATE = 1      # playback START gate: intro + story 1 ready (story 2 lands in parallel,
+                          #                      well before story 1's audio ends)
 
 # Maximum ranked stories to summarise on-demand per Generate press.
 # Covers a 5-min bulletin (typically 5–6 stories) with headroom for category filtering.
@@ -949,6 +955,297 @@ def _get_or_assemble_bulletin(
     }
 
 
+# ── Streaming assembly ───────────────────────────────────────────────────────────
+# The manifest returns a bulletin_id after SELECTION only; summarise + connective + TTS run
+# in the background, prioritising intro + story 1 + story 2 so safe_to_start@2 flips in
+# ~15-25s (parallel start-pack TTS) instead of ~80s. A skeleton row (script='') marks the
+# bulletin in-progress; /readiness fills in per-segment as texts land and audio synthesises.
+
+_STREAM_PRIORITY_TTL = 3600   # seconds a skip-priority hint lives
+
+
+def _stream_redis():
+    try:
+        from redis import Redis
+        return Redis.from_url(settings.redis_url, socket_timeout=1)
+    except Exception:
+        return None
+
+
+def set_synth_priority(bulletin_id: int, story_id: str) -> None:
+    """Skip-reprioritise hook (wired now; the skip UI arrives in the follow-up PR): mark a
+    story to jump the synthesis queue. `_synth_remaining` polls this before each segment."""
+    r = _stream_redis()
+    if r is None:
+        return
+    try:
+        r.set(f"synth:prio:{bulletin_id}", str(story_id), ex=_STREAM_PRIORITY_TTL)
+    except Exception:
+        pass
+
+
+def _get_synth_priority(bulletin_id: int) -> str | None:
+    r = _stream_redis()
+    if r is None:
+        return None
+    try:
+        v = r.get(f"synth:prio:{bulletin_id}")
+        return v.decode() if isinstance(v, (bytes, bytearray)) else (str(v) if v else None)
+    except Exception:
+        return None
+
+
+def _skeleton_segments(db, ordered: list[dict]) -> list[dict]:
+    """Provisional segment list mirroring assemble()'s structure (intro, story, [transition,
+    story]..., outro) with EMPTY texts. Story segments carry story_id + title (from
+    data.stories) so the manifest shows the running order immediately, before summaries."""
+    story_ids = [str(o["story_id"]) for o in ordered]
+    titles: dict[str, str] = {}
+    if story_ids:
+        rows = db.execute(text("""
+            SELECT id::text AS sid, representative_title FROM data.stories
+            WHERE id::text = ANY(:ids)
+        """), {"ids": story_ids}).fetchall()
+        titles = {sid: (t or "") for sid, t in rows}
+    segs: list[dict] = [{"type": "intro", "text": ""}]
+    for i, o in enumerate(ordered):
+        sid = str(o["story_id"])
+        if i > 0:
+            segs.append({"type": "transition", "text": ""})
+        segs.append({"type": "story", "story_id": o["story_id"], "title": titles.get(sid, ""), "text": ""})
+    segs.append({"type": "outro", "text": ""})
+    return segs
+
+
+def prepare_bulletin_for_manifest(
+    *,
+    profile_id: int | None,
+    include_categories: list[str] | None,
+    exclude_categories: list[str] | None,
+    max_duration_minutes: int,
+    name: str | None,
+    include_top_stories: bool,
+) -> dict:
+    """Selection + cache check for the streaming manifest. Returns one of:
+      {'mode': 'cached'}     — a fully-assembled bulletin exists; caller uses the normal
+                               full-manifest build (unchanged behaviour).
+      {'mode': 'skeleton', 'dispatch': bool, 'bulletin_id', 'ranking_run_id', 'segments',
+       'bg'?}                — a skeleton row (new → dispatch=True with bg args; or an
+                               in-progress row from a concurrent request → dispatch=False).
+    Fast: no LLM work here — just selection + a skeleton INSERT."""
+    preset = _preset_from_minutes(max_duration_minutes)
+    filters: dict = {"preset": preset, "include_top_stories": include_top_stories}
+    if include_categories:
+        filters["include_categories"] = sorted(include_categories)
+    if exclude_categories:
+        filters["exclude_categories"] = sorted(exclude_categories)
+    if name:
+        filters["name"] = name.strip()
+    request_hash = compute_request_hash(filters)
+
+    with SessionLocal() as db:
+        run = RankingRunRepo(db).get_latest()
+        if run is None:
+            raise HTTPException(status_code=404, detail="No ranking runs found")
+        ranking_run_id = run["id"]
+
+        existing = BulletinRepo(db).get_by_run_and_hash(ranking_run_id, request_hash)
+        if existing is not None and (existing.get("script") or "").strip():
+            return {"mode": "cached"}                      # fully assembled → normal path
+        if existing is not None:
+            segs = existing["segments"]
+            if not isinstance(segs, list):
+                segs = _json.loads(segs)
+            return {"mode": "skeleton", "dispatch": False,  # in-progress → join, don't re-run
+                    "bulletin_id": existing["id"], "ranking_run_id": ranking_run_id, "segments": segs}
+
+        is_first = False
+        if name:
+            prior = db.execute(
+                text("SELECT COUNT(*) FROM data.bulletins WHERE filters->>'name' = :n"),
+                {"n": name.strip()},
+            ).scalar()
+            is_first = (prior == 0)
+
+        # EDITORIAL DEFERRED: pass ranking_run_id=None so the skeleton selection skips the
+        # Haiku editorial pass — it's cached per run but a cold miss / Anthropic timeout could
+        # otherwise block bulletin_id for up to ~20s. The base coverage + curated-authority +
+        # UK-lean + filter-sequence order is authoritative for the streaming running order.
+        reservoir = _select_reservoir(
+            db, include_top_stories=include_top_stories, include_categories=include_categories,
+            exclude_categories=exclude_categories, preset=preset, ranking_run_id=None,
+        )
+        if profile_id is not None:
+            ordered, depths = resolve_daily_edition(
+                db, profile_id=profile_id, request_hash=request_hash, reservoir=reservoir,
+                include_top_stories=include_top_stories, include_categories=include_categories, preset=preset,
+            )
+            db.commit()
+        else:
+            ordered, depths = _cap_to_dicts(cap_bulletin(
+                reservoir, include_top_stories=include_top_stories,
+                include_categories=include_categories, preset=preset,
+            ))
+
+        if not ordered:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "no_stories", "message": "No stories match the requested filters"},
+            )
+
+        candidate_ids = [o["story_id"] for o in ordered[:_SUMMARISE_BUDGET]]
+        skeleton = _skeleton_segments(db, ordered)
+        bulletin_id = BulletinRepo(db).insert(
+            ranking_run_id=ranking_run_id, request_hash=request_hash, filters=filters,
+            story_count=len(ordered), script="", segments=skeleton,
+        )
+        db.commit()
+
+    return {
+        "mode": "skeleton", "dispatch": True, "bulletin_id": bulletin_id,
+        "ranking_run_id": ranking_run_id, "segments": skeleton,
+        "bg": {
+            "bulletin_id": bulletin_id, "ranking_run_id": ranking_run_id, "request_hash": request_hash,
+            "name": name, "is_first_bulletin": is_first,
+            "ordered": ordered, "depths": depths, "candidate_ids": candidate_ids,
+        },
+    }
+
+
+def _bg_load_story_dicts(ranking_run_id: int, sids: list[str], cat_by_id: dict[str, Any]) -> list[dict]:
+    with SessionLocal() as db:
+        sums = {
+            str(s["story_id"]): s
+            for s in StorySummaryRepo(db).get_by_ranking_run(ranking_run_id, ordered_ids=sids)
+        }
+    out: list[dict] = []
+    for sid in sids:
+        s = sums.get(str(sid))
+        if not s:
+            continue
+        out.append({
+            "story_id": sid,
+            "headline": s.get("headline") or "",
+            "audio_script": (s.get("audio_script") or "").strip() or (s.get("summary_text") or ""),
+            "summary_text": s.get("summary_text") or "",
+            "primary_category": cat_by_id.get(str(sid)),
+        })
+    return out
+
+
+def _fill_prefix_and_synth(bulletin_id: int, prefix_segments: list[dict],
+                           voice: str, model: str, audio_fmt: str) -> None:
+    """Fill the skeleton's first segments (intro, story1, transition, story2) with the
+    start-pack texts, then synthesise those in PARALLEL so safe_to_start@2 is gated on the
+    slowest single segment, not their serial sum."""
+    fill = prefix_segments[:-1]  # assemble() of the 2-story pack ends in a start-outro; drop it
+    with SessionLocal() as db:
+        repo = BulletinRepo(db)
+        b = repo.get_by_id(bulletin_id)
+        if b is None:
+            return
+        segs = b["segments"]
+        if not isinstance(segs, list):
+            segs = _json.loads(segs)
+        for i, seg in enumerate(fill):
+            if i < len(segs):
+                segs[i]["text"] = seg.get("text") or ""
+        repo.update_segments(bulletin_id, segs)
+        db.commit()
+    synthesize_parallel(fill, voice=voice, model=model, audio_format=audio_fmt)
+
+
+def _synth_remaining(bulletin_id: int, segments: list[dict],
+                     voice: str, model: str, audio_fmt: str) -> None:
+    """Synthesise every segment after the start-pack, honouring a tap/skip priority hint with
+    the FORWARD-THEN-BACKFILL rule: when a story N is bumped (Redis key), synthesise N next,
+    then everything AFTER N in order (N+1, N+2, … end), then BACKFILL the skipped gap (the
+    earlier still-unready ones). Example (10 stories, jump to 7): 7, 8, 9, 10, then 3, 4, 5, 6."""
+    already = set(range(min(4, len(segments))))   # intro + story1 + transition + story2 (start-pack)
+    remaining = [i for i in range(len(segments)) if i not in already]
+    story_idx = {
+        str(s.get("story_id")): i
+        for i, s in enumerate(segments)
+        if s.get("type") == "story" and s.get("story_id")
+    }
+    while remaining:
+        prio = _get_synth_priority(bulletin_id)
+        pidx = story_idx.get(prio) if prio else None
+        if pidx is not None and pidx in remaining:
+            # Reorder the queue: the bumped story + everything after it, then the earlier gap.
+            forward = [i for i in remaining if i >= pidx]
+            backfill = [i for i in remaining if i < pidx]
+            remaining = forward + backfill
+        nxt = remaining.pop(0)
+        seg = segments[nxt]
+        if (seg.get("text") or "").strip():
+            synthesize_segment(seg["text"], segment_type=seg.get("type", "story"),
+                               voice=voice, model=model, audio_format=audio_fmt)
+
+
+def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_hash: str,
+                            name: str | None, is_first_bulletin: bool,
+                            ordered: list[dict], depths: dict, candidate_ids: list[str]) -> None:
+    """Background job (runs in a threadpool as a sync BackgroundTask): prioritised summarise
+    + incremental connective + prioritised/parallel TTS, filling the skeleton so /readiness
+    streams. Prioritises the first two stories, then finalises and synthesises the rest."""
+    try:
+        voice, model, audio_fmt = tts_voice(), tts_model(), tts_audio_format()
+        cat_by_id = {str(o["story_id"]): o.get("primary_category") for o in ordered}
+        seed = int(request_hash, 16)
+        now_uk = uk_now()
+        first_two = [str(s) for s in candidate_ids[:_SAFE_START_STORIES]]
+
+        # 1-3. Priority: summarise the top two, write the start-pack connective, fill + parallel TTS.
+        ensure_story_summaries(ranking_run_id, first_two, depths)
+        start_stories = _bg_load_story_dicts(ranking_run_id, first_two, cat_by_id)
+        start_conn = (
+            generate_connective(stories=start_stories, name=name, now=now_uk,
+                                is_first_bulletin=is_first_bulletin)
+            if start_stories else None
+        )
+        if start_stories:
+            start_result = assemble(start_stories, seed=seed, name=name, now=now_uk,
+                                    is_first_bulletin=is_first_bulletin, connective=start_conn)
+            _fill_prefix_and_synth(bulletin_id, start_result.segments, voice, model, audio_fmt)
+
+        # 4-5. Summarise the rest; write the remaining transitions + outro (continuing the voice).
+        ensure_story_summaries(ranking_run_id, candidate_ids, depths)
+        all_stories = dedup_same_event(_bg_load_story_dicts(ranking_run_id, [str(s) for s in candidate_ids], cat_by_id))
+        rest = None
+        if start_conn is not None and len(all_stories) > _SAFE_START_STORIES:
+            rest = generate_connective_rest(stories=all_stories, prior_greeting=start_conn.greeting,
+                                            prior_transitions=start_conn.transitions, name=name, now=now_uk)
+
+        # 6. Full connective (merged) → authoritative segments.
+        full_conn = None
+        if start_conn is not None:
+            merged = dict(start_conn.transitions)
+            outro = start_conn.outro
+            if rest is not None:
+                merged.update(rest[0])
+                outro = rest[1]
+            full_conn = ConnectiveResult(
+                greeting=start_conn.greeting, order=[str(s["story_id"]) for s in all_stories],
+                transitions=merged, outro=outro,
+            )
+        result = assemble(all_stories, seed=seed, name=name, now=now_uk,
+                          is_first_bulletin=is_first_bulletin, connective=full_conn)
+
+        # 7. Finalise the row (segments + non-empty script → 'assembled' cache-hit marker).
+        with SessionLocal() as db:
+            BulletinRepo(db).update_after_assembly(
+                bulletin_id, segments=result.segments, script=result.script, story_count=len(all_stories),
+            )
+            db.commit()
+
+        # 8. Synthesise the rest, honouring skip-priority.
+        _synth_remaining(bulletin_id, result.segments, voice, model, audio_fmt)
+        logger.info("run_background_assembly complete: bulletin=%s stories=%d", bulletin_id, len(all_stories))
+    except Exception as e:  # never crash the worker thread
+        logger.exception("run_background_assembly failed for bulletin %s: %s", bulletin_id, e)
+
+
 def _do_assemble_and_audio(
     *,
     profile_id: int | None = None,
@@ -1173,28 +1470,53 @@ def get_bulletin_readiness(bulletin_id: int):
         if not isinstance(segs, list):
             segs = _json.loads(segs)
 
-        # Reconstruct the manifest's playable segment list: non-empty text, in
-        # order (mirrors get_manifest's hashing exactly).
-        playable = [s for s in segs if (s.get("text") or "").strip()]
-        hashes = [compute_script_hash(s["text"]) for s in playable]
-
+        # Report EVERY segment by its FULL index (position in bulletin.segments), NOT a
+        # playable-only re-index — so iOS matches readiness → skeleton segment reliably even
+        # when a pause transition has empty text (which would otherwise shift the indices).
+        # A non-empty script marks the bulletin fully assembled.
+        assembled_final = bool((bulletin.get("script") or "").strip())
+        hash_by_idx: dict[int, str] = {
+            i: compute_script_hash(s["text"])
+            for i, s in enumerate(segs) if (s.get("text") or "").strip()
+        }
         ready_map = SegmentAudioRepo(db).get_cached_batch(
-            script_hashes=hashes, voice=voice, model=model, audio_format=audio_fmt,
+            script_hashes=list(hash_by_idx.values()), voice=voice, model=model, audio_format=audio_fmt,
         )
         failed_set = SegmentAudioFailureRepo(db).get_failed_batch(
-            script_hashes=hashes, voice=voice, model=model, audio_format=audio_fmt,
+            script_hashes=list(hash_by_idx.values()), voice=voice, model=model, audio_format=audio_fmt,
         )
 
     ready_set = set(ready_map.keys())
+    base_url = settings.public_api_base_url.rstrip("/")
+    ext = ext_from_format(audio_fmt)
     out_segments: list[dict] = []
-    for i, (s, h) in enumerate(zip(playable, hashes)):
-        if h in ready_set:
-            state = "ready"
-        elif h in failed_set:
-            state = "failed"
+    for i, s in enumerate(segs):
+        typ = s.get("type", "story")
+        txt = (s.get("text") or "").strip()
+        seg: dict[str, Any] = {"index": i, "type": typ}
+        if not txt:
+            # Empty pause transition in a FINISHED bulletin → a 0-duration skip (ready);
+            # anything empty in a still-assembling bulletin → not-yet-filled (pending).
+            if assembled_final and typ == "transition":
+                seg["state"] = "ready"
+                seg["duration_ms"] = 0
+            else:
+                seg["state"] = "pending"
         else:
-            state = "pending"
-        out_segments.append({"index": i, "type": s.get("type", "story"), "state": state})
+            h = hash_by_idx[i]
+            if h in ready_set:
+                seg["state"] = "ready"
+                seg["url"] = f"{base_url}/data/segments/{h}.{ext}"
+                row = ready_map.get(h)
+                if row and row.get("duration_seconds"):
+                    seg["duration_ms"] = round(row["duration_seconds"] * 1000)
+            elif h in failed_set:
+                seg["state"] = "failed"
+            else:
+                seg["state"] = "pending"
+        if typ == "story" and s.get("story_id"):
+            seg["story_id"] = str(s["story_id"])
+        out_segments.append(seg)
 
     total = len(out_segments)
     ready_count = sum(1 for x in out_segments if x["state"] == "ready")
@@ -1204,8 +1526,8 @@ def get_bulletin_readiness(bulletin_id: int):
     # through them (intro + those stories + the transitions between) while the remaining
     # stories keep synthesising in the background and stream into the queue.
     story_positions = [i for i, x in enumerate(out_segments) if x["type"] == "story"]
-    if len(story_positions) >= _SAFE_START_STORIES:
-        lead = story_positions[_SAFE_START_STORIES - 1] + 1   # through the Nth story segment
+    if len(story_positions) >= _SAFE_START_GATE:
+        lead = story_positions[_SAFE_START_GATE - 1] + 1       # through the gate-th story segment
     elif story_positions:
         lead = story_positions[-1] + 1                        # fewer stories than N → all of them
     else:
@@ -1280,6 +1602,23 @@ def get_bulletin_readiness(bulletin_id: int):
         "milestones": milestones,
         "progress": progress,                 # 0–100 hint (nice-to-have; safe_to_start still dismisses)
     }
+
+
+# ── Tap-to-prioritise (Netflix-style per-story readiness) ───────────────────────
+
+class PrioritiseRequest(BaseModel):
+    story_id: str
+
+
+@router.post("/bulletins/{bulletin_id}/prioritise")
+def prioritise_story(bulletin_id: int, req: PrioritiseRequest):
+    """Bump a not-yet-synthesised story to the FRONT of the background synthesis queue when
+    the listener taps/jumps to it. `_synth_remaining` reads this and applies the
+    forward-then-backfill order (bumped story + everything after it, then the earlier gap).
+    Best-effort: no-ops gracefully if the bulletin is already fully synthesised or Redis is
+    unavailable."""
+    set_synth_priority(bulletin_id, str(req.story_id))
+    return {"ok": True, "bulletin_id": bulletin_id, "prioritised": str(req.story_id)}
 
 
 # ── Bulletin event tracking ────────────────────────────────────────────────────

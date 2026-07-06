@@ -558,10 +558,14 @@ struct NowPlayingView: View {
     private func trackRow(idx: Int, unit: StoryUnit) -> some View {
         let isCurrent = idx == currentUnitIndexClamped
         let isPlayed = !isCurrent && (unit.storyHash.map { player.consumedStoryHashes.contains($0) } ?? false)
-        // Grey = "you've heard this" (still tappable), NOT disabled.
-        let titleColor = isPlayed ? ink.opacity(0.32) : ink
-        let numColor = isCurrent ? ink : inkMuted
+        // STREAMING: a story whose audio hasn't synthesised yet reads GREY; it goes BLACK the
+        // moment its audio is ready. (segmentReady is observed → the row re-renders on readiness.)
+        let ready = player.isUnitReady(unit)
+        let titleColor: Color = isPlayed ? ink.opacity(0.32) : (ready ? ink : ink.opacity(0.40))
+        let numColor = isCurrent ? ink : (ready ? inkMuted : ink.opacity(0.30))
         return Button {
+            // Tapping ANY row seeks to it; if it's still pending, the player bumps it to the
+            // front of the synthesis queue and buffers until its audio arrives.
             player.playStoryUnit(at: idx)
         } label: {
             HStack(alignment: .top, spacing: 12) {
@@ -577,11 +581,16 @@ struct NowPlayingView: View {
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                if isCurrent {
-                    EqualizerIndicator(color: ink)
-                        .frame(width: 15, height: 13)
-                        .padding(.top, 4)
+                // Netflix-style per-story readiness: pulsing hollow ring while pending, solid disc
+                // when ready. The now-playing row shows the equaliser instead.
+                Group {
+                    if isCurrent {
+                        EqualizerIndicator(color: ink).frame(width: 15, height: 13)
+                    } else {
+                        ReadinessRing(ready: ready, color: ink)
+                    }
                 }
+                .padding(.top, 4)
             }
             .padding(.vertical, 12)
             .padding(.horizontal, 10)
@@ -734,6 +743,35 @@ private struct EqualizerIndicator: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Per-story readiness ring (Netflix-style running order)
+
+/// A small readiness indicator per running-order row: a faintly pulsing hollow ring while the
+/// story's audio is still synthesising, resolving to a solid disc when ready. Not a spinner —
+/// the calm pulse reads as "downloading" without a spin. (The backend readiness is binary per
+/// segment, so this shows pending→ready rather than a precise fill fraction.)
+private struct ReadinessRing: View {
+    let ready: Bool
+    let color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(color.opacity(0.20), lineWidth: 1.5)
+            if ready {
+                Circle().fill(color)
+            } else {
+                Circle().fill(color.opacity(reduceMotion ? 0.16 : (pulse ? 0.30 : 0.10)))
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 1.0).repeatForever(autoreverses: true),
+                               value: pulse)
+            }
+        }
+        .frame(width: 12, height: 12)
+        .animation(.easeInOut(duration: 0.35), value: ready)
+        .onAppear { pulse = true }
     }
 }
 

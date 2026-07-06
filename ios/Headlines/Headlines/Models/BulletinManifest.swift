@@ -3,8 +3,11 @@ import Foundation
 struct ManifestSegment: Decodable, Identifiable {
     let index: Int
     let type: String
-    let url: String
-    let durationMs: Int
+    // STREAMING: url + durationMs are nil in the skeleton manifest (returned in ~4s, before any
+    // audio exists). They arrive per-segment via /readiness as each segment synthesises and are
+    // merged in (hence `var`). A nil url means "not yet synthesised" (HOLD), never "skip".
+    var url: String?
+    var durationMs: Int?
     let storyHash: String?
     let storyId: String?
     let title: String?
@@ -12,7 +15,8 @@ struct ManifestSegment: Decodable, Identifiable {
 
     var id: Int { index }
     var isStory: Bool { type == "story" }
-    var durationSeconds: Double { Double(durationMs) / 1000.0 }
+    var isReady: Bool { (url?.isEmpty == false) }
+    var durationSeconds: Double { Double(durationMs ?? 0) / 1000.0 }
 
     enum CodingKeys: String, CodingKey {
         case index, type, url, title, sources
@@ -24,7 +28,7 @@ struct ManifestSegment: Decodable, Identifiable {
 
 struct BulletinManifest: Decodable {
     let bulletinId: Int
-    let rankingRunId: Int
+    let rankingRunId: Int?    // optional — the streaming skeleton may omit it
     let segments: [ManifestSegment]
 
     enum CodingKeys: String, CodingKey {
@@ -42,8 +46,19 @@ struct ReadinessSegment: Decodable {
     let index: Int
     let type: String
     let state: String
+    // STREAMING: present once state == "ready" — the incremental source of the playable url +
+    // duration (the skeleton manifest had neither), plus story_id for the Netflix-style list.
+    let url: String?
+    let durationMs: Int?
+    let storyId: String?
 
     var isReady: Bool { state == "ready" }
+
+    enum CodingKeys: String, CodingKey {
+        case index, type, state, url
+        case durationMs = "duration_ms"
+        case storyId    = "story_id"
+    }
 }
 
 /// Honest readiness signal the loader gate polls after requesting the manifest.
@@ -100,9 +115,9 @@ struct StoryUnit: Identifiable {
 
     var id: Int { index }
     var transitionDurationSeconds: Double {
-        transitionSegment.map { Double($0.durationMs) / 1000.0 } ?? 0
+        transitionSegment.map { Double($0.durationMs ?? 0) / 1000.0 } ?? 0
     }
-    var storyDurationSeconds: Double { Double(storySegment.durationMs) / 1000.0 }
+    var storyDurationSeconds: Double { Double(storySegment.durationMs ?? 0) / 1000.0 }
     var totalDurationSeconds: Double  { transitionDurationSeconds + storyDurationSeconds }
     var storyHash: String? { storySegment.storyHash }
     var title: String?    { storySegment.title }

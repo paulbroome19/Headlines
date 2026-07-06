@@ -186,6 +186,32 @@ def synthesize_segments(
     return result
 
 
+def synthesize_parallel(
+    segments: list[dict],
+    *,
+    voice: str,
+    model: str,
+    audio_format: str,
+    max_workers: int = 4,
+) -> None:
+    """Synthesise (and cache) several segments CONCURRENTLY — used for the streaming
+    start-pack (intro + story 1 + story 2 + their bridge) so safe_to_start@2 is gated on
+    max(one segment) instead of the serial sum. Each item is {"text","type"}; empty-text
+    items are skipped. Fire-and-store: writes data.segment_audio per success (which is what
+    /readiness reads); return value is ignored. Failures are logged by _synthesize_and_cache
+    and surface via data.segment_audio_failures."""
+    work = [s for s in segments if (s.get("text") or "").strip()]
+    if not work:
+        return
+    def _one(seg: dict) -> None:
+        synthesize_segment(
+            seg["text"], segment_type=seg.get("type", "story"),
+            voice=voice, model=model, audio_format=audio_format,
+        )
+    with ThreadPoolExecutor(max_workers=min(len(work), max_workers)) as pool:
+        list(pool.map(_one, work))
+
+
 # ── Private helpers ────────────────────────────────────────────────────────────
 
 def _fetch_bytes(cached: dict) -> bytes | None:

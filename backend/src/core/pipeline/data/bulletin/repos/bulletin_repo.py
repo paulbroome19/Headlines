@@ -80,3 +80,28 @@ class BulletinRepo:
             },
         ).scalar_one()
         return int(run_id)
+
+    def update_segments(self, bulletin_id: int, segments: list[dict]) -> None:
+        """Patch the segments jsonb only — used during streaming assembly to fill in
+        segment texts (intro/story/transition) as summaries land, so /readiness can hash
+        and report them. Leaves script='' until finalised (the in-progress marker)."""
+        self.db.execute(
+            text("UPDATE data.bulletins SET segments = :segments WHERE id = :id"),
+            {"segments": json.dumps(segments), "id": bulletin_id},
+        )
+
+    def update_after_assembly(
+        self, bulletin_id: int, *, segments: list[dict], script: str, story_count: int,
+    ) -> None:
+        """Finalise a skeleton row once background assembly completes. Setting a non-empty
+        `script` is the 'fully assembled' signal: get_by_run_and_hash's caller treats a row
+        with script='' as in-progress (join it) and script<>'' as a cache hit."""
+        self.db.execute(
+            text("""
+                UPDATE data.bulletins
+                SET segments = :segments, script = :script, story_count = :story_count
+                WHERE id = :id
+            """),
+            {"segments": json.dumps(segments), "script": script,
+             "story_count": story_count, "id": bulletin_id},
+        )
