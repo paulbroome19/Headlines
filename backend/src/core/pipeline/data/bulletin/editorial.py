@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -35,15 +36,21 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.anthropic.com/v1/messages"
 _API_VERSION = "2023-06-01"
-_MAX_TOKENS = 900
+# The review returns one object per CHANGED story (id + category + significance + top_story +
+# a short reason). Over a focused front-page set that is easily a dozen+ objects; 900 tokens
+# truncated the JSON mid-array → the whole parse failed → the pass silently returned nothing
+# (no corrections, no top_story). 3000 gives ample headroom.
+_MAX_TOKENS = 3000
 _TIMEOUT_SECONDS = 25
 
 # How far the editor may move a story's 0–10 significance. Bounds the override: it can
 # reorder near-neighbours and lift/sink a clear outlier, but a 3+ point gap survives.
 SIG_CLAMP = 2.0
-# Cap on NET new front-page promotions per review — stops a wholesale reshaping of the
-# front page; beyond this, the highest-significance promotions win.
-MAX_PROMOTIONS = 6
+# Safety ceiling on top_story flags per review — pure runaway protection (an over-eager LLM
+# can't flood the front page), NOT a target. The user gets EVERY genuine top story; the high
+# bar keeps the real count small, and duplicate event-clusters collapse in dedup downstream. So
+# this sits well above a normal day's few, only clipping a pathological over-flag.
+MAX_PROMOTIONS = 15
 
 
 @dataclass(frozen=True)
@@ -131,6 +138,9 @@ def _post_anthropic(system: str, user: str) -> dict | None:
     data = json.dumps({
         "model": _model(),
         "max_tokens": _MAX_TOKENS,
+        # Editorial judgment is a classification, not creative writing — temperature 0 makes it
+        # DETERMINISTIC (the API default 1.0 made the same candidate set flag differently each run).
+        "temperature": 0,
         "system": system,
         "messages": [{"role": "user", "content": user}],
     }).encode()
@@ -154,6 +164,34 @@ def _clamp(x: float) -> float:
     return max(-SIG_CLAMP, min(SIG_CLAMP, x))
 
 
+def _parse_items(text: str) -> list[dict]:
+    """Extract the adjustment objects, tolerating a slightly-truncated response. Tries the
+    clean `{"adjustments":[...]}` parse first; on failure, salvages every COMPLETE flat
+    `{...}` object with an `id` (a truncated final object is simply dropped) so an over-length
+    response still yields the rows it did finish."""
+    start = text.find("{")
+    if start >= 0:
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(text[start:])
+            if isinstance(payload, dict) and isinstance(payload.get("adjustments"), list):
+                return payload["adjustments"]
+        except (ValueError, json.JSONDecodeError):
+            pass
+    # Salvage — adjustment objects are FLAT (no nested braces), so a shortest-match {...} scan
+    # recovers each complete one and skips a cut-off tail.
+    out: list[dict] = []
+    for m in re.finditer(r"\{[^{}]*\}", text):
+        try:
+            o = json.loads(m.group())
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(o, dict) and "id" in o:
+            out.append(o)
+    if out:
+        logger.info("editorial: salvaged %d adjustment(s) from a truncated response", len(out))
+    return out
+
+
 def review_front_page(
     stories: list[StoryMeta], valid_leaves: list[str],
 ) -> dict[str, EditorialAdjustment]:
@@ -166,14 +204,12 @@ def review_front_page(
         return {}
     try:
         text = raw["content"][0]["text"].strip()
-        if text.startswith("```"):
-            text = "\n".join(l for l in text.splitlines() if not l.strip().startswith("```"))
-        start = text.find("{")
-        payload, _ = json.JSONDecoder().raw_decode(text[start:]) if start >= 0 else ({}, 0)
-        items = payload.get("adjustments") or []
-    except (KeyError, IndexError, ValueError, TypeError, json.JSONDecodeError) as e:
+    except (KeyError, IndexError, TypeError) as e:
         logger.warning("editorial malformed response: %s", e)
         return {}
+    if text.startswith("```"):
+        text = "\n".join(l for l in text.splitlines() if not l.strip().startswith("```"))
+    items = _parse_items(text)
 
     known = {s.story_id for s in stories}
     out: dict[str, EditorialAdjustment] = {}

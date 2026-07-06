@@ -40,6 +40,11 @@ FLOOR_N = 2
 # Above this many reviewed stories, split into tier BANDS (front page first) so each Haiku
 # call attends carefully rather than skimming one huge prompt.
 CALL_BATCH = 200
+# FRONT-PAGE pass: the global top-N by score reviewed TOGETHER in one focused, score-ordered
+# call. The significance / top_story judgment needs the biggest stories side by side — a large
+# category-grouped batch (tier-laddered) buries them and flags nothing. This pass is
+# authoritative for the front page; it overrides the tiered result for these high-rank stories.
+FRONT_PAGE_N = 70
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS data.editorial_reviews (
@@ -219,10 +224,18 @@ def editorial_adjustments(
         batches += [band_b[i:i + CALL_BATCH] for i in range(0, len(band_b), CALL_BATCH)]
 
     adjustments: dict[str, EditorialAdjustment] = {}
+    # DEEP corrections across the tier-laddered set (category fixes beyond the front page).
     for batch in batches:
         if not batch:
             continue
         adjustments.update(review_front_page(_build_meta(db, batch, rank), leaves))
+
+    # FRONT-PAGE pass — the global top-N by score, reviewed together, is the RELIABLE place for
+    # the significance / top_story judgment. Runs LAST so its result overrides the (diluted)
+    # tiered one for these high-rank stories.
+    front = sorted(scored, key=lambda s: s.normalized_score, reverse=True)[:FRONT_PAGE_N]
+    if front:
+        adjustments.update(review_front_page(_build_meta(db, front, rank), leaves))
 
     repo.put(ranking_run_id, adjustments, _model())
     return adjustments
