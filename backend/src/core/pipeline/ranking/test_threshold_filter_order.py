@@ -169,3 +169,21 @@ def test_fresh_relief_clears_a_just_under_bar_breaking_story():
     q_new = {r.candidate.story_id for r in qualify_and_order(fresh, include_top_stories=True, include_categories=SEL, preset="short", now=NOW)}
     assert "brk_old" not in q_old
     assert "brk_new" in q_new
+
+
+def test_uk_lean_weighted_in_top_stories_block():
+    # Both UK + US top-stories selected: the weighted lean (uk 1.35 > us 1.15) puts a UK top
+    # story ahead of a COMPARABLE US one, but a genuinely bigger US story still surfaces at the
+    # top (weighted, not strict UK-first).
+    sel = ["top-stories.uk", "top-stories.us"]
+    stories = [
+        _ss("uk_ord",  "politics.uk", 7.0, geo="uk", top=True),
+        _ss("us_ord",  "politics.us", 7.5, geo="us", top=True),
+        _ss("us_huge", "politics.us", 9.0, geo="us", top=True),
+        _ss("uk_big",  "politics.uk", 8.0, geo="uk", top=True),
+    ]
+    order = [s.candidate.story_id for s in qualify_and_order(
+        stories, include_top_stories=False, include_categories=sel, preset="medium")]
+    assert order.index("uk_ord") < order.index("us_ord")   # UK gets a thumb over comparable US
+    assert order[0] == "uk_big"                             # UK_big (8.0×1.35) leads
+    assert order.index("us_huge") == 1                      # but a huge US story isn't buried

@@ -28,6 +28,7 @@ from datetime import date
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from core.platform.config.settings import settings
 from core.pipeline.data.bulletin.connective import uk_now
 from core.pipeline.data.bulletin.repos.user_story_state_repo import UserStoryStateRepo
 from core.pipeline.ranking.config import MAX_BULLETIN_STORIES
@@ -185,6 +186,25 @@ def resolve_daily_edition(
     Balancing on the UNHEARD reservoir is what lets heard slots refill from deeper
     candidates instead of shrinking the bulletin. Running order is the FILTER SEQUENCE.
     """
+    # COLLAPSED edition (Phase 3, flag-gated): when the request path reads the STABLE ranked
+    # list, the reservoir is already stable and time-invariant, so the per-user reconcile /
+    # splice / refill / stored-edition machinery is no longer needed for stability. The edition
+    # is just a FILTER over the shared list: drop heard/skipped, balance + cap. The heard/skip
+    # guarantee is preserved (get_dropped_story_ids) and the 24h guarantee comes from the list's
+    # own prune; _fresh_category_relief still applies inside qualify_and_order. No writes to
+    # user_daily_editions.
+    if settings.read_from_ranked_list:
+        dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
+        unheard = [s for s in reservoir if s.candidate.story_id not in dropped]
+        display = cap_bulletin(
+            unheard, include_top_stories=include_top_stories,
+            include_categories=include_categories, preset=preset,
+        )
+        ordered = [{"story_id": s.candidate.story_id, "primary_category": s.candidate.primary_category}
+                   for s in display]
+        depths = {s.candidate.story_id: depth_for_rank(rank) for rank, s in enumerate(display)}
+        return ordered, depths
+
     edition_date = uk_now().date()
     repo = UserDailyEditionRepo(db)
     existing = repo.get_story_ids(profile_id, edition_date, request_hash)
