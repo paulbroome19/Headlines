@@ -141,10 +141,11 @@ struct HomeView: View {
                     storyBlock(story, lead: false)
                 }
             } else {
-                Text("Gathering your top stories…")
-                    .font(.editorial(15))
-                    .foregroundColor(cream.opacity(0.5))
-                    .padding(.vertical, 22)
+                // Quiet, on-brand placeholder while the real top stories fetch — faint
+                // cream hairline bars, laid out where the stories will land, with a slow
+                // highlight sweeping across. No spinner; matches the dark board's calm.
+                TopStoriesShimmer(cream: cream)
+                    .padding(.vertical, 6)
             }
         }
         .padding(boardPad)
@@ -282,6 +283,66 @@ struct HomeView: View {
         d.removeObject(forKey: "hasSeenHomeHint")
     }
     #endif
+}
+
+// MARK: - Top-stories placeholder (quiet shimmer)
+
+/// A quiet, on-brand stand-in while the real top stories fetch: faint cream hairline
+/// bars laid out where the stories will land — a lead headline line, a couple of body
+/// lines, a short source line — with a slow highlight sweeping across. No spinner.
+/// Reduce-motion shows the static bars (no sweep).
+private struct TopStoriesShimmer: View {
+    let cream: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var travel: CGFloat = 0
+
+    // Relative bar widths → lead headline, two body lines, a short source line.
+    private let widths: [CGFloat] = [0.92, 0.66, 0.80, 0.46]
+    private let spacing: CGFloat = 13
+    private func height(_ i: Int) -> CGFloat { i == 0 ? 18 : 11 }
+
+    private var blockHeight: CGFloat {
+        widths.indices.reduce(0) { $0 + height($1) } + spacing * CGFloat(widths.count - 1)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let W = geo.size.width
+            bars(W: W, opacity: 0.10)
+                .overlay(highlight(W: W))
+                .mask(bars(W: W, opacity: 1))          // opaque shapes → clip the sweep to the bars
+                .onAppear {
+                    guard !reduceMotion else { return }
+                    travel = -W * 0.6
+                    withAnimation(.linear(duration: 2.1).repeatForever(autoreverses: false)) {
+                        travel = W
+                    }
+                }
+        }
+        .frame(height: blockHeight)
+    }
+
+    private func bars(W: CGFloat, opacity: Double) -> some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            ForEach(widths.indices, id: \.self) { i in
+                Capsule()
+                    .fill(cream.opacity(opacity))
+                    .frame(width: W * widths[i], height: height(i))
+            }
+        }
+        .frame(width: W, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func highlight(W: CGFloat) -> some View {
+        if !reduceMotion {
+            LinearGradient(colors: [.clear, cream.opacity(0.16), .clear],
+                           startPoint: .leading, endPoint: .trailing)
+                .frame(width: W * 0.6)
+                .offset(x: travel)
+                .allowsHitTesting(false)
+        }
+    }
 }
 
 // MARK: - Solari greeting (flip-open on appear)
