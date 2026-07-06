@@ -12,7 +12,7 @@ from core.platform.queue.event import Event
 from core.platform.queue.outbox import OutboxRepo
 
 from core.pipeline.data.categorise.events import DATA_CATEGORISE_COMPLETED
-from core.pipeline.data.normalise.categorise.cluster_categoriser import categorise_story
+from core.pipeline.data.normalise.categorise.cluster_categoriser import categorise_stories
 from core.pipeline.data.normalise.categorise.llm_categoriser import DROP
 
 logger = logging.getLogger(__name__)
@@ -79,14 +79,20 @@ def handle_cluster_completed(event: dict) -> None:
 
     use_llm = settings.enable_llm_primary_categorise
     with SessionLocal() as db:
+        # LLM-primary categorisation, BATCHED: one Anthropic call per ~_BATCH_SIZE stories
+        # amortises the taxonomy system prompt (the dominant, uncached input cost). Cached
+        # by content hash, so replays/overlaps never re-pay. A whole-batch failure degrades
+        # to per-story fallback below (result stays None → majority vote).
+        batch_results: dict[int, object] = {}
+        if use_llm:
+            try:
+                batch_results = categorise_stories(db, story_ids)
+            except Exception as e:  # never let the LLM path stall the batch
+                logger.warning("llm batch categorise failed for %d stories: %s", len(story_ids), e)
+                batch_results = {}
+
         for story_id in story_ids:
-            result = None
-            if use_llm:
-                try:
-                    result = categorise_story(db, story_id)
-                except Exception as e:  # never let one story stall the batch
-                    logger.warning("llm categorise failed for story %s: %s", story_id, e)
-                    result = None
+            result = batch_results.get(story_id)
 
             # DELIBERATE DROP: the story has no honest home in our taxonomy (ice hockey,
             # crime, an unlisted region). EXCLUDE it — clear the category, and do NOT fall
