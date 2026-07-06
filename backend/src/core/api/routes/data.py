@@ -1154,7 +1154,7 @@ def prepare_bulletin_for_manifest(
         "ranking_run_id": ranking_run_id, "segments": skeleton,
         "bg": {
             "bulletin_id": bulletin_id, "ranking_run_id": ranking_run_id, "request_hash": request_hash,
-            "name": name, "is_first_bulletin": is_first,
+            "name": name, "is_first_bulletin": is_first, "profile_id": profile_id,
             "ordered": ordered, "depths": depths, "candidate_ids": candidate_ids,
         },
     }
@@ -1268,7 +1268,8 @@ def _synth_remaining(bulletin_id: int, segments: list[dict],
 
 def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_hash: str,
                             name: str | None, is_first_bulletin: bool,
-                            ordered: list[dict], depths: dict, candidate_ids: list[str]) -> None:
+                            ordered: list[dict], depths: dict, candidate_ids: list[str],
+                            profile_id: int | None = None) -> None:
     """Background job (runs in a threadpool as a sync BackgroundTask): prioritised summarise
     + incremental connective + prioritised/parallel TTS, filling the skeleton so /readiness
     streams. Prioritises the first two stories, then finalises and synthesises the rest."""
@@ -1321,6 +1322,25 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
                 bulletin_id, segments=result.segments, script=result.script, story_count=len(all_stories),
             )
             db.commit()
+
+        # 7b. Seed heard-tracking (user_story_state) for the STREAMING path. Only the cache-hit
+        # manifest (_build_full_manifest) seeds otherwise, so a fresh streaming play — e.g. an
+        # edited-filter first play that isn't pre-warmed — would record no heard/skip events.
+        # One queued row per story (ON CONFLICT (profile_id, story_id) DO NOTHING → keyed to the
+        # lead's opener hash, matching the unit hash iOS fires events with). Idempotent, so it's
+        # harmless if a later cache-hit manifest re-seeds the same rows.
+        if profile_id is not None:
+            story_segs = [
+                {"story_id": int(seg["story_id"]), "story_hash": compute_script_hash(seg["text"])}
+                for seg in result.segments
+                if seg.get("type") == "story" and seg.get("story_id") and (seg.get("text") or "").strip()
+            ]
+            if story_segs:
+                with SessionLocal() as db:
+                    UserStoryStateRepo(db).insert_queued_batch(
+                        profile_id=profile_id, bulletin_id=bulletin_id, story_segments=story_segs,
+                    )
+                    db.commit()
 
         # 8. Synthesise the rest, honouring skip-priority.
         _synth_remaining(bulletin_id, result.segments, voice, model, audio_fmt)

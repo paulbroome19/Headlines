@@ -171,9 +171,16 @@ def create_profile(
             )
         db.commit()
 
-    # Warm this user's first bulletin (greeting + audio) in the background so it's
-    # ready by the time they reach Home and tap play. Non-blocking; fails silently.
-    background_tasks.add_task(_prepare_first_bulletin, profile["id"])
+    # Warm this user's first bulletin (greeting + audio) in the background so it's ready by
+    # the time they reach Home and tap play. Non-blocking; fails silently.
+    #
+    # CREATE ONLY — never on update. A profile EDIT (e.g. a mid-onboarding category change)
+    # would otherwise fully generate a wasted bulletin for a filter the user may never play
+    # (a new request_hash → not a cache hit). Heard-tracking no longer depends on this warm:
+    # the streaming play path now seeds user_story_state itself (run_background_assembly), so
+    # an edited filter's first play records heard/skip events regardless of cache state.
+    if existing is None:
+        background_tasks.add_task(_prepare_first_bulletin, profile["id"])
 
     return _fmt(profile)
 
