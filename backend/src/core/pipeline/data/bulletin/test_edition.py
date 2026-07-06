@@ -9,7 +9,7 @@ freed slots refill from deeper candidates.
 """
 from __future__ import annotations
 
-from core.pipeline.data.bulletin.edition import reconcile_edition
+from core.pipeline.data.bulletin.edition import reconcile_edition, select_edition_survivors
 
 
 def test_refills_to_target_from_deep_reservoir():
@@ -59,3 +59,37 @@ def test_no_duplicates():
     out = reconcile_edition(existing, fresh, set(), max_size=10)
     assert len(out) == len(set(out))
     assert out == ["a", "b", "c", "d", "e"]
+
+
+# ── select_edition_survivors: evict stuck non-selected stored stories ──────────
+
+def test_survivors_evicts_unfollowed_and_keeps_selected():
+    # Paul follows politics + business. His edition still holds a Sony gaming story (295) and
+    # an F1 story that only entered under old ungated behaviour.
+    topic_cats = ["politics", "business"]
+    reservoir_ids = {"pol_reservoir", "biz_reservoir"}   # currently-qualifying
+    cats = {
+        "pol_reservoir": "politics.uk",              # in reservoir → kept
+        "biz_reservoir": "business.companies",       # in reservoir → kept
+        "pol_dipped": "politics.us",                 # NOT in reservoir but followed → kept (stability)
+        "295": "technology.gaming",                  # unfollowed, not top → DROPPED
+        "f1": "sport.motorsport.formula1",           # unfollowed, not top → DROPPED
+    }
+    existing = ["pol_reservoir", "295", "biz_reservoir", "pol_dipped", "f1"]
+    out = select_edition_survivors(
+        existing, reservoir_ids=reservoir_ids,
+        category_of=lambda sid: cats.get(sid), topic_cats=topic_cats,
+    )
+    assert out == ["pol_reservoir", "biz_reservoir", "pol_dipped"]   # order preserved, soft ones gone
+    assert "295" not in out and "f1" not in out
+
+
+def test_survivors_noop_when_all_selected():
+    topic_cats = ["politics"]
+    reservoir_ids = {"a"}
+    cats = {"a": "politics.uk", "b": "politics.us"}
+    out = select_edition_survivors(
+        ["a", "b"], reservoir_ids=reservoir_ids,
+        category_of=lambda sid: cats.get(sid), topic_cats=topic_cats,
+    )
+    assert out == ["a", "b"]

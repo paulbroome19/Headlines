@@ -32,7 +32,12 @@ from core.pipeline.data.bulletin.connective import uk_now
 from core.pipeline.data.bulletin.repos.user_story_state_repo import UserStoryStateRepo
 from core.pipeline.ranking.config import MAX_BULLETIN_STORIES
 from core.pipeline.ranking.depth import depth_for_rank
-from core.pipeline.ranking.thresholds import _bucket_index, _selection_context, cap_bulletin
+from core.pipeline.ranking.thresholds import (
+    _bucket_index,
+    _matches_category,
+    _selection_context,
+    cap_bulletin,
+)
 
 # Absolute ceiling on stories held in an edition — the global hard cap. The effective
 # size is set by the preset's per-category depth (cap_bulletin); this just bounds the
@@ -83,6 +88,35 @@ def reconcile_edition(
             seen.add(sid)
 
     return final[:max_size]
+
+
+def select_edition_survivors(
+    existing_ids: list[str],
+    *,
+    reservoir_ids: set[str],
+    category_of,
+    topic_cats: list[str],
+) -> list[str]:
+    """Keep only stored edition ids that still BELONG to the current selection:
+      - in the current qualifier reservoir (a genuine top story admitted via the front-page/
+        region gate, or a followed-topic story clearing the bar), OR
+      - a followed-topic story that merely dipped below the bar (kept for stability).
+    Drop ids matching NO selected bucket — a wrong-category story, or a non-top story that
+    only ever entered the edition under older ungated behaviour — so the edition can't keep
+    surfacing categories the user doesn't follow. `category_of(sid)` gives a stored id's
+    primary category (from data.stories) for ids no longer in the reservoir.
+
+    This is the edition-stickiness half of the top_story fix: the gate keeps NEW soft stories
+    out of the reservoir; this evicts ones already stuck in a running edition."""
+    survivors: list[str] = []
+    for sid in existing_ids:
+        if sid in reservoir_ids:
+            survivors.append(sid)
+            continue
+        cat = category_of(sid)
+        if cat and any(_matches_category(cat, tc) for tc in topic_cats):
+            survivors.append(sid)
+    return survivors
 
 
 class UserDailyEditionRepo:
@@ -159,6 +193,22 @@ def resolve_daily_edition(
     # dealt-with story never returns (across regenerations AND the day boundary); unheard
     # (queued) stories persist.
     dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
+
+    # Evict stored ids that no longer BELONG to this selection (wrong category / a non-top story
+    # stuck from older ungated behaviour) BEFORE reconciling — so an edition can't keep surfacing
+    # unfollowed categories. Followed-topic stories that merely dipped below the bar are kept.
+    if existing:
+        reservoir_ids = {s.candidate.story_id for s in reservoir}
+        reservoir_cat = {s.candidate.story_id: s.candidate.primary_category for s in reservoir}
+        ext_missing = [sid for sid in existing if sid not in reservoir_cat]
+        ext_cat = _categories_for(db, ext_missing) if ext_missing else {}
+        _, _, topic_cats_ev = _selection_context(include_top_stories, include_categories)
+        existing = select_edition_survivors(
+            existing,
+            reservoir_ids=reservoir_ids,
+            category_of=lambda sid: ext_cat.get(sid),
+            topic_cats=topic_cats_ev,
+        )
 
     # Balance the unheard reservoir into this preset's display set (depth + ceiling).
     unheard = [s for s in reservoir if s.candidate.story_id not in dropped]

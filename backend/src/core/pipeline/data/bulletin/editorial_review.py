@@ -6,6 +6,7 @@ filter and regeneration of that run — one cheap call per ranking run, not per 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import replace
@@ -111,6 +112,45 @@ class EditorialRepo:
                 {"r": ranking_run_id, "s": sid, "c": cat, "sig": sig, "reason": reason,
                  "top": top, "m": model},
             )
+        self.db.commit()
+
+    # ── Candidate-set fingerprint (burst dedup) ──────────────────────────────────────────
+    # The global re-rank fires several times per ingest cycle over an UNCHANGED candidate set,
+    # so consecutive runs would each pay a full Haiku review for identical flags. We stamp the
+    # candidate fingerprint on the run's `__reviewed__` MARKER row (its `category` column is
+    # otherwise unused) and copy a twin run's flags instead of re-reviewing. get() skips the
+    # marker, so the fingerprint never leaks into the applied adjustments.
+    def stamp_fingerprint(self, ranking_run_id: int, fingerprint: str) -> None:
+        self.db.execute(
+            text("""UPDATE data.editorial_reviews SET category = :fp
+                    WHERE ranking_run_id = :r AND story_id = :m"""),
+            {"fp": fingerprint, "r": ranking_run_id, "m": _MARKER},
+        )
+        self.db.commit()
+
+    def find_reviewed_run_by_fingerprint(self, fingerprint: str, *, exclude_run_id: int) -> int | None:
+        row = self.db.execute(
+            text("""SELECT ranking_run_id FROM data.editorial_reviews
+                    WHERE story_id = :m AND category = :fp AND ranking_run_id <> :x
+                    ORDER BY ranking_run_id DESC LIMIT 1"""),
+            {"m": _MARKER, "fp": fingerprint, "x": exclude_run_id},
+        ).first()
+        return int(row[0]) if row else None
+
+    def copy_reviews(self, *, src_run_id: int, dst_run_id: int, fingerprint: str) -> None:
+        """Copy a twin run's reviews to this run (including the marker), stamping the marker's
+        fingerprint so this run is itself a future twin. No LLM call."""
+        self.db.execute(
+            text("""INSERT INTO data.editorial_reviews
+                        (ranking_run_id, story_id, category, significance, reason, top_story, model)
+                    SELECT :dst, story_id,
+                           CASE WHEN story_id = :m THEN :fp ELSE category END,
+                           significance, reason, top_story, model
+                    FROM data.editorial_reviews
+                    WHERE ranking_run_id = :src
+                    ON CONFLICT (ranking_run_id, story_id) DO NOTHING"""),
+            {"dst": dst_run_id, "src": src_run_id, "m": _MARKER, "fp": fingerprint},
+        )
         self.db.commit()
 
 
@@ -271,6 +311,62 @@ def editorial_adjustments(
 
     repo.put(ranking_run_id, adjustments, _model())
     return adjustments
+
+
+def _candidate_fingerprint(scored: list[ScoredStory]) -> str:
+    """Stable digest of the candidate SET (its story ids). Two ranking runs with the same
+    candidates get the same flags, so they can share one review."""
+    ids = sorted(s.candidate.story_id for s in scored)
+    return hashlib.sha1("|".join(ids).encode("utf-8")).hexdigest()
+
+
+def precompute_editorial_for_run(db: Session, ranking_run_id: int, scored: list[ScoredStory]) -> str:
+    """Compute + persist the editorial top_story flags for a ranking run AT RANK TIME.
+
+    This is the root-cause fix: with the flags already in `data.editorial_reviews` when the run
+    lands, BOTH assembly paths (blocking and the streaming skeleton) read them from cache and
+    gate the front page identically — the top-stories/region blocks admit only genuine top
+    stories, regardless of which path builds the bulletin. No more flag-blind streaming.
+
+    Burst-safe: the global re-rank fires several times per ingest cycle over an unchanged
+    candidate set; the first run pays one Haiku review, the rest COPY it by candidate
+    fingerprint (no per-run LLM cost). Idempotent and best-effort — returns the fingerprint,
+    or '' if disabled/already-reviewed."""
+    if not settings.enable_editorial_pass or not settings.anthropic_api_key:
+        return ""
+    repo = EditorialRepo(db)
+    repo.ensure_table()
+    if repo.get(ranking_run_id) is not None:
+        return ""  # already reviewed (idempotent — a bulletin may have computed it lazily)
+
+    fingerprint = _candidate_fingerprint(scored)
+    twin = repo.find_reviewed_run_by_fingerprint(fingerprint, exclude_run_id=ranking_run_id)
+    if twin is not None:
+        repo.copy_reviews(src_run_id=twin, dst_run_id=ranking_run_id, fingerprint=fingerprint)
+        return fingerprint
+
+    editorial_adjustments(db, ranking_run_id, scored)  # one Haiku review; caches to the run
+    repo.stamp_fingerprint(ranking_run_id, fingerprint)
+    return fingerprint
+
+
+def apply_cached_editorial(db: Session, ranking_run_id: int, scored: list[ScoredStory]) -> int:
+    """Apply ONLY the already-persisted editorial flags for this run — NEVER calls the LLM.
+
+    For hot paths (the streaming skeleton selection) that must stay fast and must not block
+    the bulletin_id response on a cold Haiku call. The flags are precomputed at rank time
+    (handle_categorise_completed), so this is a cheap cache read: the front-page/region gate
+    then works identically to the blocking path. No-op (returns 0) if the run has not been
+    reviewed yet — selection degrades to base coverage order for that one request, never worse
+    than the old deferred behaviour."""
+    if not settings.enable_editorial_pass:
+        return 0
+    repo = EditorialRepo(db)
+    repo.ensure_table()
+    cached = repo.get(ranking_run_id)
+    if not cached:
+        return 0
+    return apply_editorial(scored, cached)
 
 
 def apply_editorial(scored: list[ScoredStory], adjustments: dict[str, EditorialAdjustment]) -> int:

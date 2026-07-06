@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import logging
+
 from core.platform.db.session import SessionLocal
 from core.platform.queue.event import Event
 from core.platform.queue.outbox import OutboxRepo
 
+from core.pipeline.data.bulletin.editorial_review import precompute_editorial_for_run
 from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
+from core.pipeline.ranking.category_ranker import get_category_weight
 from core.pipeline.ranking.events import DATA_RANK_COMPLETED
 from core.pipeline.ranking.ranker import StoryRanker
 from core.pipeline.ranking.repos.ranking_run_repo import RankingRunRepo
+from core.pipeline.ranking.scorer import score_story
+
+logger = logging.getLogger(__name__)
 
 
 def handle_categorise_completed(event: dict) -> None:
@@ -56,4 +63,16 @@ def handle_categorise_completed(event: dict) -> None:
             )
         )
 
+        # Commit the CRITICAL PATH (ranking run + rank.completed event) first — the editorial
+        # precompute below must never be able to lose the downstream event if it fails.
         db.commit()
+
+        # Precompute the editorial top_story flags for this run, off the request path, so BOTH
+        # assembly paths (blocking + streaming skeleton) read them from cache and gate the front
+        # page identically — the core fix for the streaming path bypassing the significance gate.
+        # Best-effort + burst-deduped (one Haiku review per candidate set); never breaks ranking.
+        try:
+            scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
+            precompute_editorial_for_run(db, run_id, scored)
+        except Exception:
+            logger.exception("editorial precompute skipped for ranking run %s", run_id)
