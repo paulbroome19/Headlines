@@ -187,11 +187,6 @@ struct HomeView: View {
 
     private var assembleBar: some View {
         VStack(spacing: 14) {
-            Text("Assemble your full briefing")
-                .font(.editorial(21))
-                .foregroundColor(LightColors.ink)
-                .multilineTextAlignment(.center)
-
             // "6 MIN · 5 STORIES" framed by light-grey rules — time first, whole minutes,
             // story count. From the REAL selection (nil → subtle placeholder while loading).
             VStack(spacing: 9) {
@@ -202,18 +197,28 @@ struct HomeView: View {
                 greyRule
             }
 
-            Button(action: onGenerate) {
-                MachinedDisc(diameter: discDiam) {
-                    ForwardArrow()
-                        .stroke(cream, style: StrokeStyle(lineWidth: discDiam * 0.06,
-                                                          lineCap: .round, lineJoin: .round))
-                        .frame(width: discDiam * 0.40, height: discDiam * 0.34)
-                        .offset(x: discDiam * 0.02)
+            // Below the rule: the label (now mono) on the left, arrow disc on the far right.
+            HStack(spacing: 14) {
+                Text("Assemble your full briefing")
+                    .font(.label(14)).tracking(1.5)
+                    .foregroundColor(LightColors.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 12)
+
+                Button(action: onGenerate) {
+                    MachinedDisc(diameter: discDiam) {
+                        ForwardArrow()
+                            .stroke(cream, style: StrokeStyle(lineWidth: discDiam * 0.06,
+                                                              lineCap: .round, lineJoin: .round))
+                            .frame(width: discDiam * 0.40, height: discDiam * 0.34)
+                            .offset(x: discDiam * 0.02)
+                    }
                 }
+                .buttonStyle(MachinedDiscButtonStyle())
+                .frame(width: discDiam, height: discDiam)
+                .accessibilityLabel("Assemble your full briefing")
             }
-            .buttonStyle(MachinedDiscButtonStyle())
-            .frame(width: discDiam, height: discDiam)
-            .accessibilityLabel("Assemble your full briefing")
         }
     }
 
