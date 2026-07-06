@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # per ranking run. Set false to skip (selection uses the mechanical rank unchanged).
     enable_editorial_pass: bool = True
 
+    # Stable ranked list (Phase 2): when true, the request path ORDERS by the persisted,
+    # time-invariant merit_score from data.ranked_stories (insert-in-place, coverage-growth-
+    # only reorder) instead of re-scoring candidates live with recency decay. Default false so
+    # the change ships dark and is flipped on only after the list is confirmed healthy on prod.
+    read_from_ranked_list: bool = False
+
     # Scheduled ingest
     enable_scheduled_ingest: bool = False
 
