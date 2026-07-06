@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ from core.pipeline.ranking.models import ScoredStory
 from .editorial import (
     MAX_PROMOTIONS, EditorialAdjustment, StoryMeta, _model, review_front_page,
 )
+from .event_dedup import dedup_same_event
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +197,30 @@ def _build_meta(db: Session, stories: list[ScoredStory], rank: dict[str, int]) -
     return metas
 
 
+def _dedup_flagged(
+    adjustments: dict[str, EditorialAdjustment], scored: list[ScoredStory],
+) -> dict[str, EditorialAdjustment]:
+    """Collapse same-event duplicates AMONG THE FLAGGED stories so top_story counts DISTINCT
+    events (four 'Iran funeral' clusters → one flag). Deduping the small flagged set is
+    reliable — dedup's designed use case — unlike deduping the whole 70-candidate front set
+    (which over-merges). Keeps the best-ranked (highest-score) representative, unflags the rest;
+    conservative — no-ops on any dedup failure."""
+    flagged = [(sid, a) for sid, a in adjustments.items() if a.top_story]
+    if len(flagged) < 2:
+        return adjustments
+    score_by = {s.candidate.story_id: s.normalized_score for s in scored}
+    title_by = {s.candidate.story_id: s.candidate.title for s in scored}
+    flagged.sort(key=lambda x: -score_by.get(x[0], 0.0))   # highest score first → dedup keeps it
+    kept = dedup_same_event(
+        [{"story_id": sid, "headline": title_by.get(sid, "")} for sid, _ in flagged]
+    )
+    keep_ids = {d.get("story_id") for d in kept}
+    for sid, a in flagged:
+        if sid not in keep_ids:
+            adjustments[sid] = replace(a, top_story=False)   # a duplicate of a kept event
+    return adjustments
+
+
 def editorial_adjustments(
     db: Session, ranking_run_id: int, scored: list[ScoredStory],
 ) -> dict[str, EditorialAdjustment]:
@@ -224,11 +250,14 @@ def editorial_adjustments(
         batches += [band_b[i:i + CALL_BATCH] for i in range(0, len(band_b), CALL_BATCH)]
 
     adjustments: dict[str, EditorialAdjustment] = {}
-    # DEEP corrections across the tier-laddered set (category fixes beyond the front page).
+    # DEEP corrections across the tier-laddered set: category / significance fixes ONLY. The
+    # top_story decision is made exclusively by the focused front-page pass below — a big,
+    # diluted tiered batch flags unreliably — so strip any top_story it returns here.
     for batch in batches:
         if not batch:
             continue
-        adjustments.update(review_front_page(_build_meta(db, batch, rank), leaves))
+        for sid, a in review_front_page(_build_meta(db, batch, rank), leaves).items():
+            adjustments[sid] = replace(a, top_story=False) if a.top_story else a
 
     # FRONT-PAGE pass — the global top-N by score, reviewed together, is the RELIABLE place for
     # the significance / top_story judgment. Runs LAST so its result overrides the (diluted)
@@ -236,6 +265,9 @@ def editorial_adjustments(
     front = sorted(scored, key=lambda s: s.normalized_score, reverse=True)[:FRONT_PAGE_N]
     if front:
         adjustments.update(review_front_page(_build_meta(db, front, rank), leaves))
+
+    # Collapse same-event duplicates among the FLAGGED stories → top_story counts distinct events.
+    adjustments = _dedup_flagged(adjustments, scored)
 
     repo.put(ranking_run_id, adjustments, _model())
     return adjustments

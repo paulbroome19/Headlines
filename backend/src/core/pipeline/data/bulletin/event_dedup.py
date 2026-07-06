@@ -83,6 +83,7 @@ def dedup_same_event(stories: list[dict]) -> list[dict]:
     body = json.dumps({
         "model": _model(),
         "max_tokens": _MAX_TOKENS,
+        "temperature": 0,   # same-event detection is a classification — deterministic
         "messages": [{"role": "user", "content": _build_prompt(titles)}],
     }).encode()
     req = urllib.request.Request(
@@ -140,7 +141,9 @@ def _parse_groups(raw: dict, n: int) -> list[list[int]]:
         text_content = "\n".join(
             line for line in text_content.splitlines() if not line.strip().startswith("```")
         )
-    parsed = json.loads(text_content)
+    # Tolerate any trailing prose after the JSON object (decode the first value, ignore the rest).
+    start = text_content.find("{")
+    parsed, _ = json.JSONDecoder().raw_decode(text_content[start:]) if start >= 0 else ({}, 0)
     groups_raw = parsed["groups"]
     if not isinstance(groups_raw, list):
         raise ValueError("groups is not a list")
