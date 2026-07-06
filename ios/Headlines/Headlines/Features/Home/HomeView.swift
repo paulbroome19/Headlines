@@ -2,196 +2,246 @@
 //  HomeView.swift
 //  Headlines
 //
-//  Home in the locked LIGHT register (C6): a near-white page with the dark
-//  flap-board greeting as a contained hero instrument, the machined forward
-//  arrow docked into its base (the generate action), and a quiet masthead
-//  (HEADLINES · refresh · profile). Matches onboarding + playback exactly — one
-//  product. The arrow keeps the existing generate→play wiring; the "P" opens the
-//  settings filters (wired at the call-site in HomeContainerView).
+//  Home as a newspaper FRONT PAGE on a dark Solari board. The light-register page
+//  (LightColors.page) holds a large dark board tablet (the shared `boardCard`
+//  material/relief); inside, the app's REAL flap tiles greet the reader and the day's
+//  REAL top stories (for the user's selected categories) are set in the editorial serif.
+//  A bottom action, on the light page, assembles the full audio briefing.
+//
+//  Uses ONLY the app's fonts (Font.board flap · Font.editorial serif · Font.label mono)
+//  and palette (LightColors / BoardColors) — no placeholders.
 //
 
 import SwiftUI
-
-// The flap material is the shared `FlapCell` / `boardCard` (Board.swift); the
-// machined disc + its depth are the shared `MachinedDisc` /
-// `MachinedDiscButtonStyle` (MachinedDisc.swift) — identical to onboarding.
 
 // MARK: - HomeView
 
 struct HomeView: View {
 
-    var userName: String   = "PAUL"
-    /// The clock used for the time-of-day greeting. Defaults to now; injectable
-    /// for previews/tests. Computed on appear — fine that it doesn't live-update
-    /// if the clock crosses a band boundary while Home is open.
-    var now: Date = Date()
-    var onGenerate: () -> Void = {}
-    var onProfile:  () -> Void = {}
-    /// Refresh = regenerate a fresh briefing, discarding already-heard stories.
-    /// Behaviour is wired later; quiet/secondary affordance for now.
-    var onRefresh:  () -> Void = {}
+    var userName: String        = "PAUL"
+    /// Clock for the greeting + dateline (injectable for previews).
+    var now: Date               = Date()
+    /// Real top-stories + briefing length for the profile's selected categories (nil while loading).
+    var preview: HomePreview?   = nil
+    /// When `preview` was last fetched — drives the pull-to-refresh "LAST UPDATED" stamp.
+    var lastUpdated: Date?      = nil
+    var onGenerate: () -> Void  = {}
+    var onProfile:  () -> Void  = {}
+    /// Pull-to-refresh: reload the real top stories.
+    var onRefresh:  () async -> Void = {}
 
-    // Layout constants — shared margins/disc size so Home reads as the same
-    // product as onboarding/playback.
-    private let pageMargin: CGFloat   = BottomActionBar.pageMargin
-    private let cardInnerPad: CGFloat = 24
-    private let cardCorner: CGFloat   = 18
-    private let arrowDiam: CGFloat    = 64    // the hero control
-    private let constantGap: CGFloat  = 24    // greeting → docked button (CONSTANT)
-    private let cellGap: CGFloat      = 3
-    private let maxCellW: CGFloat     = 40
-    private let minCellW: CGFloat     = 18
+    private let pageMargin: CGFloat  = 20
+    private let boardCorner: CGFloat = 18
+    private let boardPad: CGFloat    = 22
+    private let discDiam: CGFloat    = 60
+    private let cellGap: CGFloat     = 3
+
+    private var cream: Color { BoardColors.character }   // #EDEDEA lit type
 
     // MARK: Body
 
     var body: some View {
         GeometryReader { geo in
-            let w = geo.size.width
-            let cardW  = w - pageMargin * 2
-            let innerW = cardW - cardInnerPad * 2
+            let boardInnerW = geo.size.width - pageMargin * 2 - boardPad * 2
+            let cellSz = greetingCellSize(boardInnerW: boardInnerW)
 
-            // Greeting stacks ONE WORD PER LINE on flap cells (GOOD / MORNING /
-            // PAUL …), big and confident; the cell size is the largest (capped)
-            // at which the longest single word still fits the card. The card then
-            // hugs however many lines that is — no reserved max height.
-            let greetingWords = TimeOfDay.current(now).greeting
-                .split(separator: " ").map(String.init)
-            let nameWords = userName.uppercased()
-                .split(separator: " ").map { String($0) }
-            let rows = greetingWords + nameWords
-            let cellW = max(minCellW, min(maxCellW,
-                rows.map { fitCellW($0, boardW: innerW, gap: cellGap) }.min() ?? maxCellW))
-            let cellSz = CGSize(width: cellW, height: cellW * 1.5)
+            ZStack {
+                LightColors.page.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                masthead
+                VStack(spacing: 0) {
+                    lightTopBar
 
-                Spacer()
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            lastUpdatedStamp
+                            boardTablet(cellSz: cellSz)
+                                .padding(.bottom, 10)
+                        }
+                        .padding(.horizontal, pageMargin)
+                    }
+                    .refreshable { await onRefresh() }
 
-                heroBlock(rows: rows, cellSz: cellSz, cardW: cardW)
-
-                Spacer()
-                Spacer()   // bias the hero a touch above centre
-            }
-            .frame(width: w)
-        }
-        .background(LightColors.page.ignoresSafeArea())
-    }
-
-    // MARK: - Masthead
-
-    private var masthead: some View {
-        VStack(spacing: 14) {
-            HStack(alignment: .center, spacing: 0) {
-                Text("HEADLINES")
-                    .font(.label(15))
-                    .tracking(3)
-                    .foregroundColor(LightColors.ink)
-
-                Spacer()
-
-                HStack(spacing: 14) {
-                    // Refresh hidden until it does something (refreshBriefing is a
-                    // stub) — a visible no-op button shouldn't ship. onRefresh +
-                    // refreshBriefing() stay wired for when refresh lands.
-                    profileButton
+                    assembleBar
+                        .padding(.horizontal, pageMargin)
+                        .padding(.top, 8)
+                        .padding(.bottom, 6)
                 }
             }
-            .padding(.horizontal, pageMargin)
-            .padding(.top, 6)
-
-            // Inset hairline rule — most of the width, side margins.
-            Rectangle()
-                .fill(LightColors.ink.opacity(0.15))
-                .frame(height: 1)
-                .padding(.horizontal, pageMargin)
         }
     }
 
-    private var profileButton: some View {
-        let initial = String(userName.prefix(1)).uppercased()
-        return Button(action: onProfile) {
-            ZStack {
-                Circle()
-                    .strokeBorder(LightColors.ink.opacity(0.4), lineWidth: 1.2)
-                    .frame(width: 34, height: 34)
-                Text(initial)
-                    .font(.label(14))
-                    .foregroundColor(LightColors.ink)
+    // MARK: - Light-page top bar (settings)
+
+    private var lightTopBar: some View {
+        HStack {
+            Spacer()
+            settingsButton
+        }
+        .padding(.horizontal, pageMargin)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+
+    /// Three balanced, equal-length horizontal lines → the settings / filters screen.
+    private var settingsButton: some View {
+        Button(action: onProfile) {
+            VStack(alignment: .trailing, spacing: 5) {
+                ForEach(0..<3, id: \.self) { _ in
+                    Capsule().fill(LightColors.ink).frame(width: 22, height: 1.6)
+                }
             }
-            .contentShape(Circle())
+            .frame(width: 44, height: 44, alignment: .trailing)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Profile")
+        .accessibilityLabel("Settings")
         #if DEBUG
-        // DEBUG-only: long-press the P to clear first-run flags for testing.
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.8).onEnded { _ in debugResetFirstRun() }
-        )
+        .simultaneousGesture(LongPressGesture(minimumDuration: 0.8).onEnded { _ in debugResetFirstRun() })
         #endif
     }
 
-    // MARK: - Hero (greeting card + docked arrow + caption)
+    // MARK: - Pull-to-refresh stamp (revealed at the top of the scroll)
 
-    private func heroBlock(rows: [String], cellSz: CGSize, cardW: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            greetingCard(rows: rows, cellSz: cellSz, cardW: cardW)
-                // Dock the machined arrow centred on the card's BASE — half on the
-                // card, half on the page, with its own soft depth (no ring).
-                .overlay(alignment: .bottom) {
-                    arrowButton.offset(y: arrowDiam / 2)
-                }
-
-            // Room for the arrow's lower half, then the caption beneath it.
-            Spacer().frame(height: arrowDiam / 2 + 16)
-
-            Text("ASSEMBLE YOUR BRIEFING")
-                .font(.label(11))
-                .tracking(2.5)
-                .foregroundColor(LightColors.ink.opacity(0.45))
-        }
-        .frame(width: cardW)
+    private var lastUpdatedStamp: some View {
+        Text(lastUpdated.map { "LAST UPDATED \(timeStamp($0))" } ?? " ")
+            .font(.label(10)).tracking(2)
+            .foregroundColor(LightColors.ink.opacity(0.35))
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
     }
 
-    private func greetingCard(rows: [String], cellSz: CGSize, cardW: CGFloat) -> some View {
+    // MARK: - The dark board tablet (the front page)
+
+    private func boardTablet(cellSz: CGSize) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Personalised greeting on the app's REAL flap tiles (flick + settle on entry).
+            SolariGreeting(rows: greetingRows, cellSz: cellSz, gap: cellGap)
+
+            Spacer().frame(height: 14)
             Text(datelineText())
-                .font(.label(11))
-                .tracking(2.5)
-                .foregroundColor(BoardColors.character.opacity(0.5))
+                .font(.label(11)).tracking(2.5)
+                .foregroundColor(cream.opacity(0.5))
 
             Spacer().frame(height: 18)
+            creamRule
+            Spacer().frame(height: 16)
 
-            // Solari flip-open on app launch: the greeting churns split-flap glyphs
-            // and settles in a top→bottom, left→right ripple (reduce-motion → static).
-            SolariGreeting(rows: rows, cellSz: cellSz, gap: cellGap)
-        }
-        .padding(.horizontal, cardInnerPad)
-        .padding(.top, cardInnerPad)
-        // CONSTANT gap above the docked button: the button's upper half (radius)
-        // plus a fixed gap — independent of how many greeting lines there are.
-        .padding(.bottom, arrowDiam / 2 + constantGap)
-        .frame(width: cardW, alignment: .leading)
-        .boardCard(cornerRadius: cardCorner)
-    }
+            Text("YOUR TOP STORIES")
+                .font(.label(11)).tracking(2.5)
+                .foregroundColor(cream.opacity(0.5))
+            Spacer().frame(height: 16)
 
-    private var arrowButton: some View {
-        Button(action: onGenerate) {
-            MachinedDisc(diameter: arrowDiam) {
-                ForwardArrow()
-                    .stroke(BoardColors.character,
-                            style: StrokeStyle(lineWidth: arrowDiam * 0.06,
-                                               lineCap: .round, lineJoin: .round))
-                    .frame(width: arrowDiam * 0.40, height: arrowDiam * 0.34)
-                    .offset(x: arrowDiam * 0.02)
+            if let stories = preview?.stories, !stories.isEmpty {
+                storyBlock(stories[0], lead: true)
+                ForEach(Array(stories.dropFirst().prefix(3))) { story in
+                    Spacer().frame(height: 18)
+                    creamRule
+                    Spacer().frame(height: 18)
+                    storyBlock(story, lead: false)
+                }
+            } else {
+                Text("Gathering your top stories…")
+                    .font(.editorial(15))
+                    .foregroundColor(cream.opacity(0.5))
+                    .padding(.vertical, 22)
             }
         }
-        .buttonStyle(MachinedDiscButtonStyle())
-        .frame(width: arrowDiam, height: arrowDiam)
-        .accessibilityLabel("Assemble your briefing")
+        .padding(boardPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .boardCard(cornerRadius: boardCorner)
+    }
+
+    /// One front-page story: editorial serif headline, a standfirst (lead only), sources.
+    private func storyBlock(_ story: HomeStory, lead: Bool) -> some View {
+        VStack(alignment: .leading, spacing: lead ? 10 : 7) {
+            Text(story.headline)
+                .font(.editorial(lead ? 25 : 18))
+                .foregroundColor(cream)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if lead, let sf = story.standfirst, !sf.isEmpty {
+                Text(sf)
+                    .font(.editorial(14))
+                    .foregroundColor(cream.opacity(0.68))
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !story.sources.isEmpty {
+                Text(story.sources.joined(separator: " · ").uppercased())
+                    .font(.label(10)).tracking(1.5)
+                    .foregroundColor(cream.opacity(0.5))
+                    .lineLimit(1).minimumScaleFactor(0.75)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var creamRule: some View {
+        Rectangle().fill(cream.opacity(0.12)).frame(height: 1)
+    }
+
+    // MARK: - Bottom action (light page, separate from the board)
+
+    private var assembleBar: some View {
+        VStack(spacing: 14) {
+            Text("Assemble your full briefing")
+                .font(.editorial(21))
+                .foregroundColor(LightColors.ink)
+                .multilineTextAlignment(.center)
+
+            // "6 MIN · 5 STORIES" framed by light-grey rules — time first, whole minutes,
+            // story count. From the REAL selection (nil → subtle placeholder while loading).
+            VStack(spacing: 9) {
+                greyRule
+                Text(metaLine)
+                    .font(.label(11)).tracking(2.5)
+                    .foregroundColor(LightColors.ink.opacity(0.5))
+                greyRule
+            }
+
+            Button(action: onGenerate) {
+                MachinedDisc(diameter: discDiam) {
+                    ForwardArrow()
+                        .stroke(cream, style: StrokeStyle(lineWidth: discDiam * 0.06,
+                                                          lineCap: .round, lineJoin: .round))
+                        .frame(width: discDiam * 0.40, height: discDiam * 0.34)
+                        .offset(x: discDiam * 0.02)
+                }
+            }
+            .buttonStyle(MachinedDiscButtonStyle())
+            .frame(width: discDiam, height: discDiam)
+            .accessibilityLabel("Assemble your full briefing")
+        }
+    }
+
+    private var greyRule: some View {
+        Rectangle().fill(LightColors.ink.opacity(0.14)).frame(height: 1)
+    }
+
+    private var metaLine: String {
+        guard let p = preview, p.storyCount > 0 else { return "·  ·  ·" }
+        let stories = p.storyCount == 1 ? "STORY" : "STORIES"
+        return "\(p.totalMinutes) MIN · \(p.storyCount) \(stories)"
     }
 
     // MARK: - Helpers
+
+    /// Greeting rows: "GOOD MORNING," / "PAUL" (one word per flap line, comma after greeting).
+    private var greetingRows: [String] {
+        var g = TimeOfDay.current(now).greeting.split(separator: " ").map(String.init)
+        let n = userName.uppercased().split(separator: " ").map(String.init)
+        if !g.isEmpty && !n.isEmpty { g[g.count - 1] += "," }
+        return g + n
+    }
+
+    private func greetingCellSize(boardInnerW: CGFloat) -> CGSize {
+        let fitted = greetingRows.map { fitCellW($0, boardW: boardInnerW, gap: cellGap) }.min() ?? 26
+        let cellW = max(18, min(26, fitted))   // header scale (not the old full-screen hero)
+        return CGSize(width: cellW, height: cellW * 1.5)
+    }
 
     private func datelineText() -> String {
         let f = DateFormatter()
@@ -199,15 +249,17 @@ struct HomeView: View {
         return f.string(from: now).uppercased()
     }
 
-    // MARK: - Greeting cell sizing
+    private func timeStamp(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "h:mma"          // 9:12AM
+        return f.string(from: date).uppercased()
+    }
 
-    /// Rendered width of a string in "cell units": each glyph is one cell, each
-    /// space is half a cell — matching `flapRow`.
+    /// Rendered width of a string in "cell units": each glyph is one cell, each space half.
     private func widthUnits(_ s: String) -> (units: CGFloat, count: Int) {
         let chars = Array(s)
         let spaces = chars.filter { $0 == " " }.count
-        let nonSpace = chars.count - spaces
-        return (CGFloat(nonSpace) + 0.5 * CGFloat(spaces), chars.count)
+        return (CGFloat(chars.count - spaces) + 0.5 * CGFloat(spaces), chars.count)
     }
 
     /// The largest cell width at which `s` fits on one line within `boardW`.
@@ -227,14 +279,13 @@ struct HomeView: View {
     #endif
 }
 
-// MARK: - Solari greeting (flip-open on launch)
+// MARK: - Solari greeting (flip-open on appear)
 
-/// The greeting rendered on split-flap cells that "flip open" once when Home
-/// appears: every cell churns random glyphs then settles on its target in a
-/// top→bottom, left→right ripple — the same Solari aesthetic as the loader board.
-/// The animation is bounded (~0.9s): after it settles we swap to a static render
-/// so the persistent Home screen isn't redrawing every frame. Reduce-motion shows
-/// the final greeting immediately.
+/// The greeting rendered on split-flap cells that "flip open" once when Home appears:
+/// every cell churns random glyphs then settles on its target in a top→bottom,
+/// left→right ripple — the same Solari aesthetic as the loader board. Bounded (~0.9s):
+/// after it settles we swap to a static render so Home isn't redrawing every frame.
+/// Reduce-motion shows the final greeting immediately.
 private struct SolariGreeting: View {
     let rows: [String]
     let cellSz: CGSize
@@ -246,7 +297,6 @@ private struct SolariGreeting: View {
 
     private static let flick = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
     private static let stepInterval = 0.05
-    /// Per-cell settle time: base + row (top→bottom) + column (left→right) stagger.
     private func settleAt(row: Int, col: Int) -> Double {
         0.18 + Double(row) * 0.11 + Double(col) * 0.03
     }
@@ -255,7 +305,6 @@ private struct SolariGreeting: View {
         return settleAt(row: max(0, rows.count - 1), col: max(0, maxCols - 1)) + 0.12
     }
 
-    /// Glyph for a cell at `elapsed` seconds: flickers until its stagger point, then target.
     private func glyph(_ target: Character, row: Int, col: Int, elapsed: Double) -> Character {
         if elapsed >= settleAt(row: row, col: col) { return target }
         let step = Int(elapsed / Self.stepInterval)
@@ -281,7 +330,6 @@ private struct SolariGreeting: View {
         }
     }
 
-    /// Lay the rows out as flap-cell lines, transforming each glyph via `transform`.
     private func grid(_ transform: @escaping (_ row: Int, _ col: Int, _ ch: Character) -> Character) -> some View {
         VStack(alignment: .leading, spacing: gap) {
             ForEach(Array(rows.enumerated()), id: \.offset) { r, word in
@@ -301,21 +349,31 @@ private struct SolariGreeting: View {
 
 // MARK: - Preview
 
-/// Builds a date at a fixed hour today (local) to demonstrate a greeting band.
 private func atHour(_ hour: Int) -> Date {
     var c = Calendar.current.dateComponents([.year, .month, .day], from: Date())
-    c.hour = hour; c.minute = 0
+    c.hour = hour; c.minute = 12
     return Calendar.current.date(from: c) ?? Date()
 }
 
-#Preview("Morning · PAUL") {
+private let samplePreview = HomePreview(
+    profileId: 1, name: "Paul", storyCount: 5, totalMinutes: 6,
+    stories: [
+        HomeStory(storyId: "1", headline: "German chancellor pushes back at NATO summit over record defence spending",
+                  category: "politics.europe", standfirst: "Friedrich Merz signalled resistance to President Trump's demands as leaders gathered in The Hague.",
+                  sources: ["BBC", "The Guardian", "AP News"]),
+        HomeStory(storyId: "2", headline: "Royal Surrey NHS Trust recognised for fast cancer diagnosis",
+                  category: "health", standfirst: nil, sources: ["BBC", "Daily Express"]),
+        HomeStory(storyId: "3", headline: "Taylor Swift and Travis Kelce marry in Madison Square Garden ceremony",
+                  category: "culture.celebrity", standfirst: nil, sources: ["The New York Times", "BBC"]),
+        HomeStory(storyId: "4", headline: "Mallory McMorrow suspends her Michigan Senate campaign",
+                  category: "politics.us", standfirst: nil, sources: ["CBS News", "The Guardian"]),
+    ]
+)
+
+#Preview("Morning · loaded") {
+    HomeView(userName: "PAUL", now: atHour(9), preview: samplePreview, lastUpdated: atHour(9))
+}
+
+#Preview("Loading") {
     HomeView(userName: "PAUL", now: atHour(9))
-}
-
-#Preview("Afternoon · ISABELLA INDIA") {
-    HomeView(userName: "ISABELLA INDIA", now: atHour(14))
-}
-
-#Preview("Evening · PAUL") {
-    HomeView(userName: "PAUL", now: atHour(20))
 }

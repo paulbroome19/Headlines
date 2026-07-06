@@ -107,3 +107,50 @@ struct StoryUnit: Identifiable {
     var storyHash: String? { storySegment.storyHash }
     var title: String?    { storySegment.title }
 }
+
+// MARK: - Home front-page preview (GET /data/profiles/{id}/home-preview)
+
+/// A single top-ranked story for the Home front page — real selection, no audio generated.
+struct HomeStory: Decodable, Identifiable {
+    let storyId: String
+    let headline: String
+    let category: String?
+    let standfirst: String?      // short newspaper standfirst (nil until the story is summarised)
+    let sources: [String]        // ranked outlets (BBC before a minor blog)
+
+    var id: String { storyId }
+
+    enum CodingKeys: String, CodingKey {
+        case storyId = "story_id"
+        case headline, category, standfirst, sources
+    }
+}
+
+/// The Home preview: the real top stories for the profile's selected categories plus the
+/// briefing's estimated minutes + story count. Cheap / read-only — does NOT generate audio.
+struct HomePreview: Decodable {
+    let profileId: Int
+    let name: String?
+    let storyCount: Int
+    let totalMinutes: Int
+    let stories: [HomeStory]
+
+    enum CodingKeys: String, CodingKey {
+        case profileId = "profile_id"
+        case name
+        case storyCount = "story_count"
+        case totalMinutes = "total_minutes"
+        case stories
+    }
+}
+
+final class HomePreviewService {
+    private let client: APIClient
+    init(client: APIClient = APIClient(baseURL: AppConfig.apiBaseURL)) {
+        self.client = client
+    }
+
+    func fetch(profileId: Int) async throws -> HomePreview {
+        try await client.get("data/profiles/\(profileId)/home-preview")
+    }
+}

@@ -20,18 +20,48 @@ struct HomeContainerView: View {
     @State private var showPlayer = false
     @State private var showProfile = false
 
+    // Real Home front-page data (top stories + minutes/count), fetched cheaply/read-only.
+    @State private var preview: HomePreview?
+    @State private var lastUpdated: Date?
+    private let previewService = HomePreviewService()
+
     var body: some View {
         HomeView(
             userName: userName.isEmpty ? "PAUL" : userName,
+            preview: preview,
+            lastUpdated: lastUpdated,
             onGenerate: startBriefing,
             onProfile: { showProfile = true },
-            onRefresh: refreshBriefing
+            onRefresh: { await loadPreview() }
         )
+        .task { await loadPreview() }
+        // Re-fetch when returning from the filters screen (selections may have changed).
+        .onChange(of: showProfile) { _, presenting in
+            if !presenting { Task { await loadPreview() } }
+        }
         .fullScreenCover(isPresented: $showPlayer) {
             NowPlayingView(player: player, onClose: closePlayer, onRetry: startBriefing)
         }
         .fullScreenCover(isPresented: $showProfile) {
             ProfileFiltersView()
+        }
+    }
+
+    /// Fetch the real top stories + briefing length for the current profile. Resolves the
+    /// profile id the same way `startBriefing` does (adopting the first backend profile for
+    /// pre-profile-creation users). Silent on failure — Home degrades to greeting-only.
+    private func loadPreview() async {
+        var pid = profileId
+        if pid <= 0 {
+            if let first = try? await ProfileService().fetchProfiles().first {
+                pid = first.id
+                profileId = first.id
+            }
+        }
+        guard pid > 0 else { return }
+        if let p = try? await previewService.fetch(profileId: pid) {
+            preview = p
+            lastUpdated = Date()
         }
     }
 
@@ -58,12 +88,5 @@ struct HomeContainerView: View {
     private func closePlayer() {
         player.stop()
         showPlayer = false
-    }
-
-    /// Refresh = regenerate a fresh briefing, discarding already-heard stories.
-    /// Stubbed for now (the discard-heard behaviour is wired later); kept quiet
-    /// and secondary to the primary Assemble arrow.
-    private func refreshBriefing() {
-        // TODO: regenerate discarding already-heard stories.
     }
 }
