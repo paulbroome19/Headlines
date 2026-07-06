@@ -186,34 +186,38 @@ struct HomeView: View {
     // MARK: - Bottom action (light page, separate from the board)
 
     private var assembleBar: some View {
-        VStack(spacing: 14) {
-            Text("Assemble your full briefing")
-                .font(.editorial(21))
-                .foregroundColor(LightColors.ink)
-                .multilineTextAlignment(.center)
+        VStack(spacing: 12) {
+            greyRule
 
-            // "6 MIN · 5 STORIES" framed by light-grey rules — time first, whole minutes,
-            // story count. From the REAL selection (nil → subtle placeholder while loading).
-            VStack(spacing: 9) {
-                greyRule
-                Text(metaLine)
-                    .font(.label(11)).tracking(2.5)
-                    .foregroundColor(LightColors.ink.opacity(0.5))
-                greyRule
-            }
-
-            Button(action: onGenerate) {
-                MachinedDisc(diameter: discDiam) {
-                    ForwardArrow()
-                        .stroke(cream, style: StrokeStyle(lineWidth: discDiam * 0.06,
-                                                          lineCap: .round, lineJoin: .round))
-                        .frame(width: discDiam * 0.40, height: discDiam * 0.34)
-                        .offset(x: discDiam * 0.02)
+            // Inline row: label + meta on the left, the machined disc on the right.
+            // "6 MIN · 5 STORIES" sits directly under the label — time first, whole
+            // minutes, story count from the REAL selection (nil → subtle placeholder).
+            HStack(alignment: .center, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Assemble your full briefing")
+                        .font(.editorial(21))
+                        .foregroundColor(LightColors.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(metaLine)
+                        .font(.label(11)).tracking(2.5)
+                        .foregroundColor(LightColors.ink.opacity(0.5))
                 }
+
+                Spacer(minLength: 12)
+
+                Button(action: onGenerate) {
+                    MachinedDisc(diameter: discDiam) {
+                        ForwardArrow()
+                            .stroke(cream, style: StrokeStyle(lineWidth: discDiam * 0.06,
+                                                              lineCap: .round, lineJoin: .round))
+                            .frame(width: discDiam * 0.40, height: discDiam * 0.34)
+                            .offset(x: discDiam * 0.02)
+                    }
+                }
+                .buttonStyle(MachinedDiscButtonStyle())
+                .frame(width: discDiam, height: discDiam)
+                .accessibilityLabel("Assemble your full briefing")
             }
-            .buttonStyle(MachinedDiscButtonStyle())
-            .frame(width: discDiam, height: discDiam)
-            .accessibilityLabel("Assemble your full briefing")
         }
     }
 
