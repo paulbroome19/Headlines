@@ -79,15 +79,26 @@ def _selection_context(include_top_stories: bool, include_categories: list[str] 
     return front_page, regions, topic_cats
 
 
-def _bucket_index(cat: str | None, topic_cats: list[str]) -> int:
-    """The filter-sequence bucket a qualifying story belongs to. A story that matches an
-    explicitly-followed TOPIC sits in that topic's bucket (politics/business/…/sport). A
-    story admitted only via the front page / a region bucket is a TOP STORY — it collapses
-    into the single top-stories block (index 0), so a top-stories-region selection is one
-    'Top Stories' section, not a spray across every content category."""
+def _bucket_index(cat: str | None, top_story: bool, geo_region: str | None,
+                  topic_cats: list[str], front_page: bool, regions: set[str]) -> int:
+    """The filter-sequence bucket a qualifying story belongs to. A genuine TOP STORY (the
+    editorial top_story flag AND the user picked the bare front page or this story's region)
+    collapses into the single top-stories block (index 0) — so a story that is BOTH a top
+    story and a followed topic plays once, in Top Stories. Otherwise a story matching an
+    explicitly-followed TOPIC sits in that topic's bucket (politics/business/…/sport).
+    Takes primitives (not a ScoredStory) so the daily-edition path — which orders stored ids
+    without live scored objects — can call it identically."""
+    is_top = top_story and (front_page or (geo_region in regions))
+    if is_top:
+        return filter_category_index("top-stories")
     if cat and any(_matches_category(cat, tc) for tc in topic_cats):
         return filter_category_index(cat)
     return filter_category_index("top-stories")
+
+
+def _bucket_of(s: ScoredStory, topic_cats: list[str], front_page: bool, regions: set[str]) -> int:
+    return _bucket_index(s.candidate.primary_category, s.candidate.top_story,
+                         s.candidate.geo_region, topic_cats, front_page, regions)
 
 
 def _fresh_category_relief(s: ScoredStory, now: datetime) -> float:
@@ -136,8 +147,12 @@ def qualify_and_order(
         cat = s.candidate.primary_category
         region = s.candidate.geo_region
 
-        via_front = front_page and score >= bar
-        via_region = (region in regions) and region_adjusted_score(s) >= bar
+        # TOP STORIES are a SIGNIFICANCE judgment (the editorial top_story flag), NOT "any story
+        # clearing the bar". The front page and the region blocks admit ONLY flagged top stories,
+        # in full (no coverage bar) — so a high-coverage tech/gaming/celebrity roundup can never
+        # lead. Topic filters are unchanged (score must still clear the preset bar).
+        via_front = front_page and s.candidate.top_story
+        via_region = (region in regions) and s.candidate.top_story
         # Fresh followed-topic relief clears its OWN bar a little sooner (via_category only).
         cat_bar_eff = bar - _fresh_category_relief(s, reference_now)
         via_category = score >= cat_bar_eff and any(_matches_category(cat, tc) for tc in topic_cats)
@@ -148,7 +163,7 @@ def qualify_and_order(
     # Filter sequence (top-stories block → politics → … → sport), within-bucket by rank;
     # the UK-lean region_adjusted_score breaks ties, story_id for determinism.
     qualifying.sort(key=lambda s: (
-        _bucket_index(s.candidate.primary_category, topic_cats),
+        _bucket_of(s, topic_cats, front_page, regions),
         -s.normalized_score,
         -region_adjusted_score(s),
         s.candidate.story_id,
@@ -173,24 +188,30 @@ def cap_bulletin(
     content categories — so a top-stories-region selection is one 'Top Stories' block.
     """
     depth = PRESET_DEPTH.get(preset) or PRESET_DEPTH[DEFAULT_PRESET]
-    _, _, topic_cats = _selection_context(include_top_stories, include_categories)
+    front_page, regions, topic_cats = _selection_context(include_top_stories, include_categories)
 
     groups: dict[int, list[ScoredStory]] = defaultdict(list)
     for s in ordered:  # `ordered` is already (bucket index, rank) sorted
-        groups[_bucket_index(s.candidate.primary_category, topic_cats)].append(s)
+        groups[_bucket_of(s, topic_cats, front_page, regions)].append(s)
 
+    top_idx = filter_category_index("top-stories")
     kept: list[ScoredStory] = []
+    # TOP STORIES: every flagged top story, IN FULL — they bypass balance/depth/ceiling.
+    kept.extend(groups.get(top_idx, []))
+    # THE REST: the existing balanced round-robin over the OTHER selected buckets, filling up to
+    # the overall ceiling (top stories already kept don't consume the topic buckets' depth).
+    other = {idx: items for idx, items in groups.items() if idx != top_idx}
     for r in range(depth):
-        for idx in sorted(groups):
-            if r < len(groups[idx]):
-                kept.append(groups[idx][r])
+        for idx in sorted(other):
+            if r < len(other[idx]):
+                kept.append(other[idx][r])
                 if len(kept) >= MAX_BULLETIN_STORIES:
                     break
         if len(kept) >= MAX_BULLETIN_STORIES:
             break
 
     kept.sort(key=lambda s: (
-        _bucket_index(s.candidate.primary_category, topic_cats),
+        _bucket_of(s, topic_cats, front_page, regions),
         -s.normalized_score,
         s.candidate.story_id,
     ))

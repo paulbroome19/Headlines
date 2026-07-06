@@ -28,6 +28,12 @@ class StoryRankingCandidate:
     # per-outlet, per-category authority + the region-gated regional whitelist
     # (source_credibility.resolve_authority). Empty for legacy candidates.
     sources: tuple[str, ...] = ()
+    # TOP-STORY flag — set by the editorial LLM pass as a SEPARATE significance judgment,
+    # ON TOP of primary_category (which stays what the story IS). True only for genuinely
+    # significant news (war, disasters, major crime, serious government action, major
+    # accidents/controversies) — never soft-category stuff (tech/gaming/celebrity/routine
+    # business) even if high-scoring. The front-page/Top-Stories block admits ONLY these.
+    top_story: bool = False
 
 
 @dataclass(slots=True)

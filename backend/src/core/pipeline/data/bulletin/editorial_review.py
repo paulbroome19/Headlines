@@ -49,11 +49,14 @@ CREATE TABLE IF NOT EXISTS data.editorial_reviews (
     category         TEXT,
     significance     REAL NOT NULL DEFAULT 0,
     reason           TEXT,
+    top_story        BOOLEAN NOT NULL DEFAULT false,
     model            TEXT NOT NULL,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (ranking_run_id, story_id)
 );
 """
+# Additive migration for an existing table (the CREATE above is a no-op once it exists).
+_MIGRATE = "ALTER TABLE data.editorial_reviews ADD COLUMN IF NOT EXISTS top_story BOOLEAN NOT NULL DEFAULT false;"
 _MARKER = "__reviewed__"   # sentinel row: this run was reviewed (even if 0 changes)
 _ensured = False
 
@@ -67,35 +70,39 @@ class EditorialRepo:
         if _ensured:
             return
         self.db.execute(text(_DDL))
+        self.db.execute(text(_MIGRATE))
         self.db.commit()
         _ensured = True
 
     def get(self, ranking_run_id: int) -> dict[str, EditorialAdjustment] | None:
         rows = self.db.execute(
-            text("""SELECT story_id, category, significance, reason
+            text("""SELECT story_id, category, significance, reason, top_story
                     FROM data.editorial_reviews WHERE ranking_run_id = :r"""),
             {"r": ranking_run_id},
         ).all()
         if not rows:
             return None  # not yet reviewed
         out: dict[str, EditorialAdjustment] = {}
-        for sid, cat, sig, reason in rows:
+        for sid, cat, sig, reason, top in rows:
             if sid == _MARKER:
                 continue
             out[sid] = EditorialAdjustment(story_id=sid, category=cat,
-                                           significance_delta=sig or 0.0, reason=reason or "")
+                                           significance_delta=sig or 0.0, reason=reason or "",
+                                           top_story=bool(top))
         return out
 
     def put(self, ranking_run_id: int, adjustments: dict[str, EditorialAdjustment], model: str) -> None:
-        rows = [(_MARKER, None, 0.0, "")]  # always mark the run reviewed
-        rows += [(a.story_id, a.category, a.significance_delta, a.reason) for a in adjustments.values()]
-        for sid, cat, sig, reason in rows:
+        rows = [(_MARKER, None, 0.0, "", False)]  # always mark the run reviewed
+        rows += [(a.story_id, a.category, a.significance_delta, a.reason, a.top_story)
+                 for a in adjustments.values()]
+        for sid, cat, sig, reason, top in rows:
             self.db.execute(
                 text("""INSERT INTO data.editorial_reviews
-                            (ranking_run_id, story_id, category, significance, reason, model)
-                        VALUES (:r, :s, :c, :sig, :reason, :m)
+                            (ranking_run_id, story_id, category, significance, reason, top_story, model)
+                        VALUES (:r, :s, :c, :sig, :reason, :top, :m)
                         ON CONFLICT (ranking_run_id, story_id) DO NOTHING"""),
-                {"r": ranking_run_id, "s": sid, "c": cat, "sig": sig, "reason": reason, "m": model},
+                {"r": ranking_run_id, "s": sid, "c": cat, "sig": sig, "reason": reason,
+                 "top": top, "m": model},
             )
         self.db.commit()
 
@@ -222,22 +229,19 @@ def editorial_adjustments(
 
 
 def apply_editorial(scored: list[ScoredStory], adjustments: dict[str, EditorialAdjustment]) -> int:
-    """Mutate the scored candidates in place with the bounded adjustments. Enforces the
-    net-promotion cap. Returns the number of stories actually changed."""
+    """Mutate the scored candidates in place with the bounded adjustments. Returns the number
+    of stories actually changed. `top_story` is set as a SEPARATE flag (the front page admits
+    only flagged stories); `category` is a plain correction (no longer used to promote).
+    A safety cap keeps at most MAX_PROMOTIONS top_story flags — the strongest by significance
+    then score — so an over-eager review can't flood the front page."""
     if not adjustments:
         return 0
     by_id = {s.candidate.story_id: s for s in scored}
 
-    # Enforce MAX_PROMOTIONS: a promotion = an adjustment whose category moves a story ONTO
-    # the front page it wasn't on. Keep the strongest (by significance, then score).
-    def _is_promo(sid: str, a: EditorialAdjustment) -> bool:
-        s = by_id.get(sid)
-        cur = (s.candidate.primary_category or "") if s else ""
-        return bool(a.category) and a.category.startswith("top-stories") and not cur.startswith("top-stories")
-
-    promos = [sid for sid, a in adjustments.items() if sid in by_id and _is_promo(sid, a)]
-    promos.sort(key=lambda sid: (adjustments[sid].significance_delta, by_id[sid].normalized_score), reverse=True)
-    blocked = set(promos[MAX_PROMOTIONS:])
+    tops = [sid for sid, a in adjustments.items() if sid in by_id and a.top_story]
+    tops.sort(key=lambda sid: (adjustments[sid].significance_delta, by_id[sid].normalized_score),
+              reverse=True)
+    allowed_top = set(tops[:MAX_PROMOTIONS])
 
     changed = 0
     for sid, a in adjustments.items():
@@ -245,12 +249,16 @@ def apply_editorial(scored: list[ScoredStory], adjustments: dict[str, EditorialA
         if s is None:
             continue
         touched = False
-        if a.category and not (sid in blocked and a.category.startswith("top-stories")):
-            if a.category != s.candidate.primary_category:
-                s.candidate.primary_category = a.category
-                touched = True
+        # CATEGORY: a correction of what the story IS (never a front-page promotion now).
+        if a.category and a.category != s.candidate.primary_category:
+            s.candidate.primary_category = a.category
+            touched = True
         if a.significance_delta:
             s.normalized_score = max(0.0, min(10.0, s.normalized_score + a.significance_delta))
+            touched = True
+        # TOP STORY: the separate significance flag the front-page block gates on.
+        if a.top_story and sid in allowed_top and not s.candidate.top_story:
+            s.candidate.top_story = True
             touched = True
         if touched:
             changed += 1

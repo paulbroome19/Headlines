@@ -20,7 +20,7 @@ from .config import MAX_BULLETIN_STORIES, PRESET_DEPTH
 from .models import ScoredStory, StoryRankingCandidate
 from .thresholds import _bucket_index, _selection_context, cap_bulletin, qualify_and_order
 
-_, _, _TOPIC = _selection_context(True, ["top-stories.us", "politics.uk", "business.markets", "sport.football.premier-league"])
+_FP, _REGIONS, _TOPIC = _selection_context(True, ["top-stories.us", "politics.uk", "business.markets", "sport.football.premier-league"])
 
 NOW = datetime(2026, 7, 5, 12, 0, tzinfo=timezone.utc)
 
@@ -28,12 +28,13 @@ NOW = datetime(2026, 7, 5, 12, 0, tzinfo=timezone.utc)
 SEL = ["top-stories.us", "politics.uk", "business.markets", "sport.football.premier-league"]
 
 
-def _ss(sid: str, cat: str, score: float, *, geo: str | None = None, hours_ago: float = 5.0) -> ScoredStory:
+def _ss(sid: str, cat: str, score: float, *, geo: str | None = None, hours_ago: float = 5.0,
+        top: bool = False) -> ScoredStory:
     c = StoryRankingCandidate(
         story_id=sid, title=sid, last_seen_at=NOW - timedelta(hours=hours_ago),
         article_count=3, source_count=3, primary_category=cat,
         primary_entity_id=None, primary_entity_name=None, primary_entity_weight=None,
-        primary_topic_key=None, geo_region=geo, pool_country="us", sources=(),
+        primary_topic_key=None, geo_region=geo, pool_country="us", sources=(), top_story=top,
     )
     return ScoredStory(
         candidate=c, within_category_score=0.0, full_score=0.0, category_weight=1.0,
@@ -42,17 +43,25 @@ def _ss(sid: str, cat: str, score: float, *, geo: str | None = None, hours_ago: 
     )
 
 
+def _bkt(r: ScoredStory) -> int:
+    return _bucket_index(r.candidate.primary_category, r.candidate.top_story,
+                         r.candidate.geo_region, _TOPIC, _FP, _REGIONS)
+
+
 def _pool() -> list[ScoredStory]:
     return [
-        _ss("ts1", "top-stories.us", 8.0, geo="us"), _ss("ts2", "top-stories.us", 7.5, geo="us"),
-        _ss("ts3", "top-stories.us", 6.5, geo="us"),
+        # Genuine TOP STORIES (editorial-flagged), REAL categories + US geo → admitted via the
+        # top-stories.us region into the front top-stories block.
+        _ss("ts1", "politics.us", 8.0, geo="us", top=True),
+        _ss("ts2", "world.middle-east", 7.5, geo="us", top=True),
+        _ss("ts3", "politics.us", 6.5, geo="us", top=True),
         _ss("po1", "politics.uk", 8.6), _ss("po2", "politics.uk", 7.0), _ss("po3", "politics.uk", 6.2),
         _ss("po_lo", "politics.uk", 5.0),                         # below every bar
         _ss("bu1", "business.markets", 7.0), _ss("bu2", "business.markets", 6.5),
         _ss("fb1", "sport.football.premier-league", 8.5), _ss("fb2", "sport.football.premier-league", 7.0),
         _ss("fb3", "sport.football.premier-league", 6.1),
-        _ss("cu1", "culture.tv-film", 9.0),                       # UNSELECTED + no region → never appears
-        _ss("he1", "health", 7.7, geo="us"),                     # off-topic but a US top story → top-stories block
+        _ss("cu1", "culture.tv-film", 9.0),                       # UNSELECTED soft cat, NOT a top story → never appears
+        _ss("he1", "health", 7.7, geo="us", top=True),           # off-topic but a FLAGGED US top story → top-stories block
     ]
 
 
@@ -76,25 +85,46 @@ def test_bar_excludes_below_and_unselected():
 
 def test_running_order_is_filter_sequence_sport_last():
     rows = _cap("detailed")
-    buckets = [_bucket_index(r.candidate.primary_category, _TOPIC) for r in rows]
+    buckets = [_bkt(r) for r in rows]
     assert buckets == sorted(buckets)               # non-decreasing SELECTED-source bucket
     assert buckets[0] == 0                           # top-stories block leads
     assert buckets[-1] == filter_category_index("sport")  # sport bucket last, by design
 
 
-def test_region_pulls_offtopic_story_into_topstories_block():
-    # A health story (not a followed topic) that is a big US story qualifies via the
+def test_only_flagged_top_stories_lead_not_high_scorers():
+    # The Sony scenario: a high-scoring soft-category story that is NOT flagged top_story must
+    # NOT appear via the front page/region — only editorial-flagged top stories lead.
+    ids = {r.candidate.story_id for r in _cap("detailed")}
+    assert "cu1" not in ids                          # culture 9.0, unselected + not flagged → absent
+    # The flagged US top stories DO lead, in the top-stories block.
+    top_ids = [r.candidate.story_id for r in _cap("detailed") if _bkt(r) == 0]
+    assert set(top_ids) >= {"ts1", "ts2", "ts3", "he1"}
+
+
+def test_region_pulls_flagged_offtopic_story_into_topstories_block():
+    # A health story (not a followed topic) that is a FLAGGED big US story qualifies via the
     # top-stories.us region and sits in the front TOP-STORIES block — NOT a health section.
     rows = _cap("detailed")
     he = next(r for r in rows if r.candidate.story_id == "he1")
-    assert _bucket_index(he.candidate.primary_category, _TOPIC) == 0     # top-stories block
-    # There is no standalone "health" bucket in the running order.
-    assert all(_bucket_index(r.candidate.primary_category, _TOPIC) != filter_category_index("health") for r in rows)
+    assert _bkt(he) == 0                                            # top-stories block
+    assert all(_bkt(r) != filter_category_index("health") for r in rows)  # no standalone health bucket
+
+
+def test_unflagged_offtopic_region_story_is_excluded():
+    # Same health story but NOT flagged top_story → the region no longer admits it (removing the
+    # old "any story clearing the bar in this region" behaviour).
+    pool = [r for r in _pool() if r.candidate.story_id != "he1"]
+    pool.append(_ss("he2", "health", 7.7, geo="us", top=False))
+    rows = cap_bulletin(
+        qualify_and_order(pool, include_top_stories=True, include_categories=SEL, preset="detailed", now=NOW),
+        include_top_stories=True, include_categories=SEL, preset="detailed")
+    assert "he2" not in {r.candidate.story_id for r in rows}
 
 
 def test_within_category_ordered_by_rank():
     rows = _cap("detailed")
-    pol = [r.normalized_score for r in rows if (r.candidate.primary_category or "").startswith("politics")]
+    # Within the POLITICS topic bucket (not politics-flagged top stories, which sit in bucket 0).
+    pol = [r.normalized_score for r in rows if _bkt(r) == filter_category_index("politics")]
     assert pol == sorted(pol, reverse=True)
 
 
@@ -107,10 +137,16 @@ def test_depth_cap_and_ceiling():
     for preset in ("short", "medium", "detailed"):
         rows = _cap(preset)
         assert len(rows) <= MAX_BULLETIN_STORIES
-        per_cat: dict[str, int] = {}
-        for t in _tops(rows):
-            per_cat[t] = per_cat.get(t, 0) + 1
-        assert max(per_cat.values()) <= PRESET_DEPTH[preset]
+        # Depth cap applies to the SELECTED TOPIC buckets; the top-stories bucket (0) is
+        # uncapped (every flagged top story is included in full).
+        per_bucket: dict[int, int] = {}
+        for r in rows:
+            b = _bkt(r)
+            if b == 0:
+                continue
+            per_bucket[b] = per_bucket.get(b, 0) + 1
+        if per_bucket:
+            assert max(per_bucket.values()) <= PRESET_DEPTH[preset]
 
 
 def test_presets_give_distinct_sizes():
