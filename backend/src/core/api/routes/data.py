@@ -17,6 +17,7 @@ from core.platform.queue.outbox import OutboxRepo
 from core.pipeline.data.ingest.events import DATA_INGEST_REQUESTED
 from core.pipeline.ranking.repos.ranking_run_repo import RankingRunRepo
 from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
+from core.pipeline.ranking.ranked_list import scored_from_ranked_list
 from core.pipeline.ranking.scorer import score_story
 from core.pipeline.ranking.category_ranker import get_category_weight
 from core.pipeline.ranking.thresholds import cap_bulletin, qualify_and_order
@@ -280,7 +281,13 @@ def get_home_preview(profile_id: int):
         dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
 
     preset = _preset_from_minutes(profile.get("max_duration_minutes", 5))
-    scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
+    if settings.read_from_ranked_list:
+        # Same stable-list ordering as the briefing, so the preview matches (persisted merit +
+        # stable top_story, no live re-scoring).
+        with SessionLocal() as db:
+            scored = scored_from_ranked_list(db, candidates)
+    else:
+        scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
 
     reservoir = qualify_and_order(
         scored,
@@ -709,16 +716,24 @@ def _select_reservoir(
     lazily (blocking path) — a safety net if the rank-time precompute was skipped/failed.
     """
     candidates = load_story_ranking_candidates(db)
-    scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
 
-    if ranking_run_id is not None:
-        try:
-            if cache_only_editorial:
-                apply_cached_editorial(db, ranking_run_id, scored)
-            else:
-                apply_editorial(scored, editorial_adjustments(db, ranking_run_id, scored))
-        except Exception as e:  # never let the editor break assembly
-            logging.getLogger(__name__).warning("editorial pass skipped: %s", e)
+    if settings.read_from_ranked_list:
+        # STABLE LIST: order by the persisted, time-invariant merit_score (insert-in-place,
+        # coverage-growth-only reorder) — no live re-scoring, so positions don't swing with
+        # recency. The list already carries the stable editorial top_story flag, so the live
+        # editorial pass is skipped here. Stories leave only via 24h age (list prune) or the
+        # heard/skip filter downstream — never because a newer story out-ranked them.
+        scored = scored_from_ranked_list(db, candidates)
+    else:
+        scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
+        if ranking_run_id is not None:
+            try:
+                if cache_only_editorial:
+                    apply_cached_editorial(db, ranking_run_id, scored)
+                else:
+                    apply_editorial(scored, editorial_adjustments(db, ranking_run_id, scored))
+            except Exception as e:  # never let the editor break assembly
+                logging.getLogger(__name__).warning("editorial pass skipped: %s", e)
 
     reservoir = qualify_and_order(
         scored,

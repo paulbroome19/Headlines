@@ -25,7 +25,7 @@ from .config import (
     COVERAGE_GROWTH_MIN_FACTOR,
     RANKED_LIST_WINDOW_HOURS,
 )
-from .models import StoryRankingCandidate
+from .models import ScoredStory, StoryRankingCandidate
 from .scorer import compute_merit
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,13 @@ class RankedStoryRepo:
         )
         return res.rowcount or 0
 
+    def load_map(self) -> dict[str, tuple[float, bool]]:
+        """story_id -> (persisted merit_score, stable top_story flag) for the request path."""
+        rows = self.db.execute(
+            text("SELECT story_id, merit_score, top_story FROM data.ranked_stories")
+        ).all()
+        return {str(sid): (float(m), bool(t)) for sid, m, t in rows}
+
     def flagged_top_story_ids(self, ranking_run_id: int) -> set[str]:
         """story_ids the just-run editorial pass flagged top_story — the source of the stable
         per-story flag written on insert / coverage-growth regrade."""
@@ -99,6 +106,35 @@ class RankedStoryRepo:
             {"r": ranking_run_id},
         ).all()
         return {str(r[0]) for r in rows}
+
+
+def scored_from_ranked_list(
+    db: Session, candidates: list[StoryRankingCandidate],
+) -> list[ScoredStory]:
+    """Build the request-path ScoredStory reservoir from the STABLE list instead of scoring
+    live. A candidate's normalized_score is its PERSISTED merit_score (time-invariant,
+    insert-in-place, coverage-growth-only reorder) and its top_story is the list's stable
+    flag — neither is recomputed per request, so positions no longer swing with recency.
+
+    Hydration-only fields (category, geo_region, pool_country, last_seen_at) come from the live
+    candidate; nothing about them is re-scored. Candidates not yet in the list (arrived since
+    the last ingest) are omitted — they enter on the next rank run, never mid-request.
+    """
+    ranked = RankedStoryRepo(db).load_map()
+    out: list[ScoredStory] = []
+    for c in candidates:
+        row = ranked.get(str(c.story_id))
+        if row is None:
+            continue
+        merit, top = row
+        c.top_story = top
+        out.append(ScoredStory(
+            candidate=c,
+            within_category_score=0.0, full_score=0.0, category_weight=0.0,
+            recency_score=0.0, entity_weight=0.0, source_weight=0.0, cluster_weight=0.0,
+            normalized_score=merit,
+        ))
+    return out
 
 
 def _coverage_grew(placed_sc: int, new_sc: int) -> bool:
