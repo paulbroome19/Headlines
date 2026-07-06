@@ -44,17 +44,27 @@ def test_category_correction_applied():
     assert s.candidate.primary_category == "business.companies"
 
 
-def test_promotion_cap_blocks_excess_top_story_promotions():
-    # N+2 stories all promoted to top-stories; only the strongest MAX_PROMOTIONS take effect.
+def test_top_story_flag_is_separate_from_category():
+    # A category correction is applied AND the top_story flag is set — independently. Category
+    # stays the real subject (never rewritten to top-stories.*).
+    s = _story("a", "technology.gaming", 8.0)
+    apply_editorial([s], {"a": EditorialAdjustment("a", "politics.us", 0.0, "war", top_story=True)})
+    assert s.candidate.primary_category == "politics.us"   # corrected subject
+    assert s.candidate.top_story is True                    # flagged on top
+
+
+def test_top_story_cap_keeps_strongest():
+    # N+2 stories all flagged top_story; only the strongest MAX_PROMOTIONS take the flag.
     n = MAX_PROMOTIONS + 2
     stories = [_story(f"s{i}", "science", 5.0 + i * 0.1) for i in range(n)]
-    adj = {f"s{i}": EditorialAdjustment(f"s{i}", "top-stories.uk", 0.0, "promo") for i in range(n)}
+    adj = {f"s{i}": EditorialAdjustment(f"s{i}", None, 0.0, "big", top_story=True) for i in range(n)}
     apply_editorial(stories, adj)
-    promoted = [s for s in stories if (s.candidate.primary_category or "").startswith("top-stories")]
-    assert len(promoted) == MAX_PROMOTIONS
-    # the highest-score ones win (s{n-1} strongest); the two weakest stay science
-    assert stories[0].candidate.primary_category == "science"
-    assert stories[-1].candidate.primary_category == "top-stories.uk"
+    flagged = [s for s in stories if s.candidate.top_story]
+    assert len(flagged) == MAX_PROMOTIONS
+    assert stories[0].candidate.top_story is False    # weakest two not flagged
+    assert stories[-1].candidate.top_story is True    # strongest flagged
+    # category is never touched by the flag
+    assert all(s.candidate.primary_category == "science" for s in stories)
 
 
 def test_unknown_story_id_ignored():

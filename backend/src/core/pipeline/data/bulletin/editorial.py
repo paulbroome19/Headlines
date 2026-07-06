@@ -59,9 +59,11 @@ class StoryMeta:
 @dataclass(frozen=True)
 class EditorialAdjustment:
     story_id: str
-    category: str | None       # corrected/promoted category (valid target) or None = keep
+    category: str | None       # CORRECTED category (valid target) or None = keep. NOT used to
+                               # promote to the front page any more — that is the top_story flag.
     significance_delta: float  # already clamped to ±SIG_CLAMP
     reason: str
+    top_story: bool = False    # genuine front-page significance (a SEPARATE flag on top of category)
 
 
 def _model() -> str:
@@ -77,27 +79,36 @@ def build_system(valid_leaves: list[str]) -> str:
         "volume). Your job is NOT to re-rank from scratch — trust the pipeline — but to fix "
         "CLEAR mistakes only. Change as little as possible.\n\n"
         "You may, PER STORY, do any of:\n"
-        "1. CATEGORY — set a corrected category when the assigned one is clearly wrong.\n"
+        "1. CATEGORY — set a corrected category when the assigned one is clearly wrong. This "
+        "is what the story IS (its subject); it does NOT decide the front page.\n"
         "2. SIGNIFICANCE — an integer nudge in [-2,-1,0,1,2]: DOWN for a high-coverage but "
         "trivial story (a product reissue, a listicle) that is ranked too high; UP for a "
         "genuinely major story that is thinly covered and ranked too low. 0 for everything "
         "you don't feel strongly about (most stories).\n"
-        "3. TOP STORY — set category to top-stories.<region> (uk/us/europe/middle-east/"
-        "africa/asia) to promote a story to the front page. A story is a top story ONLY if "
-        "it is a major overlap of the topic categories (big politics/business/world) OR "
-        "significant hard news with no topic home (a major disaster, major crime, major "
-        "accident). Top-stories is a SIGNIFICANCE judgment, NOT a catch-all bin — a trivial "
-        "or narrow story is never a top story; demote one that is wrongly there by giving it "
-        "its real topic category.\n\n"
+        "3. TOP STORY (\"top_story\": true) — a SEPARATE flag, ON TOP of the category, marking "
+        "a story as genuine front-page news. THE BAR IS HIGH. Flag it ONLY if a normal person "
+        "would say it genuinely matters:\n"
+        "     • war and armed conflict; terror attacks\n"
+        "     • disasters (natural or man-made) and major accidents with real casualties/impact\n"
+        "     • major crime\n"
+        "     • serious politics / government action that affects people's lives (elections, "
+        "legislation, major policy, resignations, court rulings of consequence)\n"
+        "     • significant controversies or scandals involving major public figures\n"
+        "   MOST STORIES ARE NOT TOP STORIES. NEVER flag soft-category news even when it is "
+        "high-coverage or high-ranked: technology product news/roundups (e.g. a PlayStation/"
+        "Sony disc or console change), gaming, celebrity/entertainment gossip, ordinary "
+        "business/markets/earnings, sport results, lifestyle, reviews. When unsure, do NOT flag "
+        "it. A story keeps its real category either way — top_story is independent of category.\n\n"
         f"VALID category slugs (a corrected category MUST be one of these leaves, or a "
         f"top-level bucket {', '.join(tops)}):\n" + "\n".join(leaves) + "\n\n"
         "RULES:\n"
-        "- Return ONLY the stories you are changing. Omit stories you leave alone.\n"
+        "- Return ONLY the stories you are changing (a category fix, a significance nudge, or a "
+        "top_story flag). Omit stories you leave alone.\n"
         "- Judge by the CONTENT (headline + snippet), not the coverage number.\n"
-        "- Do not move more than a handful of stories; you are correcting, not rewriting.\n\n"
+        "- Be sparing with top_story — a handful at most on a normal day, zero is fine.\n\n"
         "Respond with JSON only:\n"
         '{"adjustments": [{"id": "<story_id>", "category": "<valid slug or omit>", '
-        '"significance": <-2..2>, "reason": "<6 words max>"}, ...]}'
+        '"significance": <-2..2>, "top_story": <true|false>, "reason": "<6 words max>"}, ...]}'
     )
 
 
@@ -180,10 +191,11 @@ def review_front_page(
             sig = _clamp(float(it.get("significance", 0)))
         except (ValueError, TypeError):
             sig = 0.0
-        if cat is None and sig == 0.0:
+        top = bool(it.get("top_story", False))
+        if cat is None and sig == 0.0 and not top:
             continue  # nothing actionable
         out[sid] = EditorialAdjustment(
             story_id=sid, category=cat, significance_delta=sig,
-            reason=str(it.get("reason", "")).strip(),
+            reason=str(it.get("reason", "")).strip(), top_story=top,
         )
     return out

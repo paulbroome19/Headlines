@@ -183,9 +183,16 @@ def resolve_daily_edition(
         cat_by_id.update(_categories_for(db, missing))
 
     # Running order = FILTER SEQUENCE (top-stories block → … → sport), by SELECTED-source
-    # bucket. Stable sort preserves the reconciled within-bucket order (rank + stability).
-    _, _, topic_cats = _selection_context(include_top_stories, include_categories)
-    final_ids.sort(key=lambda sid: _bucket_index(cat_by_id.get(sid), topic_cats))
+    # bucket. Stable sort preserves the reconciled within-bucket order (rank + stability). A
+    # genuine top story (editorial top_story flag) sits in the top-stories block; carry the
+    # flag + geo from the reservoir (edition-only stored ids default to not-a-top-story).
+    front_page, regions, topic_cats = _selection_context(include_top_stories, include_categories)
+    top_by_id = {s.candidate.story_id: s.candidate.top_story for s in reservoir}
+    geo_by_id = {s.candidate.story_id: s.candidate.geo_region for s in reservoir}
+    final_ids.sort(key=lambda sid: _bucket_index(
+        cat_by_id.get(sid), top_by_id.get(sid, False), geo_by_id.get(sid),
+        topic_cats, front_page, regions,
+    ))
 
     ordered: list[dict] = []
     depths: dict[str, tuple[str, int]] = {}
