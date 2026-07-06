@@ -663,7 +663,9 @@ def _story_timings(segments: list[dict], script: str, duration: float) -> dict[s
     char_offset = 0
     for seg in segments:
         if seg.get("type") == "story" and seg.get("story_id"):
-            timings[str(seg["story_id"])] = round(char_offset / total * duration, 2)
+            # A split lead has two story segments sharing one story_id; keep the FIRST (the
+            # opener's start) so the story's start time is where it actually begins.
+            timings.setdefault(str(seg["story_id"]), round(char_offset / total * duration, 2))
         char_offset += len(seg.get("text", "")) + 2  # +2 matches "\n\n" separator
     return timings
 
@@ -1044,9 +1046,17 @@ def _skeleton_segments(db, ordered: list[dict]) -> list[dict]:
     segs: list[dict] = [{"type": "intro", "text": ""}]
     for i, o in enumerate(ordered):
         sid = str(o["story_id"])
+        title = titles.get(sid, "")
         if i > 0:
             segs.append({"type": "transition", "text": ""})
-        segs.append({"type": "story", "story_id": o["story_id"], "title": titles.get(sid, ""), "text": ""})
+        if i == 0:
+            # LEAD is split into opener + remainder (same story_id) in assemble(); reserve BOTH
+            # slots here so the manifest structure — and every segment index the iOS client and
+            # /readiness agree on — matches the finished bulletin from the very first fetch.
+            segs.append({"type": "story", "story_id": o["story_id"], "title": title, "text": "", "lead_part": "opener"})
+            segs.append({"type": "story", "story_id": o["story_id"], "title": title, "text": "", "lead_part": "remainder"})
+        else:
+            segs.append({"type": "story", "story_id": o["story_id"], "title": title, "text": ""})
     segs.append({"type": "outro", "text": ""})
     return segs
 
@@ -1173,9 +1183,10 @@ def _bg_load_story_dicts(ranking_run_id: int, sids: list[str], cat_by_id: dict[s
 
 def _fill_prefix_and_synth(bulletin_id: int, prefix_segments: list[dict],
                            voice: str, model: str, audio_fmt: str) -> None:
-    """Fill the skeleton's first segments (intro, story1, transition, story2) with the
-    start-pack texts, then synthesise those in PARALLEL so safe_to_start@2 is gated on the
-    slowest single segment, not their serial sum."""
+    """Fill the skeleton's first segments (intro, lead OPENER, lead remainder, transition,
+    story 2) with the start-pack texts, then synthesise them GATE-FIRST: the intro + opener
+    (the safe_to_start gate) go in the first parallel call so the loader dismisses on ~20-25s
+    of audio; the remainder + story 2 stream in behind, before playback catches up."""
     fill = prefix_segments[:-1]  # assemble() of the 2-story pack ends in a start-outro; drop it
     with SessionLocal() as db:
         repo = BulletinRepo(db)
@@ -1190,7 +1201,37 @@ def _fill_prefix_and_synth(bulletin_id: int, prefix_segments: list[dict],
                 segs[i]["text"] = seg.get("text") or ""
         repo.update_segments(bulletin_id, segs)
         db.commit()
-    synthesize_parallel(fill, voice=voice, model=model, audio_format=audio_fmt)
+    # GATE FIRST: intro + the lead opener are exactly what safe_to_start waits for. Synthesising
+    # them alone first (both short) gives the opener sole first-call priority — it never queues
+    # behind the long remainder / story 2 — so the gate flips consistently regardless of the full
+    # lead's length. The rest synthesise together next so they land before playback reaches them;
+    # if not, the client holds in its buffering state on the pending segment.
+    gate = [s for s in fill if s.get("type") == "intro" or s.get("lead_part") == "opener"]
+    behind = [s for s in fill if s not in gate]
+    if gate:
+        synthesize_parallel(gate, voice=voice, model=model, audio_format=audio_fmt)
+    if behind:
+        synthesize_parallel(behind, voice=voice, model=model, audio_format=audio_fmt)
+
+
+def _start_pack_boundary(segments: list[dict], n_stories: int) -> int:
+    """Count of leading segments the start-pack already synthesised: intro + the first
+    `n_stories` distinct stories (a split lead's opener+remainder count as ONE) + the
+    transitions between them. Returns the index of the first segment of the (n+1)-th story,
+    or len(segments) if there are ≤ n_stories. The transition PRECEDING the (n+1)-th story is
+    NOT included (it synthesises with that story). Structural, so it's correct whether or not
+    the lead was split."""
+    seen: list[str] = []
+    end = 0  # one past the last segment belonging to one of the first n_stories
+    for i, s in enumerate(segments):
+        if s.get("type") == "story" and s.get("story_id"):
+            sid = str(s["story_id"])
+            if sid not in seen:
+                if len(seen) >= n_stories:
+                    break
+                seen.append(sid)
+            end = i + 1
+    return end if seen else len(segments)
 
 
 def _synth_remaining(bulletin_id: int, segments: list[dict],
@@ -1199,13 +1240,17 @@ def _synth_remaining(bulletin_id: int, segments: list[dict],
     the FORWARD-THEN-BACKFILL rule: when a story N is bumped (Redis key), synthesise N next,
     then everything AFTER N in order (N+1, N+2, … end), then BACKFILL the skipped gap (the
     earlier still-unready ones). Example (10 stories, jump to 7): 7, 8, 9, 10, then 3, 4, 5, 6."""
-    already = set(range(min(4, len(segments))))   # intro + story1 + transition + story2 (start-pack)
+    # The start-pack synthesised intro + the first _SAFE_START_STORIES stories (the lead's
+    # opener+remainder count as ONE story) + their transitions — skip exactly those, derived
+    # from the structure rather than a hardcoded count (the lead split makes it 5, not 4).
+    already = set(range(_start_pack_boundary(segments, _SAFE_START_STORIES)))
     remaining = [i for i in range(len(segments)) if i not in already]
-    story_idx = {
-        str(s.get("story_id")): i
-        for i, s in enumerate(segments)
-        if s.get("type") == "story" and s.get("story_id")
-    }
+    # story_id → its FIRST segment index (the opener for the split lead), so a skip jumps to the
+    # start of that story, not mid-way through it.
+    story_idx: dict[str, int] = {}
+    for i, s in enumerate(segments):
+        if s.get("type") == "story" and s.get("story_id"):
+            story_idx.setdefault(str(s["story_id"]), i)
     while remaining:
         prio = _get_synth_priority(bulletin_id)
         pidx = story_idx.get(prio) if prio else None
