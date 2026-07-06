@@ -561,7 +561,10 @@ struct NowPlayingView: View {
         // STREAMING: a story whose audio hasn't synthesised yet reads GREY; it goes BLACK the
         // moment its audio is ready. (segmentReady is observed → the row re-renders on readiness.)
         let ready = player.isUnitReady(unit)
-        let titleColor: Color = isPlayed ? ink.opacity(0.32) : (ready ? ink : ink.opacity(0.40))
+        // The user tapped this pending row: it shows a buffering spinner and plays itself the
+        // moment its audio arrives — current playback keeps going in the meantime.
+        let buffering = player.bufferingUnitIndex == idx
+        let titleColor: Color = isPlayed ? ink.opacity(0.32) : ((ready || buffering) ? ink : ink.opacity(0.40))
         let numColor = isCurrent ? ink : (ready ? inkMuted : ink.opacity(0.30))
         return Button {
             // Tapping ANY row seeks to it; if it's still pending, the player bumps it to the
@@ -586,6 +589,8 @@ struct NowPlayingView: View {
                 Group {
                     if isCurrent {
                         EqualizerIndicator(color: ink).frame(width: 15, height: 13)
+                    } else if buffering {
+                        ProgressView().scaleEffect(0.7).tint(ink)   // tapped-while-pending → loading
                     } else {
                         ReadinessRing(ready: ready, color: ink)
                     }

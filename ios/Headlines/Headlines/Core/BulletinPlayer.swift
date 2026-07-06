@@ -117,6 +117,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     @Published private(set) var playbackElapsedSeconds: Double = 0
     /// Story units that have been consumed (furthest position ≥ threshold) this session.
     @Published private(set) var consumedStoryHashes: Set<String> = []
+    /// The story unit the user tapped while it was still PENDING — its row shows a buffering
+    /// state until its audio arrives (then it plays). nil when nothing is pending-tapped.
+    @Published private(set) var bufferingUnitIndex: Int?
     /// Index of the story unit the playhead is currently in (updated on transition entry too).
     @Published private(set) var currentUnitIndex: Int = 0
     /// Loader fill (0–1) shown while `playerState == .preparing`. Smooth + asymptotic;
@@ -209,6 +212,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private var _heldEnqueue     = false
     private var _readinessPollTask: Task<Void, Never>?
     private var _allReady        = false
+    // A tap on a PENDING (nil-url) story records the intent WITHOUT tearing down what's playing;
+    // applyReadiness fulfils it (seek + play) the moment that story's start segment synthesises.
+    private var pendingTapUnitIndex: Int?
 
     // MARK: Private — stall detection
 
@@ -473,8 +479,21 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
         if changed { rebuildTimeline() }
         if _heldEnqueue { _heldEnqueue = false; enqueueNext() }   // a held segment may now be ready
+        fulfilPendingTapIfReady()                                 // a pending-tapped story may now be playable
         _allReady = (r.allReady == true)
         return _allReady
+    }
+
+    /// If the user tapped a PENDING story earlier, play it now that its start segment's audio has
+    /// arrived — the real seek + play (which the pending tap deliberately deferred to avoid
+    /// tearing down what was playing). No-op while it's still pending or nothing is pending-tapped.
+    private func fulfilPendingTapIfReady() {
+        guard let idx = pendingTapUnitIndex, idx < _storyUnits.count else { return }
+        guard let start = startSegment(for: _storyUnits[idx], offsetSeconds: 0),
+              segments[start.arrayIndex].url != nil else { return }   // start segment still pending
+        pendingTapUnitIndex = nil
+        bufferingUnitIndex  = nil
+        playStoryUnit(at: idx)
     }
 
     /// Poll /readiness during PLAYBACK (the gate stops polling at safe_to_start) so later
@@ -504,9 +523,31 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
     }
 
-    /// Is this story unit's audio ready to play? (drives the list ring + grey→black).
+    /// The segments-array index (and in-segment seek offset) a tap on `unit` will START
+    /// playback on at `offsetSeconds`: its transition if we begin within it, else the
+    /// story/opener. This is the segment readiness + the pending check must reflect — the tap
+    /// can start on a transition that's still nil-url even when the opener is ready.
+    private func startSegment(for unit: StoryUnit, offsetSeconds: Double) -> (arrayIndex: Int, seekSeconds: Double)? {
+        if offsetSeconds < unit.transitionDurationSeconds,
+           let trans = unit.transitionSegment,
+           let idx = segments.firstIndex(where: { $0.index == trans.index }) {
+            return (idx, offsetSeconds)
+        }
+        if let idx = segments.firstIndex(where: { $0.index == unit.storySegment.index }) {
+            return (idx, max(0, offsetSeconds - unit.transitionDurationSeconds))
+        }
+        return nil
+    }
+
+    /// Is this story unit ready to PLAY ON TAP? (drives the list ring + grey→black.) Reflects the
+    /// segment the tap will actually start on (transition if present) — not just the opener — so a
+    /// row never reads "ready" while the segment it would start on is still nil-url.
     func isUnitReady(_ unit: StoryUnit) -> Bool {
-        segmentReady[unit.storySegment.index] == true || unit.storySegment.url != nil
+        guard let start = startSegment(for: unit, offsetSeconds: 0) else {
+            return segmentReady[unit.storySegment.index] == true || unit.storySegment.url != nil
+        }
+        let seg = segments[start.arrayIndex]
+        return seg.url != nil || segmentReady[seg.index] == true
     }
 
     /// Seek to a story unit's start and begin playing it. Used by the tracklist so
@@ -809,6 +850,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
         _readinessPollTask = nil
         _heldEnqueue = false
         _allReady = false
+        pendingTapUnitIndex = nil
+        bufferingUnitIndex  = nil
         segmentReady = [:]
         teardownQueuePlayer()
         manifest       = nil
@@ -946,6 +989,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
             // restarted). The reliable test is the LIVE queue: a genuine end has NO current
             // item now; a rebuild nil has already been superseded by a fresh currentItem.
             if player?.currentItem != nil { return }   // stale rebuild nil — not a real end
+            // HELD/EMPTY rebuild, not the end: the queue is empty because enqueue is HOLDING on a
+            // not-yet-synthesised (nil-url) segment, or there are still segments left to enqueue.
+            // A genuine end has enqueued EVERYTHING (nextEnqueueIdx == count) with nothing held —
+            // so this guard stops a pending-tap / streaming hold from false-firing .ended (which
+            // would clear intendedPlaying + null currentSegment and poison every later tap).
+            if _heldEnqueue || nextEnqueueIdx < segments.count { return }
             guard playerState != .buffering, prevSeg != nil else { return }
             // Genuine end of the briefing: playback is over, so intent is no longer
             // "playing" — this is the one non-user event allowed to flip intent, so the
@@ -1069,12 +1118,26 @@ final class BulletinPlayer: NSObject, ObservableObject {
         guard clamped < _storyUnits.count, let p = player else { return }
         let unit = _storyUnits[clamped]
 
-        // STREAMING: jumping to a not-yet-synthesised story bumps it to the FRONT of the
-        // background synthesis queue (server: forward-then-backfill). Playback then holds
-        // (buffering) on the pending segment until the readiness poll fills its url.
-        if unit.storySegment.url == nil, let sid = unit.storySegment.storyId {
-            prioritise(storyId: sid)
+        // Resolve the segment this tap will START on (transition if we begin within it, else the
+        // story/opener) BEFORE touching the queue — the pending check must key off THAT segment,
+        // not just the opener.
+        guard let (startArrayIdx, seekSeconds) = startSegment(for: unit, offsetSeconds: offsetSeconds) else { return }
+
+        // PENDING TAP — the start segment isn't synthesised yet. Do NOT tear down what's playing:
+        // bump the story to the front of the synthesis queue, mark the row buffering, and record
+        // the intent. applyReadiness fulfils the tap (real seek + play) the moment its audio
+        // arrives. Current playback keeps going meanwhile — no removeAllItems, so no empty-queue
+        // rebuild and no false end-of-briefing.
+        if segments[startArrayIdx].url == nil {
+            pendingTapUnitIndex = clamped
+            bufferingUnitIndex  = clamped
+            if let sid = unit.storySegment.storyId { prioritise(storyId: sid) }
+            return
         }
+
+        // READY — clear any prior pending-tap intent and do the real rebuild.
+        pendingTapUnitIndex = nil
+        bufferingUnitIndex  = nil
 
         // Bump the navigation token: any earlier in-flight seek's async completion will
         // now no-op, so rapid taps can't clobber each other (no stale resume / double
@@ -1092,21 +1155,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
             accumulatedEvents.append(ev)
         }
         prevOutcome = .userSkip
-
-        // Determine which segment to start from and the seek offset within it.
-        let startArrayIdx: Int
-        let seekSeconds: Double
-        if offsetSeconds < unit.transitionDurationSeconds,
-           let trans = unit.transitionSegment,
-           let idx = segments.firstIndex(where: { $0.index == trans.index }) {
-            startArrayIdx = idx
-            seekSeconds   = offsetSeconds
-        } else if let idx = segments.firstIndex(where: { $0.index == unit.storySegment.index }) {
-            startArrayIdx = idx
-            seekSeconds   = max(0, offsetSeconds - unit.transitionDurationSeconds)
-        } else {
-            return
-        }
 
         // Update tracking immediately for responsive UI.
         storyIndex       = clamped
