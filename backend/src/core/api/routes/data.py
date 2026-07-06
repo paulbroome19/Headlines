@@ -20,7 +20,7 @@ from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
 from core.pipeline.ranking.scorer import score_story
 from core.pipeline.ranking.category_ranker import get_category_weight
 from core.pipeline.ranking.thresholds import cap_bulletin, qualify_and_order
-from core.pipeline.ranking.depth import depth_for_rank, depth_words_for_rank
+from core.pipeline.ranking.depth import depth_for_rank, depth_tier_for_rank
 from core.pipeline.ranking.config import DEFAULT_PRESET
 from core.pipeline.data.profile.repos.profile_repo import ProfileRepo
 from core.platform.config.settings import settings
@@ -208,10 +208,34 @@ def get_latest_summaries():
     }
 
 
-# Words/minute for the Home preview's minutes estimate (measured ElevenLabs rate;
-# matches test_depth_duration). The estimate uses the depth word model so it tracks the
-# real briefing length; exact minutes come from the generated bulletin.
-_HOME_PREVIEW_WPM = 156
+# Home-preview minutes estimate — CALIBRATED to real generated briefings (measured audio
+# duration + actual summary word counts on prod), NOT the summariser's DEPTH_TIERS word
+# TARGETS. The summariser undershoots its targets (a "lead" targets 260 words but actually
+# runs ~110–150), so estimating from the targets overshot real duration by ~40% on small
+# briefings. These per-rank-band word figures + the measured ~150 wpm speech rate track real
+# briefings within ~1 min and scale properly. Exact minutes still come from the generated
+# bulletin.
+_HOME_PREVIEW_WPM = 150
+# Estimated spoken words per story by rank band (lead / major / standard / brief), from the
+# measured audio_script lengths of recent real briefings.
+_PREVIEW_WORDS_BY_TIER = {"lead": 150, "major": 130, "standard": 95, "brief": 58}
+_PREVIEW_INTRO_WORDS = 60
+_PREVIEW_OUTRO_WORDS = 40
+_PREVIEW_TRANSITION_WORDS = 16   # per inter-story bridge
+
+
+def _preview_minutes(story_count: int) -> int:
+    """Estimated briefing minutes for `story_count` stories: calibrated per-rank story words
+    (measured, not the aspirational depth targets) + intro/outro/transition wrapper, at the
+    measured speech rate. Tracks real briefings within ~1 min and scales with count/depth."""
+    if story_count <= 0:
+        return 0
+    story_words = sum(_PREVIEW_WORDS_BY_TIER[depth_tier_for_rank(i)] for i in range(story_count))
+    wrapper_words = (
+        _PREVIEW_INTRO_WORDS + _PREVIEW_OUTRO_WORDS
+        + _PREVIEW_TRANSITION_WORDS * max(0, story_count - 1)
+    )
+    return max(1, round((story_words + wrapper_words) / _HOME_PREVIEW_WPM))
 
 
 def _standfirst(summary_text: str | None) -> str | None:
@@ -277,11 +301,9 @@ def get_home_preview(profile_id: int):
     )
 
     story_count = len(display)
-    # Minutes estimate from the depth word targets (lead/major/standard/brief) + wrapper
-    # (intro + outro + per-gap transitions), the same model that sizes the real briefing.
-    story_words = sum(depth_words_for_rank(i) for i in range(story_count))
-    wrapper_words = (70 + 40 + 18 * max(0, story_count - 1)) if story_count else 0
-    total_minutes = max(1, round((story_words + wrapper_words) / _HOME_PREVIEW_WPM)) if story_count else 0
+    # Minutes estimate calibrated to real briefings (measured words/duration), not the
+    # summariser's word targets — see _preview_minutes.
+    total_minutes = _preview_minutes(story_count)
 
     # Join standfirst (cached summaries) + ranked sources for the displayed stories only.
     top = display[:6]

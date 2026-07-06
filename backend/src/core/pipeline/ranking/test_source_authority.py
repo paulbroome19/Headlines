@@ -114,3 +114,19 @@ def test_uk_lean_country_weight():
     assert country_weight("us") == 1.0
     assert country_weight("ke") == 0.6
     assert country_weight(None) == 0.3
+
+
+# ── rank_sources DROPS excluded outlets from attribution (the leak fix) ──────────
+
+from core.platform.config.source_credibility import rank_sources
+
+
+def test_rank_sources_drops_excluded_outlets():
+    # Excluded/non-Western outlets must never appear in attribution — the bug was that
+    # rank_sources kept them as default-tier "unknown" sources.
+    assert rank_sources(["BBC News", "Hindustan Times", "Reuters"]) == ["BBC", "Reuters"]
+    for name in ("Hindustan Times", "The Times of India", "Moneycontrol.com",
+                 "The Jerusalem Post", "The Guardian Nigeria News", "NDTV"):
+        assert rank_sources([name]) == [], name           # excluded-only → no attribution
+    # legit Western outlets that merely aren't curated are STILL kept (not over-excluded)
+    assert rank_sources(["CBC"]) == ["CBC"]

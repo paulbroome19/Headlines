@@ -124,6 +124,20 @@ _REGIONAL: list[tuple[str, str, list[str]]] = [
 _EXCLUDED_NAMES = [
     ("Times of Israel", ["times of israel"]),
     ("Jerusalem Post", ["jerusalem post"]),
+    # Non-Western / regional outlets that shouldn't surface in a Western briefing's
+    # attribution (they leaked through as default-tier "unknown" sources). Aliases match
+    # the _norm() form of the raw source strings seen in prod.
+    ("Hindustan Times", ["hindustan times"]),
+    ("Times of India", ["times of india"]),          # _norm drops a leading "the"
+    ("Moneycontrol", ["moneycontrol"]),              # _norm drops the .com suffix
+    ("NDTV", ["ndtv"]),
+    ("The Indian Express", ["indian express"]),
+    ("Firstpost", ["firstpost"]),
+    ("Livemint", ["livemint", "mint"]),
+    ("Guardian Nigeria", ["guardian nigeria news", "guardian nigeria"]),
+    ("Punch Newspapers", ["punch newspapers"]),
+    ("The Star (Kenya)", ["star co ke"]),            # the-star.co.ke → _norm → "star co ke"
+    ("Globes (Israel)", ["globes", "globes israel business news"]),
 ]
 
 # Canonical-merge map for multi-variant names that don't reduce via _norm alone,
@@ -341,6 +355,11 @@ def rank_sources(names: list[str], *, limit: int = 3) -> list[str]:
     order = 0
     for name in names:
         if not name or not name.strip():
+            continue
+        # Drop EXCLUDED outlets entirely — they must never appear in attribution. (_classify
+        # only knows the global tiers, so without this an excluded name leaked through as a
+        # default-tier "unknown" source — the bug that surfaced Hindustan Times etc.)
+        if any(k in _EXCLUDED_KEYS for k in _keys(name)):
             continue
         tier, display = _classify(name)
         dedupe_key = _norm(display)
