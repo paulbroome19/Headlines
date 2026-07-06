@@ -117,6 +117,26 @@ def compute_importance(
     return importance, normalized
 
 
+def compute_merit(candidate: StoryRankingCandidate, category_weight: float) -> float:
+    """Time-invariant MERIT for the stable ranked list (data.ranked_stories).
+
+    Identical to compute_importance but WITHOUT the freshness factor, mapped to the same
+    0–10 scale as normalized_score — so a story scored once on arrival keeps the same score
+    across every subsequent ingest (no recency drift). It changes ONLY when coverage grows
+    (source_count / article_count rise). This is the score the stable-insert model persists;
+    the live compute_importance (with freshness) is left untouched for the current request
+    path until that path is migrated.
+    """
+    coverage = 1.0 + COVERAGE_K * math.log1p(max(candidate.source_count, 0))
+    entity_heft = max(_entity_weight(candidate.primary_entity_weight) - 1.0, 0.0)
+    prominence = 1.0 + PROMINENCE_K * math.log1p(max(candidate.article_count, 0)) + entity_heft
+    category_tiebreak = 1.0 + CATEGORY_TIEBREAK_STRENGTH * (category_weight - 1.0)
+    bonus, _ = story_authority(candidate)
+    source_authority = 1.0 + SOURCE_AUTHORITY_STRENGTH * bonus
+    importance = coverage * prominence * category_tiebreak * source_authority
+    return 10.0 * importance / (importance + IMPORTANCE_HALF)
+
+
 def score_story(
     candidate: StoryRankingCandidate,
     category_weight: float,
