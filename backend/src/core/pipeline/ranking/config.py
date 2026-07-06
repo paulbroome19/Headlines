@@ -118,6 +118,18 @@ PROMINENCE_K = 0.25
 # factor, not the driver. ⚑ tune (window is the candidate loader's, ~24-48h).
 FRESHNESS_MIN = 0.60
 FRESHNESS_LAMBDA = 0.03
+
+# ── Stable ranked list (data.ranked_stories) ─────────────────────────────────
+# The ONE allowed reorder: a placed story is re-scored/moved ONLY when its coverage
+# GENUINELY grows — source_count must rise by BOTH an absolute AND a relative margin, so
+# ordinary noise (a single extra outlet) never churns the list. Never reorders on recency.
+# This is what stops a 6am single-source story that becomes the day's biggest by noon from
+# being frozen at the bottom.
+COVERAGE_GROWTH_MIN_ABS = 2        # at least +2 distinct sources vs the placed count
+COVERAGE_GROWTH_MIN_FACTOR = 1.5   # AND at least ×1.5 the placed source_count
+# Rolling window for the list: a story leaves once it ages past this (pruned by
+# entered_list_at). The candidate loader's window narrows 36h→24h to match.
+RANKED_LIST_WINDOW_HOURS = 24
 # Category as a LIGHT tiebreak: rescales the CATEGORY_WEIGHTS range to ≈ ±14%.
 # Coverage still dominates ACROSS coverage levels, but among EQUAL-coverage stories
 # (the single-source tail that dominates thin/early data) this is the main

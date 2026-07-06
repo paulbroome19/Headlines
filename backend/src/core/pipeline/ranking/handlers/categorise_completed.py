@@ -9,7 +9,9 @@ from core.platform.queue.outbox import OutboxRepo
 from core.pipeline.data.bulletin.editorial_review import precompute_editorial_for_run
 from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
 from core.pipeline.ranking.category_ranker import get_category_weight
+from core.pipeline.ranking.config import RANKED_LIST_WINDOW_HOURS
 from core.pipeline.ranking.events import DATA_RANK_COMPLETED
+from core.pipeline.ranking.ranked_list import maintain_ranked_list
 from core.pipeline.ranking.ranker import StoryRanker
 from core.pipeline.ranking.repos.ranking_run_repo import RankingRunRepo
 from core.pipeline.ranking.scorer import score_story
@@ -76,3 +78,16 @@ def handle_categorise_completed(event: dict) -> None:
             precompute_editorial_for_run(db, run_id, scored)
         except Exception:
             logger.exception("editorial precompute skipped for ranking run %s", run_id)
+
+        # STABLE RANKED LIST (data.ranked_stories) — Phase 1 dual-write, ALONGSIDE the run.
+        # Score new stories once on time-invariant merit, insert in place, regrade only on
+        # genuine coverage growth, prune past 24h. Runs after the editorial precompute so the
+        # per-story top_story flag is available. Best-effort; never breaks ranking. The request
+        # path does NOT read this list yet (that's the next phase).
+        try:
+            list_candidates = load_story_ranking_candidates(db, hours=RANKED_LIST_WINDOW_HOURS)
+            stats = maintain_ranked_list(db, run_id, list_candidates)
+            logger.info("ranked_list: run=%s inserted=%d regraded=%d pruned=%d",
+                        run_id, stats.inserted, stats.regraded, stats.pruned)
+        except Exception:
+            logger.exception("ranked_list maintenance skipped for run %s", run_id)
