@@ -23,6 +23,7 @@ from core.pipeline.data.bulletin.transitions import pick_transition
 from core.pipeline.data.bulletin.outros import build_outro
 from core.pipeline.data.bulletin.pronunciation import normalise_for_tts
 from core.pipeline.data.bulletin.connective import ConnectiveResult
+from core.pipeline.data.bulletin.opener import apply_lead_opener
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,13 @@ def assemble(
             story_count=len(stories),
         )
         segments.append({"type": "outro", "text": outro_text})
+
+    # ── Lead OPENER split ───────────────────────────────────────────────────────
+    # Split the lead story into a short opener + remainder (two story segments, same
+    # story_id) BEFORE normalisation/script so hashes, script and _story_timings all stay
+    # consistent. safe_to_start then gates on intro + opener (~20-25s) rather than the whole
+    # ~100s lead. iOS groups the two segments into one story unit. No-op for a short lead.
+    segments = apply_lead_opener(segments)
 
     # ── Assemble script + pronunciation normalisation ──────────────────────────
     # Normalise each segment's text for TTS, then derive the script from the

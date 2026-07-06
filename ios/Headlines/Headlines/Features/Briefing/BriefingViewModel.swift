@@ -131,10 +131,12 @@ final class BriefingViewModel: ObservableObject {
     /// BulletinResult synthesised from the live manifest — keeps BriefingView unchanged.
     var bulletin: BulletinResult? {
         guard let m = bulletinPlayer.manifest else { return nil }
-        let stories = bulletinPlayer.storySegments.map { seg in
+        // One entry per STORY UNIT (a split lead is two segments, one story) so the list
+        // never double-counts the lead.
+        let stories = bulletinPlayer.storyUnits.map { unit in
             BulletinStory(
-                id:        seg.storyHash ?? String(seg.index),
-                headline:  seg.title ?? "",
+                id:        unit.storyHash ?? String(unit.storySegment.index),
+                headline:  unit.title ?? "",
                 category:  nil,
                 startTime: nil
             )

@@ -450,7 +450,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
             acc += seg.durationSeconds
         }
         _totalDurationSeconds = acc
-        storyCount = _storySegments.count
+        // Count STORIES (units), not story segments — a split lead is two segments, one story.
+        storyCount = _storyUnits.count
     }
 
     /// Merge a readiness snapshot: fill ready segments' url + real duration (matched by FULL
@@ -597,8 +598,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
     func sendSummary() {
         guard let pid = _profileId, let bid = _bulletinId else { return }
 
-        // Append abandoned event for the story currently mid-play.
-        if let seg = currentSegment, seg.isStory, let hash = seg.storyHash,
+        // Append abandoned event for the story currently mid-play — keyed to the UNIT's hash
+        // (the seeded one) so it lands even when abandoning mid-remainder of a split lead.
+        if let seg = currentSegment, seg.isStory,
+           let hash = storyUnit(forSegment: seg)?.storyHash,
            playerState == .playing || playerState == .paused || playerState == .stalled {
             let ev = StoryEvent(storyHash: hash, action: "abandoned", positionPct: currentPositionPct)
             accumulatedEvents.append(ev)
@@ -905,8 +908,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
         let outcome = prevOutcome
         prevOutcome = .natural
 
-        // Fire completion event for the previous story on natural advancement.
-        if let prev = prevSeg, prev.isStory, let hash = prev.storyHash, outcome == .natural {
+        // Fire completion for the previous STORY (unit) on natural advancement — once, when its
+        // LAST segment finishes, so a split lead (opener → remainder) doesn't complete twice.
+        // Use the unit's hash (the seeded one), never the individual segment's.
+        if let prev = prevSeg, prev.isStory, outcome == .natural,
+           let unit = storyUnit(forSegment: prev), prev.index == unit.lastStorySegmentIndex,
+           let hash = unit.storyHash {
             let ev = StoryEvent(storyHash: hash, action: "completed", positionPct: 1.0)
             fireEvent(ev)
             accumulatedEvents.append(ev)
@@ -1076,9 +1083,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
         navGeneration &+= 1
         let gen = navGeneration
 
-        // Fire skipped event for the current story when seeking forward.
+        // Fire skipped event for the current story when seeking forward — keyed to the UNIT's
+        // (seeded) hash so it lands even when skipping from mid-remainder of a split lead.
         if clamped > storyIndex, let seg = currentSegment, seg.isStory,
-           let hash = seg.storyHash {
+           let hash = storyUnit(forSegment: seg)?.storyHash {
             let ev = StoryEvent(storyHash: hash, action: "skipped", positionPct: currentPositionPct)
             fireEvent(ev)
             accumulatedEvents.append(ev)
@@ -1261,36 +1269,51 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     /// Returns the StoryUnit that contains the given segment (transition or story).
     private func storyUnit(forSegment seg: ManifestSegment) -> StoryUnit? {
-        _storyUnits.first {
-            $0.storySegment.index == seg.index ||
-            $0.transitionSegment?.index == seg.index
-        }
+        _storyUnits.first { $0.owns(segmentIndex: seg.index) }
     }
 
     /// Builds the ordered story-unit list with pre-computed cumulative start times.
     static func buildStoryUnits(from segments: [ManifestSegment]) -> [StoryUnit] {
         var units: [StoryUnit] = []
         var pendingTransition: ManifestSegment?
+        var curTransition: ManifestSegment?
+        var curStories: [ManifestSegment] = []   // accumulating same-story_id segments
         var cumulativeSecs = 0.0
+
+        func flush() {
+            guard !curStories.isEmpty else { return }
+            let unit = StoryUnit(
+                index: units.count,
+                transitionSegment: curTransition,
+                storySegments: curStories,
+                cumulativeStartSeconds: cumulativeSecs
+            )
+            cumulativeSecs += unit.totalDurationSeconds
+            units.append(unit)
+            curStories = []
+            curTransition = nil
+        }
 
         for seg in segments {
             switch seg.type {
             case "transition":
+                flush()                     // a transition ends the current story unit
                 pendingTransition = seg
             case "story":
-                let unit = StoryUnit(
-                    index: units.count,
-                    transitionSegment: pendingTransition,
-                    storySegment: seg,
-                    cumulativeStartSeconds: cumulativeSecs
-                )
-                cumulativeSecs += unit.totalDurationSeconds
-                units.append(unit)
-                pendingTransition = nil
+                if let last = curStories.last, seg.storyId != nil, last.storyId == seg.storyId {
+                    curStories.append(seg)  // continuation (opener → remainder) of the same story
+                } else {
+                    flush()
+                    curTransition = pendingTransition
+                    curStories = [seg]
+                    pendingTransition = nil
+                }
             default:
-                pendingTransition = nil   // sting / intro / outro reset the pending transition
+                flush()
+                pendingTransition = nil     // sting / intro / outro reset the pending transition
             }
         }
+        flush()
         return units
     }
 

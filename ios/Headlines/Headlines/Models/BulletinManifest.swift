@@ -105,22 +105,36 @@ struct BulletinReadiness: Decodable {
     }
 }
 
-/// One navigable chapter in the bulletin: an optional transition followed by a story segment.
-/// The scrubber timeline spans all story units only; wrappers (sting/intro/outro) are excluded.
+/// One navigable chapter in the bulletin: an optional transition followed by one or more
+/// consecutive story segments SHARING a story_id. The lead is split into a short opener +
+/// remainder (two segments, same story_id) so playback can start on the opener; they are one
+/// unit here. The scrubber timeline spans all story units only; wrappers are excluded.
 struct StoryUnit: Identifiable {
     let index: Int                           // 0-based position among story units
     let transitionSegment: ManifestSegment?
-    let storySegment: ManifestSegment
+    let storySegments: [ManifestSegment]     // ≥1, same story_id (opener [+ remainder])
     let cumulativeStartSeconds: Double       // start of this unit in the story-only timeline
 
     var id: Int { index }
+    /// The unit's PRIMARY story segment — its opener/first. Carries the title, story_id, sources
+    /// and the seeded story_hash (the backend seeds one user_story_state row per story, keyed to
+    /// the first segment's hash), and is the seek/enqueue anchor for the unit.
+    var storySegment: ManifestSegment { storySegments[0] }
     var transitionDurationSeconds: Double {
         transitionSegment.map { Double($0.durationMs ?? 0) / 1000.0 } ?? 0
     }
-    var storyDurationSeconds: Double { Double(storySegment.durationMs ?? 0) / 1000.0 }
+    var storyDurationSeconds: Double {
+        storySegments.reduce(0.0) { $0 + Double($1.durationMs ?? 0) / 1000.0 }
+    }
     var totalDurationSeconds: Double  { transitionDurationSeconds + storyDurationSeconds }
     var storyHash: String? { storySegment.storyHash }
     var title: String?    { storySegment.title }
+    /// True if `segmentIndex` is any of this unit's segments (transition or a story part).
+    func owns(segmentIndex: Int) -> Bool {
+        transitionSegment?.index == segmentIndex || storySegments.contains { $0.index == segmentIndex }
+    }
+    /// The last story segment's index — the point at which the story naturally completes.
+    var lastStorySegmentIndex: Int { storySegments.last?.index ?? storySegment.index }
 }
 
 // MARK: - Home front-page preview (GET /data/profiles/{id}/home-preview)
