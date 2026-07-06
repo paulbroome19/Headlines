@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -35,15 +36,21 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.anthropic.com/v1/messages"
 _API_VERSION = "2023-06-01"
-_MAX_TOKENS = 900
+# The review returns one object per CHANGED story (id + category + significance + top_story +
+# a short reason). Over a focused front-page set that is easily a dozen+ objects; 900 tokens
+# truncated the JSON mid-array → the whole parse failed → the pass silently returned nothing
+# (no corrections, no top_story). 3000 gives ample headroom.
+_MAX_TOKENS = 3000
 _TIMEOUT_SECONDS = 25
 
 # How far the editor may move a story's 0–10 significance. Bounds the override: it can
 # reorder near-neighbours and lift/sink a clear outlier, but a 3+ point gap survives.
 SIG_CLAMP = 2.0
-# Cap on NET new front-page promotions per review — stops a wholesale reshaping of the
-# front page; beyond this, the highest-significance promotions win.
-MAX_PROMOTIONS = 6
+# Safety ceiling on top_story flags per review — pure runaway protection (an over-eager LLM
+# can't flood the front page), NOT a target. The user gets EVERY genuine top story; the high
+# bar keeps the real count small, and duplicate event-clusters collapse in dedup downstream. So
+# this sits well above a normal day's few, only clipping a pathological over-flag.
+MAX_PROMOTIONS = 15
 
 
 @dataclass(frozen=True)
@@ -85,20 +92,46 @@ def build_system(valid_leaves: list[str]) -> str:
         "trivial story (a product reissue, a listicle) that is ranked too high; UP for a "
         "genuinely major story that is thinly covered and ranked too low. 0 for everything "
         "you don't feel strongly about (most stories).\n"
-        "3. TOP STORY (\"top_story\": true) — a SEPARATE flag, ON TOP of the category, marking "
-        "a story as genuine front-page news. THE BAR IS HIGH. Flag it ONLY if a normal person "
-        "would say it genuinely matters:\n"
-        "     • war and armed conflict; terror attacks\n"
-        "     • disasters (natural or man-made) and major accidents with real casualties/impact\n"
-        "     • major crime\n"
-        "     • serious politics / government action that affects people's lives (elections, "
-        "legislation, major policy, resignations, court rulings of consequence)\n"
-        "     • significant controversies or scandals involving major public figures\n"
-        "   MOST STORIES ARE NOT TOP STORIES. NEVER flag soft-category news even when it is "
-        "high-coverage or high-ranked: technology product news/roundups (e.g. a PlayStation/"
-        "Sony disc or console change), gaming, celebrity/entertainment gossip, ordinary "
-        "business/markets/earnings, sport results, lifestyle, reviews. When unsure, do NOT flag "
-        "it. A story keeps its real category either way — top_story is independent of category.\n\n"
+        "3. TOP STORY (\"top_story\": true) — a SEPARATE flag, ON TOP of the category (the story "
+        "keeps its real category either way). Judge EACH story against the RUBRIC below on its "
+        "PRINCIPLE — do not pattern-match a keyword list. Set true only when it genuinely clears "
+        "the rubric.\n\n"
+        "--- TOP STORY RUBRIC ---\n"
+        "CORE TEST: Would this story matter to the average person regardless of their personal "
+        "interests? A top story is something you'd expect to lead a national broadcast — news "
+        "with broad public consequence or that has become national conversation. The DEFAULT is "
+        "NOT a top story. Most news, even important-to-someone news, is not. Only the day's "
+        "genuinely significant few qualify — typically a small handful (aim ~3-6), never a dozen.\n\n"
+        "A story qualifies ONE of two ways:\n\n"
+        "ROUTE 1 — BROAD HUMAN IMPACT. It affects, endangers, or genuinely matters to the "
+        "general population:\n"
+        "- war and armed conflict\n"
+        "- natural disasters (earthquakes, floods, wildfires, major storms)\n"
+        "- major disease outbreaks / public-health emergencies\n"
+        "- significant political & government events (elections, resignations, major legislation, "
+        "government collapse, broad-impact policy)\n"
+        "- major scandals/controversies involving powerful people or institutions\n"
+        "- serious and significant crime; terrorism\n"
+        "- landmark court outcomes / major prison sentences\n"
+        "- large-scale accidents and tragedies\n"
+        "- economic events that hit ordinary people directly (a crash, a major rates decision "
+        "affecting mortgages — NOT a single company's internal news)\n\n"
+        "ROUTE 2 — EXCEPTIONAL WITHIN ITS CATEGORY. A story so significant within its own field "
+        "that it transcends that field and becomes national conversation, even if the category is "
+        "normally \"soft.\" England winning the World Cup is a national event, not sport news. The "
+        "bar is HIGH: people who don't follow that category are still talking about it. A normal "
+        "match result, ordinary product launch, or routine awards show does NOT clear it.\n\n"
+        "DOES NOT QUALIFY (with reasoning):\n"
+        "- Corporate/business news — layoffs, earnings, deals, company strategy. Microsoft layoffs "
+        "matter to an industry, not the general population. Business news.\n"
+        "- Tech/product news — launches, updates, roundups. Sony's disc policy is a tech story, "
+        "not a national event.\n"
+        "- Routine sport — results, transfers, standings — unless Route 2 exceptional.\n"
+        "- Celebrity/entertainment — weddings, gossip, casting — unless a genuinely major figure "
+        "AND major event.\n"
+        "- Ordinary politics — routine parliamentary business, minor appointments, incremental "
+        "policy.\n"
+        "--- END RUBRIC ---\n\n"
         f"VALID category slugs (a corrected category MUST be one of these leaves, or a "
         f"top-level bucket {', '.join(tops)}):\n" + "\n".join(leaves) + "\n\n"
         "RULES:\n"
@@ -131,6 +164,9 @@ def _post_anthropic(system: str, user: str) -> dict | None:
     data = json.dumps({
         "model": _model(),
         "max_tokens": _MAX_TOKENS,
+        # Editorial judgment is a classification, not creative writing — temperature 0 makes it
+        # DETERMINISTIC (the API default 1.0 made the same candidate set flag differently each run).
+        "temperature": 0,
         "system": system,
         "messages": [{"role": "user", "content": user}],
     }).encode()
@@ -154,6 +190,34 @@ def _clamp(x: float) -> float:
     return max(-SIG_CLAMP, min(SIG_CLAMP, x))
 
 
+def _parse_items(text: str) -> list[dict]:
+    """Extract the adjustment objects, tolerating a slightly-truncated response. Tries the
+    clean `{"adjustments":[...]}` parse first; on failure, salvages every COMPLETE flat
+    `{...}` object with an `id` (a truncated final object is simply dropped) so an over-length
+    response still yields the rows it did finish."""
+    start = text.find("{")
+    if start >= 0:
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(text[start:])
+            if isinstance(payload, dict) and isinstance(payload.get("adjustments"), list):
+                return payload["adjustments"]
+        except (ValueError, json.JSONDecodeError):
+            pass
+    # Salvage — adjustment objects are FLAT (no nested braces), so a shortest-match {...} scan
+    # recovers each complete one and skips a cut-off tail.
+    out: list[dict] = []
+    for m in re.finditer(r"\{[^{}]*\}", text):
+        try:
+            o = json.loads(m.group())
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(o, dict) and "id" in o:
+            out.append(o)
+    if out:
+        logger.info("editorial: salvaged %d adjustment(s) from a truncated response", len(out))
+    return out
+
+
 def review_front_page(
     stories: list[StoryMeta], valid_leaves: list[str],
 ) -> dict[str, EditorialAdjustment]:
@@ -166,14 +230,12 @@ def review_front_page(
         return {}
     try:
         text = raw["content"][0]["text"].strip()
-        if text.startswith("```"):
-            text = "\n".join(l for l in text.splitlines() if not l.strip().startswith("```"))
-        start = text.find("{")
-        payload, _ = json.JSONDecoder().raw_decode(text[start:]) if start >= 0 else ({}, 0)
-        items = payload.get("adjustments") or []
-    except (KeyError, IndexError, ValueError, TypeError, json.JSONDecodeError) as e:
+    except (KeyError, IndexError, TypeError) as e:
         logger.warning("editorial malformed response: %s", e)
         return {}
+    if text.startswith("```"):
+        text = "\n".join(l for l in text.splitlines() if not l.strip().startswith("```"))
+    items = _parse_items(text)
 
     known = {s.story_id for s in stories}
     out: dict[str, EditorialAdjustment] = {}
