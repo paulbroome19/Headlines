@@ -26,10 +26,11 @@ from .llm_categoriser import (
 
 # Stories classified per Anthropic call. The ~1.6k-token taxonomy system prompt is sent
 # once per call regardless of size, so batching amortises it across this many stories
-# (the dominant, uncached input cost). Calibrated on prod (temp=0): size 5 keeps ~96%
-# agreement with the single-story classification while cutting ~62% of cost; agreement
-# falls off past ~8 (cross-story interference), so 5 is the fidelity/cost sweet spot.
-_BATCH_SIZE = 5
+# (the dominant, uncached input cost). Calibrated on prod (temp=0): agreement with the
+# single-story classification degrades as the batch grows (cross-story interference) —
+# ~96% at 3, ~92% at 8, ~83% at 10. Size 3 is chosen to prioritise correct categorisation
+# over the extra saving; it still amortises the prompt ~3x (~50% cost cut).
+_BATCH_SIZE = 3
 
 
 def _chunks(items: list, size: int):
