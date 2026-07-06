@@ -339,6 +339,18 @@ def record_unseen_source(name: str | None) -> None:
     logger.info("source_credibility: unseen source %r (untiered) — candidate for LLM tiering", name.strip())
 
 
+def all_sources_excluded(names: list[str] | tuple[str, ...] | None) -> bool:
+    """True iff a story has at least one source and EVERY source is on the exclusion denylist
+    — a story with no kept outlet at all. Such a story is dropped from candidate selection
+    (it would otherwise surface with blank attribution, since rank_sources drops the excluded
+    names). A story with even ONE non-excluded source is kept. Sourceless (empty/blank) → False
+    (no sources to be 'all excluded')."""
+    real = [n for n in (names or []) if n and n.strip()]
+    if not real:
+        return False
+    return all(any(k in _EXCLUDED_KEYS for k in _keys(n)) for n in real)
+
+
 def rank_sources(names: list[str], *, limit: int = 3) -> list[str]:
     """
     Rank a story's outlet names by curated credibility tier and return the top

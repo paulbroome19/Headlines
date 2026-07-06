@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from core.platform.config.source_credibility import best_tier
+from core.platform.config.source_credibility import all_sources_excluded, best_tier
 
 from .config import ENTITY_TYPE_WEIGHTS
 from .models import StoryRankingCandidate
@@ -240,6 +240,12 @@ def load_story_ranking_candidates(
     candidates: list[StoryRankingCandidate] = []
 
     for row in rows:
+        raw_sources = list(row.get("sources") or [])
+        # Drop a story whose EVERY source is on the exclusion denylist: rank_sources would
+        # leave it with blank attribution, so a sourceless story must not surface at all (home
+        # preview or bulletin). A story with even one non-excluded source is kept as normal.
+        if all_sources_excluded(raw_sources):
+            continue
         title = row["title"] or "Untitled story"
         primary_category = row["primary_category"]
         primary_entity_id = row["primary_entity_id"]
@@ -266,8 +272,8 @@ def load_story_ranking_candidates(
                 ),
                 geo_region=row.get("geo_region"),
                 pool_country=row.get("pool_country"),
-                top_source_tier=best_tier(list(row.get("sources") or [])),
-                sources=tuple(row.get("sources") or []),
+                top_source_tier=best_tier(raw_sources),
+                sources=tuple(raw_sources),
             )
         )
 

@@ -130,3 +130,21 @@ def test_rank_sources_drops_excluded_outlets():
         assert rank_sources([name]) == [], name           # excluded-only → no attribution
     # legit Western outlets that merely aren't curated are STILL kept (not over-excluded)
     assert rank_sources(["CBC"]) == ["CBC"]
+
+
+# ── all_sources_excluded: drop a story when EVERY source is on the denylist ──────
+
+from core.platform.config.source_credibility import all_sources_excluded
+
+
+def test_all_sources_excluded():
+    # Every source excluded → drop (would otherwise show blank attribution).
+    assert all_sources_excluded(["Hindustan Times", "The Times of India"]) is True
+    assert all_sources_excluded(["The Jerusalem Post"]) is True
+    # At least one non-excluded source → keep.
+    assert all_sources_excluded(["BBC News", "Hindustan Times"]) is False
+    assert all_sources_excluded(["Reuters"]) is False
+    # Sourceless / blank → not "all excluded" (nothing to exclude).
+    assert all_sources_excluded([]) is False
+    assert all_sources_excluded(None) is False
+    assert all_sources_excluded(["", "  "]) is False
