@@ -1469,38 +1469,51 @@ def get_bulletin_readiness(bulletin_id: int):
         if not isinstance(segs, list):
             segs = _json.loads(segs)
 
-        # Reconstruct the manifest's playable segment list: non-empty text, in
-        # order (mirrors get_manifest's hashing exactly).
-        playable = [s for s in segs if (s.get("text") or "").strip()]
-        hashes = [compute_script_hash(s["text"]) for s in playable]
-
+        # Report EVERY segment by its FULL index (position in bulletin.segments), NOT a
+        # playable-only re-index — so iOS matches readiness → skeleton segment reliably even
+        # when a pause transition has empty text (which would otherwise shift the indices).
+        # A non-empty script marks the bulletin fully assembled.
+        assembled_final = bool((bulletin.get("script") or "").strip())
+        hash_by_idx: dict[int, str] = {
+            i: compute_script_hash(s["text"])
+            for i, s in enumerate(segs) if (s.get("text") or "").strip()
+        }
         ready_map = SegmentAudioRepo(db).get_cached_batch(
-            script_hashes=hashes, voice=voice, model=model, audio_format=audio_fmt,
+            script_hashes=list(hash_by_idx.values()), voice=voice, model=model, audio_format=audio_fmt,
         )
         failed_set = SegmentAudioFailureRepo(db).get_failed_batch(
-            script_hashes=hashes, voice=voice, model=model, audio_format=audio_fmt,
+            script_hashes=list(hash_by_idx.values()), voice=voice, model=model, audio_format=audio_fmt,
         )
 
     ready_set = set(ready_map.keys())
     base_url = settings.public_api_base_url.rstrip("/")
     ext = ext_from_format(audio_fmt)
     out_segments: list[dict] = []
-    for i, (s, h) in enumerate(zip(playable, hashes)):
-        if h in ready_set:
-            state = "ready"
-        elif h in failed_set:
-            state = "failed"
+    for i, s in enumerate(segs):
+        typ = s.get("type", "story")
+        txt = (s.get("text") or "").strip()
+        seg: dict[str, Any] = {"index": i, "type": typ}
+        if not txt:
+            # Empty pause transition in a FINISHED bulletin → a 0-duration skip (ready);
+            # anything empty in a still-assembling bulletin → not-yet-filled (pending).
+            if assembled_final and typ == "transition":
+                seg["state"] = "ready"
+                seg["duration_ms"] = 0
+            else:
+                seg["state"] = "pending"
         else:
-            state = "pending"
-        seg: dict[str, Any] = {"index": i, "type": s.get("type", "story"), "state": state}
-        # Streaming: the skeleton manifest carried no per-segment urls/durations, so iOS
-        # enqueues + builds its timeline from these as each segment becomes ready.
-        if state == "ready":
-            seg["url"] = f"{base_url}/data/segments/{h}.{ext}"
-            row = ready_map.get(h)
-            if row and row.get("duration_seconds"):
-                seg["duration_ms"] = round(row["duration_seconds"] * 1000)
-        if s.get("type") == "story" and s.get("story_id"):
+            h = hash_by_idx[i]
+            if h in ready_set:
+                seg["state"] = "ready"
+                seg["url"] = f"{base_url}/data/segments/{h}.{ext}"
+                row = ready_map.get(h)
+                if row and row.get("duration_seconds"):
+                    seg["duration_ms"] = round(row["duration_seconds"] * 1000)
+            elif h in failed_set:
+                seg["state"] = "failed"
+            else:
+                seg["state"] = "pending"
+        if typ == "story" and s.get("story_id"):
             seg["story_id"] = str(s["story_id"])
         out_segments.append(seg)
 
