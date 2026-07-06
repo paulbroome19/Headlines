@@ -35,7 +35,11 @@ from core.pipeline.data.bulletin.assembler import assemble
 from core.pipeline.data.bulletin.connective import ConnectiveResult
 from core.pipeline.data.bulletin.connective import generate_connective, generate_connective_rest, uk_now
 from core.pipeline.data.bulletin.edition import resolve_daily_edition
-from core.pipeline.data.bulletin.editorial_review import apply_editorial, editorial_adjustments
+from core.pipeline.data.bulletin.editorial_review import (
+    apply_cached_editorial,
+    apply_editorial,
+    editorial_adjustments,
+)
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
@@ -684,6 +688,7 @@ def _select_reservoir(
     exclude_categories: list[str] | None,
     preset: str,
     ranking_run_id: int | None = None,
+    cache_only_editorial: bool = False,
 ) -> list:
     """
     Score fresh candidates (coverage-driven + curated authority/UK-lean), then return the
@@ -693,16 +698,23 @@ def _select_reservoir(
     daily edition) applies balance + depth + ceiling on top. Returns `ScoredStory`s so the
     balance step can see scores; excluded categories are filtered out.
 
-    ranking_run_id — enables the LLM EDITORIAL PASS: the top ranked candidates get one
-    cheap Haiku review (cached per run) applying bounded category/significance/top-story
-    corrections BEFORE selection. Purely additive — omit/disable to skip.
+    ranking_run_id — enables the EDITORIAL top_story gate: the reviewed candidates get their
+    persisted significance/top-story flags applied BEFORE selection, so the front-page/region
+    blocks admit only genuine top stories (not high-coverage soft news).
+    cache_only_editorial — read ONLY precomputed flags (no LLM). The flags are computed once
+    at rank time; hot paths (the streaming skeleton) use this so they gate correctly without
+    ever blocking the response on a cold Haiku call. When False, a cold run computes the pass
+    lazily (blocking path) — a safety net if the rank-time precompute was skipped/failed.
     """
     candidates = load_story_ranking_candidates(db)
     scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
 
     if ranking_run_id is not None:
         try:
-            apply_editorial(scored, editorial_adjustments(db, ranking_run_id, scored))
+            if cache_only_editorial:
+                apply_cached_editorial(db, ranking_run_id, scored)
+            else:
+                apply_editorial(scored, editorial_adjustments(db, ranking_run_id, scored))
         except Exception as e:  # never let the editor break assembly
             logging.getLogger(__name__).warning("editorial pass skipped: %s", e)
 
@@ -1089,13 +1101,17 @@ def prepare_bulletin_for_manifest(
             ).scalar()
             is_first = (prior == 0)
 
-        # EDITORIAL DEFERRED: pass ranking_run_id=None so the skeleton selection skips the
-        # Haiku editorial pass — it's cached per run but a cold miss / Anthropic timeout could
-        # otherwise block bulletin_id for up to ~20s. The base coverage + curated-authority +
-        # UK-lean + filter-sequence order is authoritative for the streaming running order.
+        # EDITORIAL top_story GATE — applied here too, from the CACHE only. The flag is
+        # precomputed once at rank time (handle_categorise_completed), so this is a cheap read
+        # that never blocks bulletin_id on a cold Haiku call. This is what makes the streaming
+        # running order significance-gated exactly like the blocking path: the top-stories/region
+        # blocks admit only genuine top stories, so a high-coverage soft story (Sony/gaming) can't
+        # lead. If the run hasn't been reviewed yet, it degrades to base coverage order (no worse
+        # than before) and self-heals on the next run.
         reservoir = _select_reservoir(
             db, include_top_stories=include_top_stories, include_categories=include_categories,
-            exclude_categories=exclude_categories, preset=preset, ranking_run_id=None,
+            exclude_categories=exclude_categories, preset=preset,
+            ranking_run_id=ranking_run_id, cache_only_editorial=True,
         )
         if profile_id is not None:
             ordered, depths = resolve_daily_edition(
