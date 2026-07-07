@@ -401,7 +401,9 @@ struct NowPlayingView: View {
                     }
                 }
             }
-            .frame(width: geo.size.width, alignment: .leading)
+            // Centre the headline vertically in the reserved box so a SHORT (1–2 row) headline
+            // sits balanced instead of pinned to the top with a big empty gap below.
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
         }
         .frame(height: headlineHeight)
     }
@@ -584,16 +586,18 @@ struct NowPlayingView: View {
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                // Netflix-style per-story readiness: pulsing hollow ring while pending, solid disc
-                // when ready. The now-playing row shows the equaliser instead.
+                // SEQUENTIAL readiness (backend readiness is binary, synthesis is forward-order):
+                //   • now-playing row     → equaliser (frozen when paused);
+                //   • the ONE story being synthesised (or a tapped-pending row) → custom spinner;
+                //   • a ready story        → no icon (it's simply no longer greyed);
+                //   • a not-yet-started    → plain/greyed, no icon.
                 Group {
                     if isCurrent {
-                        EqualizerIndicator(color: ink).frame(width: 15, height: 13)
-                    } else if buffering {
-                        ProgressView().scaleEffect(0.7).tint(ink)   // tapped-while-pending → loading
-                    } else {
-                        ReadinessRing(ready: ready, progress: player.synthProgress, color: ink)
+                        EqualizerIndicator(color: ink, animating: player.isPlaying).frame(width: 15, height: 13)
+                    } else if buffering || player.synthesisingUnitIndex == idx {
+                        DownloadSpinner(color: ink)
                     }
+                    // ready or not-yet-started → no icon
                 }
                 .padding(.top, 4)
             }
@@ -722,14 +726,26 @@ private struct SegmentedScrubber: View {
 /// reduce-motion it collapses to a static `waveform` glyph.
 private struct EqualizerIndicator: View {
     let color: Color
+    /// The bars animate ONLY while playing; when paused they FREEZE at a static silhouette.
+    var animating: Bool = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let bars = 4
+    private let frozenHeights: [CGFloat] = [0.55, 0.9, 0.45, 0.75]
 
     var body: some View {
-        if reduceMotion {
-            Image(systemName: "waveform")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(color)
+        if reduceMotion || !animating {
+            // Frozen equaliser silhouette (paused / reduce-motion) — no motion.
+            GeometryReader { geo in
+                let barW = (geo.size.width - CGFloat(bars - 1) * 2) / CGFloat(bars)
+                HStack(alignment: .bottom, spacing: 2) {
+                    ForEach(0..<bars, id: \.self) { i in
+                        Capsule().fill(color)
+                            .frame(width: max(1.5, barW),
+                                   height: max(2, geo.size.height * frozenHeights[i % frozenHeights.count]))
+                    }
+                }
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
+            }
         } else {
             TimelineView(.animation) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
@@ -751,37 +767,31 @@ private struct EqualizerIndicator: View {
     }
 }
 
-// MARK: - Per-story readiness ring (Netflix-style running order)
+// MARK: - Download spinner (custom, iOS-style, for the synthesising row)
 
-/// A small readiness indicator per running-order row: a faintly pulsing hollow ring while the
-/// story's audio is still synthesising, resolving to a solid disc when ready. Not a spinner —
-/// the calm pulse reads as "downloading" without a spin. (The backend readiness is binary per
-/// segment, so this shows pending→ready rather than a precise fill fraction.)
-/// Netflix-download-style progress ring: an empty circle whose arc fills CLOCKWISE from the top
-/// as the story's audio synthesises (`progress` 0…1 — real synthesis progress, not a pulse),
-/// resolving to a SOLID disc the moment it's ready.
-private struct ReadinessRing: View {
-    let ready: Bool
-    let progress: Double   // 0…1 synthesis progress (ignored once `ready`)
+/// A custom black iOS-style spinner (the classic fading spokes), used on the ONE running-order
+/// row that's currently synthesising and on a tapped-pending row — instead of the raw system
+/// ProgressView. Reduce Motion → a static spoke ring (no spin).
+private struct DownloadSpinner: View {
     let color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var spin = false
+    private let spokes = 8
 
     var body: some View {
         ZStack {
-            // Empty track.
-            Circle().stroke(color.opacity(0.20), lineWidth: 1.5)
-            if ready {
-                Circle().fill(color)                       // solid when ready
-            } else {
-                // Fill arc — grows clockwise from 12 o'clock with real synthesis progress.
-                Circle()
-                    .trim(from: 0, to: max(0, min(progress, 1)))
-                    .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(-90))         // start at the top, sweep clockwise
-                    .animation(.easeInOut(duration: 0.45), value: progress)
+            ForEach(0..<spokes, id: \.self) { i in
+                Capsule()
+                    .fill(color.opacity(Double(i + 1) / Double(spokes)))
+                    .frame(width: 1.6, height: 4)
+                    .offset(y: -4.4)
+                    .rotationEffect(.degrees(Double(i) / Double(spokes) * 360))
             }
         }
         .frame(width: 13, height: 13)
-        .animation(.easeInOut(duration: 0.35), value: ready)
+        .rotationEffect(.degrees(reduceMotion ? 0 : (spin ? 360 : 0)))
+        .animation(reduceMotion ? nil : .linear(duration: 0.9).repeatForever(autoreverses: false), value: spin)
+        .onAppear { spin = true }
     }
 }
 
