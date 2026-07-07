@@ -24,7 +24,6 @@ from datetime import date, datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from core.platform.config.settings import settings
 from core.pipeline.data.bulletin.connective import uk_now
 from core.pipeline.data.bulletin.edition import UserDailyEditionRepo, _categories_for
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event
@@ -45,19 +44,6 @@ from core.pipeline.ranking.thresholds import (
 )
 
 logger = logging.getLogger(__name__)
-
-_ensured = False
-
-
-def _ensure_columns(db: Session) -> None:
-    """Idempotent: pin the materialised selection to a ranking run (mirrors editorial_review's
-    runtime ADD COLUMN IF NOT EXISTS pattern — the alembic graph has multiple heads)."""
-    global _ensured
-    if _ensured:
-        return
-    db.execute(text("ALTER TABLE data.user_daily_editions ADD COLUMN IF NOT EXISTS ranking_run_id BIGINT"))
-    db.commit()
-    _ensured = True
 
 
 def _excluder(exclude_categories: list[str] | None):
@@ -234,7 +220,6 @@ def get_materialised_selection(
     """READ-ONLY: the stored materialised (deduped) selection for today, or None if not built
     yet. Used by the streaming skeleton so it matches the final briefing when the preview has
     already materialised it — without ever running the LLM on the first-play path."""
-    _ensure_columns(db)
     day = day or uk_now().date()
     row = db.execute(
         text("""SELECT story_ids, ranking_run_id FROM data.user_daily_editions
@@ -279,7 +264,6 @@ def resolve_materialised_selection(
         )
         return ordered, _depths_for(ordered), latest_run
 
-    _ensure_columns(db)
     day = uk_now().date()
     row = db.execute(
         text("""SELECT story_ids, ranking_run_id FROM data.user_daily_editions
