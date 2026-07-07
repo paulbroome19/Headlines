@@ -1489,9 +1489,9 @@ enum LoaderTiming {
     // window — it's the only stage allowed to hold, absorbing the wait when generation
     // runs long. If generation is faster, the gate dismisses on readiness (no forced hold
     // beyond `minLoaderSeconds`).
-    static let stageSeconds: Double = 2.0        // each paced stage — brisk + readable. Streaming starts
-                                                 // playback at 2 stories (~5–10s), so short stages flick
-                                                 // past and the loader stays alive rather than freezing.
+    static let stageSeconds: Double = 5.0        // each paced stage — a calmer, more readable cadence so
+                                                 // each status word sits long enough to be read (streaming
+                                                 // still starts playback on readiness, not this timer).
     static let pacedStages: Int = 4              // evenly-timed stages covering ~0–8s
     static var visibleStages: Int { pacedStages + 1 }   // + a final dwell stage for overrun
     static var expectedSeconds: Double { stageSeconds * Double(pacedStages) }   // ~8s

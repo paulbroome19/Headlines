@@ -141,6 +141,7 @@ struct HomeView: View {
                 }
             }
             .refreshable { await onRefresh() }
+            .tint(cream)   // pull-to-refresh spinner is off-white so it shows on the dark board
         }
         .padding(boardPad)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -185,6 +186,10 @@ struct HomeView: View {
         // beneath it — with the go-disc on the right. No boxing rules; clean, breathing room.
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 5) {
+                // Faint hairline at the top of the block, spanning the label column (from
+                // "YOUR FULL BRIEFING" across to the disc) — not full-width. No bottom rule.
+                Rectangle().fill(LightColors.ink.opacity(0.12)).frame(height: 1)
+                    .padding(.bottom, 10)
                 Text("YOUR FULL BRIEFING")
                     .font(.label(11)).tracking(2.5)
                     .foregroundColor(LightColors.ink.opacity(0.5))

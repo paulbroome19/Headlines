@@ -189,19 +189,6 @@ struct NowPlayingView: View {
     private func loaderBoard(lineIndex: Int) -> some View {
         let text = loaderLines.indices.contains(lineIndex) ? loaderLines[lineIndex] : "PREPARING"
         return VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(BoardColors.character.opacity(0.75))
-                    .frame(width: 6, height: 6)
-                Text("ASSEMBLING")
-                    .font(.label(11)).tracking(2)
-                    .foregroundColor(BoardColors.character.opacity(0.65))
-                Spacer()
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 16)
-            .padding(.bottom, 14)
-
             // The flicker RESOLVES into the real first-story headline: on loaderComplete
             // (set ~0.5s before playback starts) the status grid crossfades into the SAME
             // `headlineFlapCells` the playback card uses — so by the time the state flips,
@@ -210,11 +197,13 @@ struct NowPlayingView: View {
                 if player.loaderComplete {
                     headlineFlapCells
                         .padding(.horizontal, 16)
+                        .padding(.top, 20)
                         .padding(.bottom, 18)
                         .transition(.opacity)
                 } else {
                     LoaderStatusBoard(text: text, band: lineIndex, reduceMotion: reduceMotion)
                         .padding(.horizontal, 16)
+                        .padding(.top, 20)
                         .padding(.bottom, 18)
                         .transition(.opacity)
                 }
@@ -235,7 +224,7 @@ struct NowPlayingView: View {
     private func loaderProgressBar(fill: Double) -> some View {
         VStack(spacing: 10) {
             HStack {
-                Text("ASSEMBLING YOUR BRIEFING")
+                Text("ASSEMBLING")
                     .font(.label(11)).tracking(2)
                     .foregroundColor(inkMuted)
                 Spacer()
@@ -534,11 +523,7 @@ struct NowPlayingView: View {
     private var tracklist: some View {
         VStack(alignment: .leading, spacing: 0) {
             Rectangle().fill(ink.opacity(0.12)).frame(height: 1)
-            Text("RUNNING ORDER")
-                .font(.label(11)).tracking(2.5)
-                .foregroundColor(inkMuted)
-                .padding(.top, 14)
-                .padding(.bottom, 4)
+            Spacer().frame(height: 12)   // was the "RUNNING ORDER" label; keep breathing room
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 0) {
                     ForEach(Array(player.storyUnits.enumerated()), id: \.offset) { idx, unit in
