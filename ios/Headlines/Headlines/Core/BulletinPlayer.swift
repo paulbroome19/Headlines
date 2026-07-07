@@ -1479,16 +1479,17 @@ enum LoaderTiming {
     // window — it's the only stage allowed to hold, absorbing the wait when generation
     // runs long. If generation is faster, the gate dismisses on readiness (no forced hold
     // beyond `minLoaderSeconds`).
-    static let stageSeconds: Double = 5.0        // each paced stage — a calmer, more readable cadence so
-                                                 // each status word sits long enough to be read (streaming
-                                                 // still starts playback on readiness, not this timer).
-    static let pacedStages: Int = 4              // evenly-timed stages covering ~0–8s
+    static let stageSeconds: Double = 4.0        // each paced stage — a brisk-but-readable cadence (tuned
+                                                 // down from 5s now the connective-split backend cuts
+                                                 // time-to-first-play; streaming still starts playback on
+                                                 // readiness, not this timer).
+    static let pacedStages: Int = 4              // evenly-timed stages covering ~0–16s
     static var visibleStages: Int { pacedStages + 1 }   // + a final dwell stage for overrun
-    static var expectedSeconds: Double { stageSeconds * Double(pacedStages) }   // ~8s
+    static var expectedSeconds: Double { stageSeconds * Double(pacedStages) }   // ~16s
     // Small ABSOLUTE floor so a cached/instant briefing shows a readable stage or two rather
-    // than flashing — DECOUPLED from stageSeconds so a longer, calmer stage cadence doesn't
-    // drag the fast/cached path out (at stageSeconds=5 the old `stageSeconds * 2` forced a 10s
-    // hold on already-ready briefings). A fast briefing still dismisses on readiness above this.
+    // than flashing — DECOUPLED from stageSeconds so the paced stage cadence doesn't drag the
+    // fast/cached path out (a `stageSeconds * 2` rule would force an 8s hold on already-ready
+    // briefings). A fast briefing still dismisses on readiness above this floor.
     static let minLoaderSeconds: Double = 4.0
     /// The bar climbs on the timer to this ceiling across the stages; the FINAL raise to
     /// 1.0 is done on ready (BulletinPlayer.loaderComplete) — a justified final jump.
