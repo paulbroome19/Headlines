@@ -92,8 +92,6 @@ def test_trusted_outranks_unknown_same_coverage():
     trusted = _score(_cand("t", "politics.world", ("BBC",)))
     unknown = _score(_cand("u", "politics.world", ("Mirage News",)))
     assert trusted.importance > unknown.importance
-    assert trusted.lead_eligible is True
-    assert unknown.lead_eligible is False
 
 
 def test_authority_bonus_and_boost():

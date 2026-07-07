@@ -8,10 +8,7 @@ from typing import Any
 from sqlalchemy import text
 
 from core.platform.db.session import SessionLocal
-from core.platform.queue.event import Event
-from core.platform.queue.outbox import OutboxRepo
 
-from core.pipeline.data.summarise.events import DATA_SUMMARISE_COMPLETED
 from core.pipeline.data.summarise.llm_summariser import summarise_story, _model
 from core.pipeline.data.summarise.repos.story_summary_repo import StorySummaryRepo
 
@@ -223,58 +220,9 @@ def ensure_story_summaries(
     return counts
 
 
-def handle_rank_completed(event: dict) -> None:
-    """
-    Triggered by: data.rank.completed
-
-    Delegates to ensure_story_summaries() for the actual work, then emits
-    DATA_SUMMARISE_COMPLETED via the outbox.
-
-    NOTE: pull_stories no longer calls this handler directly. It is retained
-    for the event-driven path (registry_wiring) in case the event queue is used.
-    """
-    payload = event.get("payload") or {}
-    ranking_run_id = payload.get("ranking_run_id")
-    ranking_batch_id = payload.get("ranking_batch_id") or ""
-    top_story_ids: list[str] = payload.get("top_story_ids") or []
-    briefing_story_ids: list[str] = payload.get("briefing_story_ids") or []
-    trace_id = event.get("trace_id")
-
-    if ranking_run_id is None:
-        return
-
-    seen: set[str] = set()
-    ordered_story_ids: list[str] = []
-    for sid in top_story_ids + briefing_story_ids:
-        if sid not in seen:
-            seen.add(sid)
-            ordered_story_ids.append(sid)
-
-    counts = ensure_story_summaries(ranking_run_id, ordered_story_ids)
-    _emit_completed(ranking_run_id, ranking_batch_id, counts, trace_id)
-
-
-def _emit_completed(
-    ranking_run_id: int,
-    ranking_batch_id: str,
-    counts: dict[str, int],
-    trace_id: str | None,
-) -> None:
-    with SessionLocal() as db:
-        OutboxRepo(db).add_event(Event(
-            type=DATA_SUMMARISE_COMPLETED,
-            idempotency_key=f"summarise.completed:{ranking_batch_id}",
-            payload={
-                "ranking_run_id": ranking_run_id,
-                "ranking_batch_id": ranking_batch_id,
-                "attempted": counts["attempted"],
-                "generated": counts["generated"],
-                "reused": counts["reused"],
-                "failed": counts["failed"],
-            },
-            trace_id=trace_id,
-        ))
-        db.commit()
+# The eager event handler (handle_rank_completed) + its DATA_SUMMARISE_COMPLETED emit were
+# removed (audit §6/§7 B.3): summarisation is LAZY — ensure_story_summaries above is called
+# inline at bulletin-assembly time in routes/data.py for the stories a briefing selects.
 
 
 # Bump when the summary SPEC changes (depth word targets / prompt), to invalidate cached

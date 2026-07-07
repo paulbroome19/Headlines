@@ -53,11 +53,6 @@ class ScoredStory:
     # Day-level importance model (coverage-driven; see docs/ranking-depth-design.md).
     importance: float = 0.0        # coverage · prominence · freshness · category_tiebreak · source_authority
     normalized_score: float = 0.0  # importance mapped to 0–10 (the threshold axis)
-    # True if a trusted/active outlet makes this story eligible for a lead slot
-    # (global tier / specialist / region-active regional). Unknown-only or
-    # excluded-only stories are False → supplementary, never lead. Region-gated
-    # eligibility is finalised in thresholds.py once selected regions are known.
-    lead_eligible: bool = False
 
 
 @dataclass(slots=True)

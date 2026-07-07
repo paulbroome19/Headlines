@@ -3,14 +3,11 @@ from __future__ import annotations
 import logging
 
 from core.platform.db.session import SessionLocal
-from core.platform.queue.event import Event
-from core.platform.queue.outbox import OutboxRepo
 
 from core.pipeline.data.bulletin.editorial_review import precompute_editorial_for_run
 from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
 from core.pipeline.ranking.category_ranker import get_category_weight
 from core.pipeline.ranking.config import RANKED_LIST_WINDOW_HOURS
-from core.pipeline.ranking.events import DATA_RANK_COMPLETED
 from core.pipeline.ranking.ranked_list import maintain_ranked_list
 from core.pipeline.ranking.ranker import StoryRanker
 from core.pipeline.ranking.repos.ranking_run_repo import RankingRunRepo
@@ -25,12 +22,13 @@ def handle_categorise_completed(event: dict) -> None:
 
     Responsibilities:
     - Load all recent story candidates (last 48h) from the DB
-    - Run StoryRanker to produce top_stories + briefing
-    - Persist the result to data.ranking_runs
-    - Emit data.rank.completed (same transaction)
+    - Run StoryRanker to produce top_stories + briefing, persist to data.ranking_runs
+      (read by the cached-bulletin path + /ranking endpoints)
+    - Precompute the editorial top_story flags and maintain the stable ranked list
 
-    Ranking is global: it considers all recent stories, not just those in
-    this batch. The categorisation_batch_id is used only for idempotency.
+    This is where the event-driven INGEST cascade ends; the generate path (summarise →
+    assemble → TTS) runs inline in routes/data.py, not via events. Ranking is global: it
+    considers all recent stories. categorisation_batch_id is used only for idempotency.
     """
     payload = event.get("payload") or {}
     categorisation_batch_id = payload.get("categorisation_batch_id") or ""
@@ -50,23 +48,9 @@ def handle_categorise_completed(event: dict) -> None:
             briefing=result.briefing,
         )
 
-        outbox = OutboxRepo(db)
-        outbox.add_event(
-            Event(
-                type=DATA_RANK_COMPLETED,
-                idempotency_key=f"rank.completed:{categorisation_batch_id}",
-                payload={
-                    "ranking_run_id": run_id,
-                    "ranking_batch_id": categorisation_batch_id,
-                    "categorisation_batch_id": categorisation_batch_id,
-                    "top_story_ids": [s.story_id for s in result.top_stories],
-                    "briefing_story_ids": [s.story_id for s in result.briefing],
-                },
-            )
-        )
-
-        # Commit the CRITICAL PATH (ranking run + rank.completed event) first — the editorial
-        # precompute below must never be able to lose the downstream event if it fails.
+        # Commit the ranking run first — the editorial precompute below is best-effort and must
+        # never be able to roll it back. (The old data.rank.completed emit had no consumer —
+        # summarisation is lazy in routes/data.py — and was removed: audit §6/§7 B.2.)
         db.commit()
 
         # Precompute the editorial top_story flags for this run, off the request path, so BOTH
