@@ -37,10 +37,10 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(player.isPlaying, player.intendedPlaying)
     }
 
-    // MARK: - Loader stage pacing (brisk ~2s stages over a ~8s window; last stage dwells)
+    // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
 
     /// Paced stages advance one per `stageSeconds` purely from elapsed time — no backend
-    /// input — evenly across the ~8s window; the final stage holds (dwell).
+    /// input — evenly across the ~16s window; the final stage holds (dwell).
     func testLoaderStagesAdvanceEvenlyOnTimer() {
         let s = LoaderTiming.stageSeconds
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: 0),       0)
@@ -48,13 +48,13 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: s * 1.5), 1)
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: s * 2.5), 2)
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: s * 3.5), 3)
-        // Each paced stage spans exactly stageSeconds (~2.0s) — brisk, none dwells alone.
-        XCTAssertEqual(LoaderTiming.stageSeconds, 2.0, accuracy: 0.001)
+        // Each paced stage spans exactly stageSeconds (~4.0s) — brisk, none dwells alone.
+        XCTAssertEqual(LoaderTiming.stageSeconds, 4.0, accuracy: 0.001)
     }
 
     /// The bug this guards: a slow manifest must NOT strand the loader on stage 1. Only the
     /// final (dwell) stage holds; stage 1 ends exactly at its first boundary, and past the
-    /// ~8s window we're on the dwell stage.
+    /// ~16s window we're on the dwell stage.
     func testLoaderStage1NeverFreezes() {
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: LoaderTiming.stageSeconds - 0.01), 0)
         XCTAssertEqual(LoaderTiming.stageIndex(elapsed: LoaderTiming.stageSeconds + 0.01), 1)
@@ -80,10 +80,10 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(LoaderTiming.barFill(elapsed: s * 2.5) - LoaderTiming.barFill(elapsed: s * 1.5), step, accuracy: 0.001)
     }
 
-    /// The expected window is ~8s (4 paced stages × 2.0s), plus a dwell stage; the
+    /// The expected window is ~16s (4 paced stages × 4.0s), plus a dwell stage; the
     /// fast-path floor is small (dismiss on ready), not the full window.
     func testLoaderExpectedWindowAndFloor() {
-        XCTAssertEqual(LoaderTiming.expectedSeconds, 8.0, accuracy: 0.001)
+        XCTAssertEqual(LoaderTiming.expectedSeconds, 16.0, accuracy: 0.001)
         XCTAssertEqual(LoaderTiming.visibleStages, 5)   // 4 paced + 1 dwell
         XCTAssertLessThan(LoaderTiming.minLoaderSeconds, LoaderTiming.expectedSeconds)
     }
