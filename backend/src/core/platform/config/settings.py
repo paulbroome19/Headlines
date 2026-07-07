@@ -119,7 +119,6 @@ class Settings(BaseSettings):
     tts_style: float = 0.15
     tts_use_speaker_boost: bool = True
     elevenlabs_api_key: str | None = None
-    openai_api_key: str | None = None
 
 
 settings = Settings()

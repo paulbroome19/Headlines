@@ -1,9 +1,12 @@
 """
-TTS client abstraction. Supports elevenlabs and openai providers.
-Uses stdlib urllib — no new dependencies.
+ElevenLabs TTS client. Uses stdlib urllib — no new dependencies.
+
+(An OpenAI TTS provider path existed here historically but was never used in prod —
+TTS_PROVIDER has only ever been elevenlabs — so it was removed. Re-add from git
+history if a second provider is ever needed.)
 
 Configuration (environment variables):
-  TTS_PROVIDER            elevenlabs | openai   (default: elevenlabs)
+  TTS_PROVIDER            elevenlabs            (default: elevenlabs)
   TTS_VOICE               voice id / name       (default: 19STyYD15bswVz51nqLf — ElevenLabs voice)
   TTS_MODEL               model id              (default: eleven_multilingual_v2)
   TTS_AUDIO_FORMAT        format string         (default: mp3_44100_128)
@@ -11,8 +14,7 @@ Configuration (environment variables):
   TTS_SIMILARITY_BOOST    ElevenLabs 0.0–1.0    (default: 0.75)
   TTS_STYLE               ElevenLabs 0.0–1.0    (default: 0.15)
   TTS_USE_SPEAKER_BOOST   true | false          (default: true)
-  ELEVENLABS_API_KEY      required when provider=elevenlabs
-  OPENAI_API_KEY          required when provider=openai
+  ELEVENLABS_API_KEY      required
 """
 from __future__ import annotations
 
@@ -29,16 +31,12 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_SECONDS = 60
 
 _ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-_OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech"
 
 # Defaults
 _DEFAULT_PROVIDER = "elevenlabs"
 _DEFAULT_VOICE_ELEVENLABS = "19STyYD15bswVz51nqLf"   # keep in sync with settings.tts_voice
-_DEFAULT_VOICE_OPENAI = "onyx"
 _DEFAULT_MODEL_ELEVENLABS = "eleven_multilingual_v2"   # keep in sync with settings.tts_model
-_DEFAULT_MODEL_OPENAI = "tts-1"
 _DEFAULT_FORMAT_ELEVENLABS = "mp3_44100_128"
-_DEFAULT_FORMAT_OPENAI = "mp3"
 
 
 def tts_provider() -> str:
@@ -248,8 +246,6 @@ def synthesize(
     """
     if provider == "elevenlabs":
         return _elevenlabs(text, voice=voice, model=model, audio_format=audio_format)
-    if provider == "openai":
-        return _openai(text, voice=voice, model=model)
     logger.warning("tts_client: unknown provider %r — skipping", provider)
     return None
 
@@ -313,49 +309,4 @@ def _elevenlabs(text: str, *, voice: str, model: str, audio_format: str) -> byte
         return None
 
     logger.info("tts_client ElevenLabs OK  bytes=%d  voice=%s  model=%s", len(audio_bytes), voice, model)
-    return audio_bytes
-
-
-# ── OpenAI ────────────────────────────────────────────────────────────────────
-
-def _openai(text: str, *, voice: str, model: str) -> bytes | None:
-    api_key = settings.openai_api_key
-    logger.debug("tts_client OpenAI: api_key present=%s  voice=%s  model=%s", bool(api_key), voice, model)
-    if not api_key:
-        logger.warning("tts_client: OPENAI_API_KEY not set — skipping TTS")
-        return None
-
-    body = json.dumps({
-        "model": model,
-        "voice": voice,
-        "input": text,
-        "response_format": "mp3",
-    }).encode()
-
-    req = urllib.request.Request(
-        _OPENAI_TTS_URL,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
-            audio_bytes = resp.read()
-    except urllib.error.HTTPError as e:
-        body_snippet = e.read(512).decode(errors="replace")
-        logger.warning("tts_client OpenAI HTTP %s: %s — %s", e.code, e.reason, body_snippet)
-        return None
-    except Exception as e:
-        logger.warning("tts_client OpenAI error: %s", e)
-        return None
-
-    if not audio_bytes:
-        logger.warning("tts_client OpenAI returned empty response")
-        return None
-
-    logger.info("tts_client OpenAI OK  bytes=%d  voice=%s  model=%s", len(audio_bytes), voice, model)
     return audio_bytes
