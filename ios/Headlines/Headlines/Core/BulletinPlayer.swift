@@ -125,9 +125,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// Loader fill (0–1) shown while `playerState == .preparing`. Smooth + asymptotic;
     /// only reaches 1.0 when audio actually starts. See LoadProgressModel.
     @Published private(set) var loadProgress: Double = 0
-    /// Set true for a beat when the briefing is READY, so the loader bar does its final
-    /// raise to 100% (see LoaderTiming.barFill / nearFullCeiling) before the loader
-    /// dismisses — the justified final jump. Reset per load.
+    /// Set true for a beat when the briefing is READY, so the loader board crossfades to the
+    /// real first-story headline (pre-resolving the morph) before the loader dismisses into
+    /// playback. Also fires the "briefing ready" haptic. Reset per load.
     @Published private(set) var loaderComplete = false
 
     /// STREAMING: per-segment-index audio readiness (from /readiness), driving the Netflix-style
@@ -212,6 +212,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private var _heldEnqueue     = false
     private var _readinessPollTask: Task<Void, Never>?
     private var _allReady        = false
+    // The skeleton manifest iOS first receives is PRE-dedup; the backend overwrites the stored
+    // segments with the deduped set a few seconds into playback (after safe_to_start). When we
+    // detect that shrink via /readiness we rebuild our running order once to match what actually
+    // plays (see reconcileEditionIfShrunk). This guards against re-running that rebuild.
+    private var _editionReconciled = false
     // A tap on a PENDING (nil-url) story records the intent WITHOUT tearing down what's playing;
     // applyReadiness fulfils it (seek + play) the moment that story's start segment synthesises.
     private var pendingTapUnitIndex: Int?
@@ -259,6 +264,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         _profileId = profileId
         loadProgress = 0
         loaderComplete = false
+        _editionReconciled = false
         playerState = .loadingManifest
 
         do {
@@ -382,10 +388,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(tickInterval * 1_000_000_000))
         }
 
-        // READY: the justified final raise — complete the bar from `nearFullCeiling` to
-        // 100% and hold a beat so it's visibly seen finishing before the loader dismisses.
+        // READY: pre-resolve the morph — the loader board crossfades to the real first-story
+        // headline and holds a beat, so the board content already matches its playback
+        // destination before the state flips (seamless flip-board → now-playing-card morph).
         loaderComplete = true
-        try? await Task.sleep(nanoseconds: 500_000_000)   // ~0.5s — bar animates 90%→100%
+        try? await Task.sleep(nanoseconds: 500_000_000)   // ~0.5s — board crossfades to the headline
 
         // Ready (or gave up): enqueue and start. Hold near-complete but < 1.0 — audio
         // actually starting is what snaps loadProgress to 1.0 (handleTimeControlStatus).
@@ -465,6 +472,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// held enqueue. Returns whether everything is now ready (so the poll can stop).
     @discardableResult
     private func applyReadiness(_ r: BulletinReadiness) -> Bool {
+        // COUNT RECONCILE: the backend overwrites its stored segments with the DEDUPED set a few
+        // seconds into playback (same-event dedup / a dropped-because-unsummarised story). From
+        // that point /readiness re-indexes a SHORTER list, so the by-index merge below would
+        // misalign and our running order would show phantom stories that never get audio. Detect
+        // that shrink and rebuild our list to match the authoritative set BEFORE merging by index.
+        if reconcileEditionIfShrunk(r) { return _allReady }
+
         var changed = false
         for rs in r.segments where rs.index >= 0 && rs.index < segments.count && rs.isReady {
             if segments[rs.index].url == nil, let u = rs.url, !u.isEmpty {
@@ -482,6 +496,88 @@ final class BulletinPlayer: NSObject, ObservableObject {
         fulfilPendingTapIfReady()                                 // a pending-tapped story may now be playable
         _allReady = (r.allReady == true)
         return _allReady
+    }
+
+    /// True once the backend's DEDUPED overwrite has landed — i.e. /readiness now reports FEWER
+    /// distinct stories than our (pre-dedup skeleton) running order, and every remaining story was
+    /// already in our list. Distinct story_ids, so a split lead (opener+remainder, same id) counts
+    /// once. Never fires before the overwrite (the skeleton keeps all story_ids until then).
+    private func editionShrank(_ r: BulletinReadiness) -> Bool {
+        let ready = Set(r.segments.filter { $0.type == "story" }.compactMap { $0.storyId })
+        guard !ready.isEmpty else { return false }
+        let held = Set(_storySegments.compactMap { $0.storyId })
+        return ready.count < held.count && ready.isSubset(of: held)
+    }
+
+    /// Rebuild the running order to the authoritative post-dedup set the moment we detect the
+    /// shrink, so the story count/tracklist match the stories that actually play (and playback
+    /// doesn't hang at the end waiting on a phantom slot that never gets audio).
+    ///
+    /// Built FROM the readiness snapshot — its indices are contiguous and are the SAME indices
+    /// every later /readiness poll uses, so the by-index merge stays aligned afterwards. Titles /
+    /// hashes / sources (which readiness doesn't carry) are backfilled by story_id from our held
+    /// segments; the deduped set is always a subset of what we already had, so the lookup hits.
+    ///
+    /// Safe mid-playback: dedup never drops or reorders the lead (index 0), so the segment playing
+    /// now is unaffected; enqueue is HELD on a not-yet-synthesised later segment, so resuming it on
+    /// the corrected array picks up the right next story. Returns true if it reconciled this call.
+    @discardableResult
+    private func reconcileEditionIfShrunk(_ r: BulletinReadiness) -> Bool {
+        guard !_editionReconciled, editionShrank(r) else { return false }
+        _editionReconciled = true
+
+        // Backfill maps from the current (pre-dedup) held segments, keyed by story_id.
+        var titleBy = [String: String](), hashBy = [String: String](), srcBy = [String: [String]]()
+        for s in segments where s.type == "story" {
+            guard let sid = s.storyId else { continue }
+            if let t = s.title, titleBy[sid] == nil { titleBy[sid] = t }
+            if let h = s.storyHash, hashBy[sid] == nil { hashBy[sid] = h }
+            if let src = s.sources, srcBy[sid] == nil { srcBy[sid] = src }
+        }
+
+        // Rebuild the segment list from the authoritative (deduped) readiness snapshot.
+        segments = r.segments.sorted { $0.index < $1.index }.map { rs -> ManifestSegment in
+            let sid = rs.storyId
+            let realDur = (rs.durationMs ?? 0) > 0 ? rs.durationMs : nil
+            var ms = ManifestSegment(
+                index:      rs.index,
+                type:       rs.type,
+                url:        (rs.url?.isEmpty == false) ? rs.url : nil,
+                durationMs: realDur,
+                storyHash:  sid.flatMap { hashBy[$0] },
+                storyId:    sid,
+                title:      sid.flatMap { titleBy[$0] },
+                sources:    sid.flatMap { srcBy[$0] }
+            )
+            if ms.durationMs == nil { ms.durationMs = Int(Self.estimatedSeconds(ms) * 1000) }
+            return ms
+        }
+
+        segmentReady = [:]
+        for s in segments where s.url != nil { segmentReady[s.index] = true }
+        rebuildTimeline()
+
+        // Re-anchor the enqueue frontier to just after what's ALREADY enqueued (the lead, which
+        // dedup never touches) — NOT the stale old index, which could skip the surviving next
+        // story once earlier indices shifted. Nothing enqueued yet (still in the gate) → start
+        // from the top; the gate's own setup then enqueues normally.
+        if let maxEnqueued = itemSegmentMap.values.map(\.index).max(),
+           let pos = segments.firstIndex(where: { $0.index == maxEnqueued }) {
+            nextEnqueueIdx = pos + 1
+        } else {
+            nextEnqueueIdx = 0
+        }
+        // Keep the current-unit highlight on the segment actually playing now.
+        if let cur = currentSegment, let u = _storyUnits.first(where: { $0.owns(segmentIndex: cur.index) }) {
+            currentUnitIndex = u.index
+        } else {
+            currentUnitIndex = min(currentUnitIndex, max(0, _storyUnits.count - 1))
+        }
+        _heldEnqueue = false
+        enqueueNext()                 // no-op if no player yet, or re-holds on the next nil-url segment
+        fulfilPendingTapIfReady()
+        _allReady = (r.allReady == true)
+        return true
     }
 
     /// If the user tapped a PENDING story earlier, play it now that its start segment's audio has
@@ -858,6 +954,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         _readinessPollTask = nil
         _heldEnqueue = false
         _allReady = false
+        _editionReconciled = false
         pendingTapUnitIndex = nil
         bufferingUnitIndex  = nil
         segmentReady = [:]
@@ -1491,25 +1588,12 @@ enum LoaderTiming {
     // fast/cached path out (a `stageSeconds * 2` rule would force an 8s hold on already-ready
     // briefings). A fast briefing still dismisses on readiness above this floor.
     static let minLoaderSeconds: Double = 4.0
-    /// The bar climbs on the timer to this ceiling across the stages; the FINAL raise to
-    /// 1.0 is done on ready (BulletinPlayer.loaderComplete) — a justified final jump.
-    static let nearFullCeiling: Double = 0.9
 
     /// Which stage (0-based) is showing at `elapsed` seconds — PURELY from the timer, not
     /// backend progress. Advances one stage every `stageSeconds` (evenly), clamped at the
     /// final dwell stage, which then holds until the gate dismisses the loader on readiness.
     static func stageIndex(elapsed: Double) -> Int {
         max(0, min(visibleStages - 1, Int(elapsed / stageSeconds)))
-    }
-
-    /// Determinate bar fill (0–1) at `elapsed` seconds. EVEN CHUNK PER STAGE: each stage
-    /// bumps the bar by an equal step (≈ ceiling / visibleStages), so it climbs steadily
-    /// and evenly with the status words — no long freeze at the start OR the end. Reaches
-    /// `nearFullCeiling` at the final (dwell) stage; the gate raises it to 1.0 on ready.
-    /// A view-side `.animation` ramps each step so the bumps read as a smooth climb.
-    static func barFill(elapsed: Double) -> Double {
-        let stage = stageIndex(elapsed: elapsed)            // 0 … visibleStages-1
-        return nearFullCeiling * Double(stage + 1) / Double(visibleStages)
     }
 }
 
