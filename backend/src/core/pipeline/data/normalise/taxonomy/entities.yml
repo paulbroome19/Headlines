@@ -10,6 +10,19 @@ version: 1
 #
 # For person-led stories: classify via contextual keywords in rules.yml (e.g. "alleged victims",
 # "roland garros", "formula 1") — not via adding the person to this file.
+#
+# ANCHOR ELIGIBILITY (clustering) — optional `anchor_eligible: false` on an entity (default true).
+#   DEMOTE (anchor_eligible: false) when the entity is an INSTITUTION or VENUE that generates
+#   CONTINUOUS, UNRELATED coverage — many distinct events happen "under its roof" (a government
+#   building, a legislature, an alliance): white-house, congress, senate, european-union, nato,
+#   united-nations — and, if ever added, downing-street, pentagon, kremlin, un/eu variants.
+#   As a bare cluster key these collapse unrelated events (a summit, a scandal, a visit, a sports
+#   comment) into one multi-day mega-cluster (audit risk #2: nato = 51 articles/5 days;
+#   white-house = 6 unrelated stories). They fall to the richer hint path (first-title-word +
+#   category), which clusters by the actual event.
+#   KEEP as anchors (default true) EVENT-BOUND entities — teams, companies, indexes, and the
+#   narrower institutions whose coverage centres on one story at a time (Bank of England,
+#   Federal Reserve, HMRC) — where the entity slug alone is a good story anchor.
 
 entities:
 
@@ -38,6 +51,7 @@ entities:
   white-house:
     display_name: "White House"
     entity_type: "organisation"
+    anchor_eligible: false   # broad venue — continuous unrelated coverage (audit risk #2)
     aliases:
       - "white house"
     categories:
@@ -46,6 +60,7 @@ entities:
   congress:
     display_name: "US Congress"
     entity_type: "organisation"
+    anchor_eligible: false   # broad legislature — continuous unrelated coverage (audit risk #2)
     aliases:
       - "congress"
       - "us congress"
@@ -55,6 +70,7 @@ entities:
   senate:
     display_name: "US Senate"
     entity_type: "organisation"
+    anchor_eligible: false   # broad legislature — continuous unrelated coverage (audit risk #2)
     aliases:
       - "senate"
       - "us senate"
@@ -64,6 +80,7 @@ entities:
   european-union:
     display_name: "European Union"
     entity_type: "organisation"
+    anchor_eligible: false   # broad institution — continuous unrelated coverage (audit risk #2)
     aliases:
       - "european union"
       - "eu"
@@ -76,6 +93,7 @@ entities:
   nato:
     display_name: "NATO"
     entity_type: "organisation"
+    anchor_eligible: false   # broad alliance — continuous unrelated coverage (audit risk #2)
     aliases:
       - "nato"
     categories:
@@ -85,6 +103,7 @@ entities:
   united-nations:
     display_name: "United Nations"
     entity_type: "organisation"
+    anchor_eligible: false   # broad institution — continuous unrelated coverage (audit risk #2)
     aliases:
       - "united nations"
       - "u.n."

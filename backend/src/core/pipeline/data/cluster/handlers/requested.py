@@ -7,6 +7,14 @@ from core.platform.queue.event import Event
 from core.platform.queue.outbox import OutboxRepo
 
 from core.pipeline.data.cluster.events import DATA_CLUSTER_COMPLETED
+from core.pipeline.data.normalise.categorise.entity_loader import load_entity_registry
+
+# How long a cluster may keep absorbing articles, measured from its FIRST article. This is a hard
+# age cap (unlike the sliding last_published_at recency check, which extends every match and let a
+# continuously-covered entity blob for days — audit risk #2). It aligns cluster lifetime with the
+# ~36h ranking candidate window: nothing needs to keep growing longer than it can be selected.
+_CLUSTER_MAX_AGE_HOURS = 48
+_CLUSTER_RECENCY_HOURS = 24
 
 
 def _normalize_title(title: str) -> str:
@@ -62,7 +70,7 @@ _HINT_STOPWORDS: frozenset[str] = frozenset({
 def _extract_title_hint(title: str) -> str | None:
     """Return the first non-stopword token from title (>=4 chars), or None.
 
-    Used only when an article has no primary entity. Combined with category,
+    Used when an article has no ANCHOR-eligible primary entity. Combined with category,
     it forms a two-condition dedup key so unrelated stories sharing a common
     word (e.g. "hamilton" in sport vs finance) do not incorrectly merge.
     """
@@ -73,6 +81,36 @@ def _extract_title_hint(title: str) -> str | None:
     return None
 
 
+def is_clustering_anchor(entity: str | None, entity_type: str | None, anchor_eligible: bool) -> bool:
+    """Whether a story may anchor on this entity's slug ALONE. Countries match too many unrelated
+    articles; broad institutions/venues flagged `anchor_eligible: false` in entities.yml (nato,
+    white-house…) generate continuous unrelated coverage and would collapse distinct events into
+    one mega-cluster. Both fall to the narrower hint path instead. Specific orgs / teams /
+    companies / persons / indexes stay anchors."""
+    return entity is not None and entity_type != "country" and anchor_eligible
+
+
+def _top_category(category: str | None) -> str | None:
+    """Top-level slug (politics.us -> politics). Anchor matches are gated on this so one entity
+    can no longer merge across topics (white-house culture vs sport vs world). Top-level, not the
+    full slug, so it stays stable against sub-category categoriser noise."""
+    return category.split(".")[0] if category else None
+
+
+def cluster_bucket(*, entity, entity_type, anchor_eligible, category, title) -> str:
+    """Canonical merge identity: two articles WITHIN the age window join the same cluster iff they
+    share this bucket. Anchors bucket on (entity, top-level-category); demoted / entity-less
+    articles bucket on (first-title-word, category) — the hint path; the rest on the normalized
+    title. This mirrors the match conditions + key derivation in handle_cluster_requested below,
+    and is the unit-tested spec for them."""
+    if is_clustering_anchor(entity, entity_type, anchor_eligible):
+        return f"entity:{entity}:{_top_category(category) or ''}"
+    hint = _extract_title_hint(title)
+    if category and hint:
+        return f"hint:{hint}:{category}"
+    return f"none:{_normalize_title(title)}"
+
+
 def handle_cluster_requested(event: dict) -> None:
     payload = event.get("payload") or {}
     ingestion_run_id = payload.get("ingestion_run_id")
@@ -80,6 +118,9 @@ def handle_cluster_requested(event: dict) -> None:
 
     if not ingestion_run_id:
         raise ValueError("missing ingestion_run_id")
+
+    # Load the entity registry ONCE per run (not per article) for the anchor-eligibility flag.
+    registry = load_entity_registry()
 
     with SessionLocal() as db:
 
@@ -127,13 +168,14 @@ def handle_cluster_requested(event: dict) -> None:
             entity = entity_row["slug"] if entity_row else None
             entity_type = entity_row["entity_type"] if entity_row else None
 
-            # Countries match too many unrelated articles (any article that
-            # mentions a country in passing gets that entity). Using a country
-            # as the sole dedup key would merge gaming news, diplomacy, and
-            # crime articles just because they all say "United States".
-            # Specific orgs, teams, persons, and indexes are narrow enough to
-            # anchor a story. Countries are not.
-            is_clustering_anchor = entity is not None and entity_type != "country"
+            # Countries match too many unrelated articles; broad institutions/venues flagged
+            # anchor_eligible=false in entities.yml (nato, white-house…) do the same. Both are too
+            # broad to be a sole cluster key, so they fall to the narrower hint path. Specific
+            # orgs / teams / persons / companies / indexes anchor a story. (See is_clustering_anchor.)
+            meta = registry.slug_map.get(entity) if entity else None
+            anchor_eligible = meta.anchor_eligible if meta is not None else True
+            anchoring = is_clustering_anchor(entity, entity_type, anchor_eligible)
+            top_category = _top_category(category)
 
             normalized_title = _normalize_title(title)
 
@@ -142,21 +184,30 @@ def handle_cluster_requested(event: dict) -> None:
             # --------------------------------------------------
             story_id = None
 
-            if is_clustering_anchor:
-                # Entity-based dedup: same specific entity within 24h → same story.
-                # Only non-country entities qualify (see is_clustering_anchor above).
+            if anchoring:
+                # Entity-based dedup: same specific entity → same story, but bounded so a
+                # high-frequency entity can't mega-blob (audit risk #2):
+                #   - first_published_at cap (48h): a HARD age limit from the cluster's birth, so
+                #     it rolls over to a fresh, coherent cluster instead of sliding for days;
+                #   - last_published_at recency (24h): don't attach to a stale cluster;
+                #   - top-level category gate: one entity no longer merges across topics
+                #     (e.g. a sports comment vs a diplomacy story under the same org).
                 story = db.execute(
                     text(
                         """
                         SELECT id
                         FROM data.stories
                         WHERE primary_entity_slug = :entity
-                          AND last_published_at > NOW() - INTERVAL '24 hours'
+                          AND first_published_at > NOW() - make_interval(hours => :max_age)
+                          AND last_published_at  > NOW() - make_interval(hours => :recency)
+                          AND (:top_category IS NULL
+                               OR split_part(primary_category, '.', 1) = :top_category)
                         ORDER BY last_published_at DESC
                         LIMIT 1
                         """
                     ),
-                    {"entity": entity},
+                    {"entity": entity, "max_age": _CLUSTER_MAX_AGE_HOURS,
+                     "recency": _CLUSTER_RECENCY_HOURS, "top_category": top_category},
                 ).scalar_one_or_none()
                 if story:
                     story_id = story
@@ -190,7 +241,7 @@ def handle_cluster_requested(event: dict) -> None:
             # --------------------------------------------------
             # Derive story_key for new stories
             # --------------------------------------------------
-            if is_clustering_anchor:
+            if anchoring:
                 story_key = f"{entity}|{normalized_title}"
             elif category and (hint := _extract_title_hint(title)):
                 story_key = f"hint:{hint}:{category}|{normalized_title}"

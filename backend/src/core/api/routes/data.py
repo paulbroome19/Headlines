@@ -67,7 +67,7 @@ from core.pipeline.data.bulletin.audio.tts_client import (
 from core.pipeline.data.bulletin.audio.segment_synth import (
     synthesize_segments, synthesize_segment, synthesize_parallel,
 )
-from core.pipeline.data.summarise.handlers.rank_completed import ensure_story_summaries
+from core.pipeline.data.summarise.handlers.rank_completed import ensure_story_summaries, _compute_content_hash
 from core.pipeline.data.bulletin.audio.repos.segment_audio_repo import SegmentAudioRepo
 from core.pipeline.data.bulletin.audio.repos.segment_audio_failure_repo import SegmentAudioFailureRepo
 from core.pipeline.data.bulletin.audio.repos.bulletin_audio_repo import BulletinAudioRepo
@@ -263,6 +263,20 @@ def _standfirst(summary_text: str | None) -> str | None:
     return cut + "…"
 
 
+def _coherent_standfirst(
+    summary_text: str | None, summary_content_hash: str | None, current_content_hash: str | None
+) -> str | None:
+    """Guard the headline↔standfirst mismatch (audit risk #3). The preview headline is the LIVE
+    representative article; the standfirst is the latest cached summary. If that summary was built
+    from different articles than the story's current top-5 (content_hash differs — the
+    representative shifted, e.g. an over-merged cluster moved to another event), SUPPRESS the
+    standfirst rather than show text about a different event. When either hash is missing we can't
+    compare, so keep the standfirst (back-compat)."""
+    if summary_content_hash and current_content_hash and summary_content_hash != current_content_hash:
+        return None
+    return _standfirst(summary_text)
+
+
 @router.get("/profiles/{profile_id}/home-preview")
 def get_home_preview(profile_id: int):
     """
@@ -329,18 +343,38 @@ def get_home_preview(profile_id: int):
     if ids:
         with SessionLocal() as db:
             sum_rows = db.execute(text("""
-                SELECT DISTINCT ON (story_id::text) story_id::text AS sid, summary_text
+                SELECT DISTINCT ON (story_id::text) story_id::text AS sid, summary_text, content_hash
                 FROM data.story_summaries
                 WHERE story_id::text = ANY(:ids) AND summary_text IS NOT NULL
                 ORDER BY story_id::text, created_at DESC
             """), {"ids": ids}).fetchall()
-            standfirst_by_id = {sid: _standfirst(txt) for sid, txt in sum_rows}
+            # The story's CURRENT top-5 articles (same shape/order the summariser hashes) — so we
+            # can tell whether the cached summary still describes the current representative.
+            art_rows = db.execute(text("""
+                SELECT sid, title, content_snippet FROM (
+                    SELECT story_id::text AS sid, title, content_snippet,
+                           row_number() OVER (PARTITION BY story_id
+                                              ORDER BY published_at DESC NULLS LAST) AS rn
+                    FROM data.normalisation_articles
+                    WHERE story_id::text = ANY(:ids)
+                ) q WHERE rn <= 5 ORDER BY sid, rn
+            """), {"ids": ids}).fetchall()
             src_rows = db.execute(text("""
                 SELECT story_id::text AS sid, source
                 FROM data.normalisation_articles
                 WHERE story_id::text = ANY(:ids)
                   AND source IS NOT NULL AND source <> '' AND source <> 'unknown'
             """), {"ids": ids}).fetchall()
+        # Recompute each story's current content_hash and only keep a standfirst whose cached
+        # summary was built from that same content (coherence guard — audit risk #3).
+        arts_by_story: dict[str, list[dict]] = {}
+        for sid, title, snippet in art_rows:
+            arts_by_story.setdefault(sid, []).append({"title": title, "snippet": snippet})
+        current_hash_by_id = {sid: _compute_content_hash(arts) for sid, arts in arts_by_story.items()}
+        standfirst_by_id = {
+            sid: _coherent_standfirst(txt, chash, current_hash_by_id.get(sid))
+            for sid, txt, chash in sum_rows
+        }
         raw_by_story: dict[str, list[str]] = {}
         for sid, src in src_rows:
             raw_by_story.setdefault(sid, []).append(src)
