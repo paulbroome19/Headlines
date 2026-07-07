@@ -14,6 +14,11 @@ class EntityMetadata:
     entity_type: str
     aliases: list[str]
     categories: list[str]
+    # Clustering: whether this entity may anchor a cluster on its own. Default true. Set
+    # `anchor_eligible: false` in entities.yml for broad institutions/venues (nato, white-house…)
+    # that generate continuous unrelated coverage — they fall to the hint path instead. See the
+    # ANCHOR ELIGIBILITY note in entities.yml.
+    anchor_eligible: bool = True
 
 
 class EntityRegistry:
@@ -62,6 +67,7 @@ def load_entity_registry() -> EntityRegistry:
             entity_type=entity_type,
             aliases=aliases,
             categories=categories,
+            anchor_eligible=bool(meta.get("anchor_eligible", True)),
         )
         slug_map[slug] = entity
 
