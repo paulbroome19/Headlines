@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from core.platform.config.settings import settings
+from core.pipeline.data.voice import VOICE_BLOCK
 from core.pipeline.data.bulletin.intros import _extract_hook
 
 logger = logging.getLogger(__name__)
@@ -68,15 +69,11 @@ def _greeting_model() -> str:
 
 
 # ── The VOICE — one shared persona/register block for EVERY spoken-tissue prompt ──────────
-# Greeting, transitions, and outro all paste this in, so the register can't drift between
-# them (requirement: no seam between the greeting and the bridges around the stories). If the
-# voice needs to change, it changes HERE, once. (Kept verbatim from the single-call prompt so
-# this refactor is register-neutral.)
-_VOICE = (
-    "You are a calm, intelligent morning-briefing host — a trusted person catching "
-    "the listener up, not a hype radio DJ. You use contractions, write for natural "
-    "rhythm, and avoid broadcast stiffness."
-)
+# The greeting, the bridges, the outro, AND the story summariser all paste in the SAME block
+# (core.pipeline.data.voice.VOICE_BLOCK), so there's no seam between a story body and the tissue
+# around it. The voice changes in ONE place. NOTE: this feeds the PROMPTS only — the greeting
+# still runs on Haiku (generate_greeting, _greeting_model) at T0, unchanged.
+_VOICE = VOICE_BLOCK
 
 
 @dataclass(frozen=True)

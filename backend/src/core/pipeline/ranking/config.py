@@ -227,18 +227,20 @@ FRONT_PAGE_REGION_LEAN_DEFAULT = 1.10
 # Assigned by a story's position in the final ordered bulletin. Lead deep, tail
 # brisk. Coarse tiers keep the summary cache to ≤4 rows/story. ⚑ tune word targets.
 #
-# CALIBRATED FOR DURATION (measured ~156 wpm on ElevenLabs): a Medium briefing is ~10
-# stories (1 lead + 2 major + 4 standard + 3 brief). The OLD targets summed to ~555 story
-# words ≈ ~4 min of speech, so a full 10-story Medium landed at only ~5:39 — the summaries
-# hit their targets, the targets were just half of what ~10 min needs. These land the
-# story content near ~1250 words + ~270 words of intro/transitions/outro ≈ ~1520 words ≈
-# ~10 min. Keep the prose word counts in llm_summariser._DEPTH_SPEC in sync — THAT is the
+# CALIBRATED FOR THE PODCAST VOICE (measured ~156 wpm on ElevenLabs). The voice is a warm
+# spoken catch-up, NOT an essay (see core.pipeline.data.voice.VOICE_BLOCK: "flowing but not
+# bloated… not an essay"), so the tiers are deliberately tight — each story runs as long as
+# it naturally needs and no longer. A Medium briefing is ~10 stories (1 lead + 2 major +
+# 4 standard + 3 brief): 110 + 2·80 + 4·55 + 3·35 ≈ 595 story words + ~270 words of
+# greeting/bridges/outro ≈ ~865 words ≈ ~5.5 min. This is a shorter, tighter briefing than
+# the old essay-length targets (which pushed a Medium to ~10 min) — chosen for the podcast
+# register. Keep the prose word counts in llm_summariser._DEPTH_SPEC in sync — THAT is the
 # instruction the model actually reads. ⚑ retune against the live wpm if the voice changes.
 DEPTH_TIERS: list[tuple[str, int]] = [   # (tier name, target words) — ordered by rank band
-    ("lead", 260),      # rank 1
-    ("major", 180),     # ranks 2–3
-    ("standard", 110),  # ranks 4–7
-    ("brief", 55),      # ranks 8+
+    ("lead", 110),      # rank 1
+    ("major", 80),      # ranks 2–3
+    ("standard", 55),   # ranks 4–7
+    ("brief", 35),      # ranks 8+
 ]
 # Rank (0-based) → tier index boundaries. rank 0 → lead; 1–2 → major; 3–6 → standard; 7+ → brief.
 _DEPTH_RANK_BANDS = (1, 3, 7)  # exclusive upper bounds for lead/major/standard
