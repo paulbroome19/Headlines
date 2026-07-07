@@ -41,6 +41,11 @@ from core.pipeline.data.bulletin.connective import (
 )
 from core.pipeline.data.bulletin.outros import build_outro
 from core.pipeline.data.bulletin.edition import resolve_daily_edition
+from core.pipeline.data.bulletin.selection import (
+    build_selection,
+    get_materialised_selection,
+    resolve_materialised_selection,
+)
 from core.pipeline.data.bulletin.editorial_review import (
     apply_cached_editorial,
     apply_editorial,
@@ -296,48 +301,64 @@ def get_home_preview(profile_id: int):
         profile = ProfileRepo(db).get_by_id(profile_id)
         if profile is None:
             raise HTTPException(status_code=404, detail=f"Profile {profile_id} not found")
-        candidates = load_story_ranking_candidates(db)
-        dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
 
     preset = _preset_from_minutes(profile.get("max_duration_minutes", 5))
+    include_top_stories = profile.get("include_top_stories", True)   # D4: respect the profile
+    include_categories = profile["include_categories"]
+    exclude_categories = list(profile.get("exclude_categories") or [])
+    headline_by_id: dict[str, str] = {}
+
     if settings.read_from_ranked_list:
-        # Same stable-list ordering as the briefing, so the preview matches (persisted merit +
-        # stable top_story, no live re-scoring).
+        # ONE materialised selection — byte-identical to what the briefing will open with.
+        filters: dict = {"preset": preset, "include_top_stories": include_top_stories}
+        if include_categories:
+            filters["include_categories"] = sorted(include_categories)
+        if exclude_categories:
+            filters["exclude_categories"] = sorted(exclude_categories)
+        if profile.get("name"):
+            filters["name"] = profile["name"].strip()
+        request_hash = compute_request_hash(filters)
         with SessionLocal() as db:
-            scored = scored_from_ranked_list(db, candidates)
+            ordered, _depths, _run = resolve_materialised_selection(
+                db, profile_id=profile_id, request_hash=request_hash,
+                include_top_stories=include_top_stories, include_categories=include_categories,
+                exclude_categories=exclude_categories, preset=preset,
+            )
+        cat_by_id = {o["story_id"]: o.get("primary_category") for o in ordered}
     else:
-        scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
+        # Legacy live-scoring path (read_from_ranked_list=false): unchanged inline selection.
+        with SessionLocal() as db:
+            candidates = load_story_ranking_candidates(db)
+            dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
+            scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
+        reservoir = qualify_and_order(
+            scored, include_top_stories=include_top_stories,
+            include_categories=include_categories, preset=preset,
+        )
 
-    reservoir = qualify_and_order(
-        scored,
-        include_top_stories=True,
-        include_categories=profile["include_categories"],
-        preset=preset,
-    )
-    excludes = list(profile.get("exclude_categories") or [])
+        def _excluded(cat: str | None) -> bool:
+            return bool(cat) and any(cat == e or cat.startswith(e + ".") for e in exclude_categories)
 
-    def _excluded(cat: str | None) -> bool:
-        return bool(cat) and any(cat == e or cat.startswith(e + ".") for e in excludes)
+        reservoir = [
+            s for s in reservoir
+            if not _excluded(s.candidate.primary_category) and s.candidate.story_id not in dropped
+        ]
+        display = cap_bulletin(
+            reservoir, include_top_stories=include_top_stories,
+            include_categories=include_categories, preset=preset,
+        )
+        ordered = [{"story_id": s.candidate.story_id, "primary_category": s.candidate.primary_category}
+                   for s in display]
+        cat_by_id = {o["story_id"]: o["primary_category"] for o in ordered}
+        headline_by_id = {s.candidate.story_id: s.candidate.title or "" for s in display}
 
-    reservoir = [
-        s for s in reservoir
-        if not _excluded(s.candidate.primary_category) and s.candidate.story_id not in dropped
-    ]
-    display = cap_bulletin(
-        reservoir,
-        include_top_stories=True,
-        include_categories=profile["include_categories"],
-        preset=preset,
-    )
-
-    story_count = len(display)
+    story_count = len(ordered)
     # Minutes estimate calibrated to real briefings (measured words/duration), not the
     # summariser's word targets — see _preview_minutes.
     total_minutes = _preview_minutes(story_count)
 
     # Join standfirst (cached summaries) + ranked sources for the displayed stories only.
-    top = display[:6]
-    ids = [s.candidate.story_id for s in top]
+    ids = [o["story_id"] for o in ordered][:6]
     standfirst_by_id: dict[str, str | None] = {}
     sources_by_id: dict[str, list[str]] = {}
     if ids:
@@ -370,6 +391,10 @@ def get_home_preview(profile_id: int):
         arts_by_story: dict[str, list[dict]] = {}
         for sid, title, snippet in art_rows:
             arts_by_story.setdefault(sid, []).append({"title": title, "snippet": snippet})
+        # Headline = the LIVE representative (most-recent) article title — for the materialised
+        # path this is the only source of the title (the stored selection is ids only).
+        for sid, arts in arts_by_story.items():
+            headline_by_id.setdefault(sid, (arts[0]["title"] if arts else "") or "")
         current_hash_by_id = {sid: _compute_content_hash(arts) for sid, arts in arts_by_story.items()}
         standfirst_by_id = {
             sid: _coherent_standfirst(txt, chash, current_hash_by_id.get(sid))
@@ -382,13 +407,13 @@ def get_home_preview(profile_id: int):
 
     stories = [
         {
-            "story_id": s.candidate.story_id,
-            "headline": s.candidate.title or "",
-            "category": s.candidate.primary_category,
-            "standfirst": standfirst_by_id.get(s.candidate.story_id),
-            "sources": sources_by_id.get(s.candidate.story_id, []),
+            "story_id": sid,
+            "headline": headline_by_id.get(sid, ""),
+            "category": cat_by_id.get(sid),
+            "standfirst": standfirst_by_id.get(sid),
+            "sources": sources_by_id.get(sid, []),
         }
-        for s in top
+        for sid in ids
     ]
 
     return {
@@ -901,39 +926,32 @@ def _get_or_assemble_bulletin(
             # daily edition can drop already-heard stories and refill from candidates
             # beyond the target instead of shrinking. The non-profile path takes exactly
             # the preset target (its length control).
-            reservoir = _select_reservoir(
-                db,
-                include_top_stories=include_top_stories,
-                include_categories=include_categories,
-                exclude_categories=exclude_categories,
-                preset=preset,
-                ranking_run_id=ranking_run_id,
-            )
-
-            if profile_id is not None:
-                # Stable EDITION OF THE DAY: reuse the persisted per-(profile, day,
-                # filters) set instead of re-rolling on every new ranking run. Drops only
-                # HEARD/skipped stories (unheard persist), balances the unheard reservoir
-                # (cap_bulletin) into the display set, splices a genuinely bigger new lead,
-                # and keeps the filter-sequence order. See bulletin/edition.py.
-                ordered, depths = resolve_daily_edition(
-                    db,
-                    profile_id=profile_id,
-                    request_hash=request_hash,
-                    reservoir=reservoir,
-                    include_top_stories=include_top_stories,
-                    include_categories=include_categories,
-                    preset=preset,
+            if settings.read_from_ranked_list:
+                # The ONE materialised selection (deduped, capped) — byte-identical to what the
+                # home preview showed. Both consume resolve_materialised_selection.
+                ordered, depths, _pin = resolve_materialised_selection(
+                    db, profile_id=profile_id, request_hash=request_hash,
+                    include_top_stories=include_top_stories, include_categories=include_categories,
+                    exclude_categories=exclude_categories, preset=preset,
                 )
-                db.commit()
             else:
-                # Non-profile path: balance + depth + ceiling directly on the reservoir.
-                ordered, depths = _cap_to_dicts(cap_bulletin(
-                    reservoir,
-                    include_top_stories=include_top_stories,
-                    include_categories=include_categories,
-                    preset=preset,
-                ))
+                # Legacy live-scoring path (flag off): unchanged reservoir + edition/cap.
+                reservoir = _select_reservoir(
+                    db, include_top_stories=include_top_stories, include_categories=include_categories,
+                    exclude_categories=exclude_categories, preset=preset, ranking_run_id=ranking_run_id,
+                )
+                if profile_id is not None:
+                    ordered, depths = resolve_daily_edition(
+                        db, profile_id=profile_id, request_hash=request_hash, reservoir=reservoir,
+                        include_top_stories=include_top_stories, include_categories=include_categories,
+                        preset=preset,
+                    )
+                    db.commit()
+                else:
+                    ordered, depths = _cap_to_dicts(cap_bulletin(
+                        reservoir, include_top_stories=include_top_stories,
+                        include_categories=include_categories, preset=preset,
+                    ))
 
             candidate_ids = [o["story_id"] for o in ordered[:_SUMMARISE_BUDGET]]
 
@@ -979,12 +997,12 @@ def _get_or_assemble_bulletin(
                     detail={"code": "no_stories", "message": "No stories match the requested filters"},
                 )
 
-            # TACTICAL #35: collapse same-event duplicates that keyword/hint
-            # clustering missed (paraphrased headlines) BEFORE the connective
-            # tissue and assembly run — so the event is reported once and the
-            # greeting/transitions never repeat it. Conservative; falls back to
-            # no-dedup on any failure. Remove when #36 (embeddings) lands.
-            stories = dedup_same_event(stories)
+            # TACTICAL #35: collapse same-event duplicates. On the read_from_ranked_list path the
+            # materialised selection already deduped (before cap), so re-running here would be a
+            # second, redundant Haiku call — skip it. Only the legacy live-scoring path still
+            # dedups post-summary. (Remove when #36 (embeddings) lands.)
+            if not settings.read_from_ranked_list:
+                stories = dedup_same_event(stories)
 
             now_uk = uk_now()
             conn = generate_connective(
@@ -1165,29 +1183,43 @@ def prepare_bulletin_for_manifest(
             ).scalar()
             is_first = (prior == 0)
 
-        # EDITORIAL top_story GATE — applied here too, from the CACHE only. The flag is
-        # precomputed once at rank time (handle_categorise_completed), so this is a cheap read
-        # that never blocks bulletin_id on a cold Haiku call. This is what makes the streaming
-        # running order significance-gated exactly like the blocking path: the top-stories/region
-        # blocks admit only genuine top stories, so a high-coverage soft story (Sony/gaming) can't
-        # lead. If the run hasn't been reviewed yet, it degrades to base coverage order (no worse
-        # than before) and self-heals on the next run.
-        reservoir = _select_reservoir(
-            db, include_top_stories=include_top_stories, include_categories=include_categories,
-            exclude_categories=exclude_categories, preset=preset,
-            ranking_run_id=ranking_run_id, cache_only_editorial=True,
-        )
-        if profile_id is not None:
-            ordered, depths = resolve_daily_edition(
-                db, profile_id=profile_id, request_hash=request_hash, reservoir=reservoir,
-                include_top_stories=include_top_stories, include_categories=include_categories, preset=preset,
-            )
-            db.commit()
+        # SKELETON selection. The materialised (deduped) selection is the source of truth for both
+        # the home preview and the FINAL briefing. In the common flow the user loaded the preview
+        # first, so it already exists → the skeleton READS it and is identical to the final, with no
+        # LLM on the first-play path. Only on a COLD play-first (warmer / deep-link, no preview yet)
+        # do we fall back to the fast PRE-DEDUP order (build_selection(dedup=False)); the background
+        # then materialises the deduped final. The LEAD is identical either way — dedup keeps the
+        # best-ranked member of each group, so it can never drop index 0 (opener-gate safe).
+        if settings.read_from_ranked_list:
+            mat = (get_materialised_selection(db, profile_id=profile_id, request_hash=request_hash)
+                   if profile_id is not None else None)
+            if mat is not None:
+                ordered, depths, _run = mat
+            else:
+                ordered = build_selection(
+                    db, profile_id=profile_id, include_top_stories=include_top_stories,
+                    include_categories=include_categories, exclude_categories=exclude_categories,
+                    preset=preset, dedup=False,
+                )
+                depths = {o["story_id"]: depth_for_rank(i) for i, o in enumerate(ordered)}
         else:
-            ordered, depths = _cap_to_dicts(cap_bulletin(
-                reservoir, include_top_stories=include_top_stories,
-                include_categories=include_categories, preset=preset,
-            ))
+            # Legacy live-scoring path (flag off): editorial-gated reservoir + edition/cap (unchanged).
+            reservoir = _select_reservoir(
+                db, include_top_stories=include_top_stories, include_categories=include_categories,
+                exclude_categories=exclude_categories, preset=preset,
+                ranking_run_id=ranking_run_id, cache_only_editorial=True,
+            )
+            if profile_id is not None:
+                ordered, depths = resolve_daily_edition(
+                    db, profile_id=profile_id, request_hash=request_hash, reservoir=reservoir,
+                    include_top_stories=include_top_stories, include_categories=include_categories, preset=preset,
+                )
+                db.commit()
+            else:
+                ordered, depths = _cap_to_dicts(cap_bulletin(
+                    reservoir, include_top_stories=include_top_stories,
+                    include_categories=include_categories, preset=preset,
+                ))
 
         if not ordered:
             raise HTTPException(
@@ -1210,6 +1242,10 @@ def prepare_bulletin_for_manifest(
             "bulletin_id": bulletin_id, "ranking_run_id": ranking_run_id, "request_hash": request_hash,
             "name": name, "is_first_bulletin": is_first, "profile_id": profile_id,
             "ordered": ordered, "depths": depths, "candidate_ids": candidate_ids,
+            # filter params so the bg can build the deduped FINAL selection (dedup-before-cap,
+            # matching the preview) on a cold play-first — never by deduping the post-cap skeleton.
+            "include_top_stories": include_top_stories, "include_categories": include_categories,
+            "exclude_categories": exclude_categories, "preset": preset,
         },
     }
 
@@ -1339,7 +1375,9 @@ def _synth_remaining(bulletin_id: int, segments: list[dict],
 def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_hash: str,
                             name: str | None, is_first_bulletin: bool,
                             ordered: list[dict], depths: dict, candidate_ids: list[str],
-                            profile_id: int | None = None) -> None:
+                            profile_id: int | None = None,
+                            include_top_stories: bool = True, include_categories: list[str] | None = None,
+                            exclude_categories: list[str] | None = None, preset: str = "medium") -> None:
     """Background job (runs in a threadpool as a sync BackgroundTask). SPLIT connective for fast
     first-play: the GREETING is generated ALONE (Haiku, from the lead headline — no summaries) so
     it and the lead opener are the ONLY things on the first-play path; every transition + the outro
@@ -1388,7 +1426,30 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
         # 4-5. BACKGROUND (post-gate): summarise the rest, then generate EVERY non-lead bridge +
         #      the outro in one Sonnet call, continuing the greeting's voice. Never gates first-play.
         ensure_story_summaries(ranking_run_id, candidate_ids, depths)
-        all_stories = dedup_same_event(_bg_load_story_dicts(ranking_run_id, [str(s) for s in candidate_ids], cat_by_id))
+
+        # FINAL selection = the ONE materialised (deduped) selection, identical to the home preview.
+        # Read it if the preview already materialised it; else build+store it now (cold play-first) —
+        # in the BACKGROUND, off the first-play path. dedup runs BEFORE cap, so this can differ from
+        # deduping the pre-dedup skeleton, which is exactly why we rebuild rather than dedup candidate_ids.
+        if settings.read_from_ranked_list and profile_id is not None:
+            with SessionLocal() as db:
+                final_ordered, _fd, _fr = resolve_materialised_selection(
+                    db, profile_id=profile_id, request_hash=request_hash,
+                    include_top_stories=include_top_stories, include_categories=include_categories,
+                    exclude_categories=exclude_categories, preset=preset,
+                )
+            cat_by_id.update({str(o["story_id"]): o.get("primary_category") for o in final_ordered})
+            all_stories = _bg_load_story_dicts(ranking_run_id, [str(o["story_id"]) for o in final_ordered], cat_by_id)
+        else:
+            all_stories = dedup_same_event(_bg_load_story_dicts(ranking_run_id, [str(s) for s in candidate_ids], cat_by_id))
+
+        # Defensive: dedup keeps the best-ranked member of each group, so the LEAD can never change
+        # (deduped[0] == pre_dedup[0]). If it ever does, the start-pack synthesised the wrong opener.
+        if all_stories and first_two and str(all_stories[0]["story_id"]) != first_two[0]:
+            logger.warning(
+                "run_background_assembly: LEAD SHIFTED after dedup (start-pack lead=%s, final lead=%s) "
+                "— opener audio may mismatch (should be impossible)", first_two[0], all_stories[0]["story_id"],
+            )
 
         # 6. Full connective → authoritative segments. If the greeting exists, keep it verbatim
         #    (its intro audio is already synthesised) and only fill bridges + outro; on bridge
