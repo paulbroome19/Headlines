@@ -592,7 +592,7 @@ struct NowPlayingView: View {
                     } else if buffering {
                         ProgressView().scaleEffect(0.7).tint(ink)   // tapped-while-pending → loading
                     } else {
-                        ReadinessRing(ready: ready, color: ink)
+                        ReadinessRing(ready: ready, progress: player.synthProgress, color: ink)
                     }
                 }
                 .padding(.top, 4)
@@ -757,26 +757,31 @@ private struct EqualizerIndicator: View {
 /// story's audio is still synthesising, resolving to a solid disc when ready. Not a spinner —
 /// the calm pulse reads as "downloading" without a spin. (The backend readiness is binary per
 /// segment, so this shows pending→ready rather than a precise fill fraction.)
+/// Netflix-download-style progress ring: an empty circle whose arc fills CLOCKWISE from the top
+/// as the story's audio synthesises (`progress` 0…1 — real synthesis progress, not a pulse),
+/// resolving to a SOLID disc the moment it's ready.
 private struct ReadinessRing: View {
     let ready: Bool
+    let progress: Double   // 0…1 synthesis progress (ignored once `ready`)
     let color: Color
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulse = false
 
     var body: some View {
         ZStack {
+            // Empty track.
             Circle().stroke(color.opacity(0.20), lineWidth: 1.5)
             if ready {
-                Circle().fill(color)
+                Circle().fill(color)                       // solid when ready
             } else {
-                Circle().fill(color.opacity(reduceMotion ? 0.16 : (pulse ? 0.30 : 0.10)))
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 1.0).repeatForever(autoreverses: true),
-                               value: pulse)
+                // Fill arc — grows clockwise from 12 o'clock with real synthesis progress.
+                Circle()
+                    .trim(from: 0, to: max(0, min(progress, 1)))
+                    .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))         // start at the top, sweep clockwise
+                    .animation(.easeInOut(duration: 0.45), value: progress)
             }
         }
-        .frame(width: 12, height: 12)
+        .frame(width: 13, height: 13)
         .animation(.easeInOut(duration: 0.35), value: ready)
-        .onAppear { pulse = true }
     }
 }
 

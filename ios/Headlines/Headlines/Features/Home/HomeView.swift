@@ -112,9 +112,12 @@ struct HomeView: View {
             creamRule
             Spacer().frame(height: 16)
 
-            Text("YOUR TOP STORIES")
+            // Eyebrow + the pull-to-refresh stamp inline: "YOUR TOP STORIES · LAST UPDATED 1:07PM".
+            // Pulling down on the story list below refreshes the stories and this time.
+            Text(topStoriesEyebrow)
                 .font(.label(11)).tracking(2.5)
                 .foregroundColor(cream.opacity(0.5))
+                .lineLimit(1).minimumScaleFactor(0.6)
             Spacer().frame(height: 14)
 
             // ── SCROLLING story list — the ONLY thing that moves, contained inside the board ──
@@ -178,24 +181,18 @@ struct HomeView: View {
     // MARK: - Bottom action (light page, separate from the board)
 
     private var assembleBar: some View {
-        // One compact row, sized to the disc: a tight left column (rule · meta · label · rule)
-        // whose hairline rules pull in from the right (they stop at the disc), and the go-disc
-        // on the far right. No sprawling block below.
+        // Mirrors the "YOUR TOP STORIES" eyebrow above — an eyebrow label + a quiet meta line
+        // beneath it — with the go-disc on the right. No boxing rules; clean, breathing room.
         HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                greyRule
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(metaLine)                                  // "6 MIN · 5 STORIES"
-                        .font(.label(11)).tracking(2.5)
-                        .foregroundColor(LightColors.ink.opacity(0.5))
-                    Text("Assemble your full briefing")
-                        .font(.label(13)).tracking(1.0)
-                        .foregroundColor(LightColors.ink.opacity(0.42))   // lighter grey
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                greyRule
+            VStack(alignment: .leading, spacing: 5) {
+                Text("YOUR FULL BRIEFING")
+                    .font(.label(11)).tracking(2.5)
+                    .foregroundColor(LightColors.ink.opacity(0.5))
+                Text(metaLine)                                  // "10 MIN · 5 STORIES"
+                    .font(.label(11)).tracking(2.0)
+                    .foregroundColor(LightColors.ink.opacity(0.38))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)         // rules span to just before the disc
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Button(action: onGenerate) {
                 MachinedDisc(diameter: discDiam) {
@@ -210,10 +207,6 @@ struct HomeView: View {
             .frame(width: discDiam, height: discDiam)
             .accessibilityLabel("Assemble your full briefing")
         }
-    }
-
-    private var greyRule: some View {
-        Rectangle().fill(LightColors.ink.opacity(0.14)).frame(height: 1)
     }
 
     private var metaLine: String {
@@ -248,6 +241,13 @@ struct HomeView: View {
         let f = DateFormatter()
         f.dateFormat = "h:mma"          // 9:12AM
         return f.string(from: date).uppercased()
+    }
+
+    /// "YOUR TOP STORIES · LAST UPDATED 1:07PM" — the eyebrow with the pull-to-refresh stamp
+    /// appended (just the eyebrow until the first fetch lands).
+    private var topStoriesEyebrow: String {
+        guard let ts = lastUpdated else { return "YOUR TOP STORIES" }
+        return "YOUR TOP STORIES · LAST UPDATED \(timeStamp(ts))"
     }
 
     /// Rendered width of a string in "cell units": each glyph is one cell, each space half.
