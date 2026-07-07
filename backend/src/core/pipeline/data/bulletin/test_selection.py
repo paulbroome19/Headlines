@@ -11,17 +11,18 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from core.pipeline.ranking.models import ScoredStory, StoryRankingCandidate
-from core.pipeline.data.bulletin.selection import finalize_selection
+from core.pipeline.data.bulletin.selection import finalize_selection, guard_top_block
 
 NOW = datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc)
 SEL = ["top-stories.us", "politics.uk", "business.markets", "sport.football.premier-league"]
 
 
-def _ss(sid: str, cat: str, score: float, *, geo: str | None = "us", top: bool = False) -> ScoredStory:
+def _ss(sid: str, cat: str, score: float, *, geo: str | None = "us", top: bool = False,
+        entity: str | None = None) -> ScoredStory:
     c = StoryRankingCandidate(
         story_id=sid, title=sid, last_seen_at=NOW - timedelta(hours=5),
         article_count=3, source_count=3, primary_category=cat,
-        primary_entity_id=None, primary_entity_name=None, primary_entity_weight=None,
+        primary_entity_id=entity, primary_entity_name=entity, primary_entity_weight=None,
         primary_topic_key=None, geo_region=geo, pool_country="us", sources=(), top_story=top,
     )
     return ScoredStory(
@@ -34,7 +35,7 @@ def _ss(sid: str, cat: str, score: float, *, geo: str | None = "us", top: bool =
 def _finalize(pool, *, dropped=frozenset(), dedup_fn=None):
     return [o["story_id"] for o in finalize_selection(
         pool, include_top_stories=True, include_categories=SEL, exclude_categories=None,
-        preset="medium", dropped=set(dropped), dedup_fn=dedup_fn,
+        preset="medium", dropped=set(dropped), dedup_fn=dedup_fn, now=NOW,
     )]
 
 
@@ -78,3 +79,56 @@ def test_heard_and_excluded_removed():
         pool, include_top_stories=True, include_categories=["business.markets"],
         exclude_categories=["politics"], preset="medium", dropped=set(), dedup_fn=None)]
     assert out == []                                                   # excluded category gone
+
+
+# ── Top-block dedup guard (#156 rider 2b / deterministic backstop) ────────────────────────────
+
+def test_guard_demotes_same_entity_topcat_in_top_block():
+    # Two top stories share entity 'nato' + topcat 'politics'; the LLM dedup missed them. Keep the
+    # better; demote the dup out of the top block. Its category isn't a followed topic → it drops
+    # (must not fall back into the top block).
+    pool = [_ss("n1", "politics.us", 8.0, top=True, entity="nato"),
+            _ss("po1", "politics.uk", 7.0),
+            _ss("n2", "politics.us", 6.5, top=True, entity="nato")]
+    ids = _finalize(pool, dedup_fn=None)
+    assert "n1" in ids and "n2" not in ids     # better nato kept, dup nato demoted + dropped
+    assert "po1" in ids                         # unrelated topic story untouched
+
+
+def test_guard_demoted_stays_as_followed_topic_if_it_clears_bar():
+    # Both top stories are entity 'labour' + topcat 'politics'; the loser's category IS a followed
+    # topic (politics.uk) and clears the bar → it stays, now as a normal topic story, not vanish.
+    pool = [_ss("L1", "politics.uk", 8.0, top=True, entity="labour"),
+            _ss("L2", "politics.uk", 7.0, top=True, entity="labour")]
+    ids = _finalize(pool, dedup_fn=None)
+    assert "L1" in ids and "L2" in ids          # winner leads; loser kept as a politics.uk topic
+
+
+def test_guard_never_changes_the_lead_even_if_mate_has_higher_merit():
+    # The lead (index 0) has LOWER merit than its same-group mate (as can happen via region lean),
+    # but the guard must keep the LEAD and demote the higher-merit mate — index 0 always survives.
+    lead = _ss("lead", "politics.us", 6.0, top=True, entity="nato")
+    mate = _ss("mate", "politics.us", 9.0, top=True, entity="nato")
+    out = guard_top_block([lead, mate], include_top_stories=True, include_categories=SEL,
+                          preset="medium", now=NOW)
+    ids = [s.candidate.story_id for s in out]
+    assert ids[0] == "lead"                     # lead survives as the kept member
+    assert "mate" not in ids                    # higher-merit mate demoted (politics.us → dropped)
+
+
+def test_guard_exempts_no_entity_stories():
+    # Two top-block stories with NO primary entity (hint-path clusters), same topcat — must NOT be
+    # grouped or demoted (no-entity is never a match).
+    pool = [_ss("h1", "politics.us", 8.0, top=True, entity=None),
+            _ss("h2", "politics.us", 7.0, top=True, entity=None)]
+    ids = _finalize(pool, dedup_fn=None)
+    assert "h1" in ids and "h2" in ids
+
+
+def test_guard_leaves_followed_topic_bucket_alone():
+    # Two same-entity stories in a TOPIC feed (top_story=False → NOT the top block) are legitimate;
+    # the guard is top-block-only and must not touch them.
+    pool = [_ss("a", "politics.uk", 8.0, top=False, entity="labour"),
+            _ss("b", "politics.uk", 7.0, top=False, entity="labour")]
+    ids = _finalize(pool, dedup_fn=None)
+    assert "a" in ids and "b" in ids

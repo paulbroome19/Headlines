@@ -18,7 +18,8 @@ the opener gate always synthesises the correct first story.
 """
 from __future__ import annotations
 
-from datetime import date
+import logging
+from datetime import date, datetime, timezone
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -33,7 +34,17 @@ from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
 from core.pipeline.ranking.depth import depth_for_rank
 from core.pipeline.ranking.ranked_list import scored_from_ranked_list
 from core.pipeline.ranking.repos.ranking_run_repo import RankingRunRepo
-from core.pipeline.ranking.thresholds import cap_bulletin, qualify_and_order
+from core.pipeline.ranking.thresholds import (
+    DEFAULT_PRESET,
+    PRESET_BAR,
+    _fresh_category_relief,
+    _matches_category,
+    _selection_context,
+    cap_bulletin,
+    qualify_and_order,
+)
+
+logger = logging.getLogger(__name__)
 
 _ensured = False
 
@@ -58,6 +69,88 @@ def _excluder(exclude_categories: list[str] | None):
     return _excluded
 
 
+def _sid_key(story_id: str):
+    """Sort key for 'lower story_id' — numeric ids compared numerically, others lexically."""
+    return (0, int(story_id)) if str(story_id).isdigit() else (1, str(story_id))
+
+
+def guard_top_block(
+    reservoir: list,
+    *,
+    include_top_stories: bool,
+    include_categories: list[str] | None,
+    preset: str,
+    now: datetime | None = None,
+) -> list:
+    """Deterministic backstop for the LLM fragment-dedup (#156 rider 2b): if two stories in the
+    TOP-STORIES block share (primary entity, top-level category), keep the better one and demote
+    the rest OUT of the top block. A demoted story stays only if it independently clears the topic
+    bar as a normal followed-topic story; otherwise it's dropped (a below-bar / unfollowed-category
+    story can't legitimately be a topic story, and must not fall back into the top block).
+
+    Runs AFTER dedup_same_event (backstop for what the LLM misses, not a replacement) and BEFORE
+    cap_bulletin, so preview/blocking/streaming inherit it identically. Top-block-ONLY: followed-
+    topic buckets are untouched (two same-entity stories in a topic feed are legitimate). No-entity
+    (hint-path) stories are exempt — never grouped. Deterministic; no LLM. The lead (index 0) is
+    always its group's kept member, so the guard can never change the lead."""
+    if len(reservoir) < 2:
+        return reservoir
+
+    front_page, regions, topic_cats = _selection_context(include_top_stories, include_categories)
+    ref_now = now or datetime.now(timezone.utc)
+    bar = PRESET_BAR.get(preset) or PRESET_BAR[DEFAULT_PRESET]
+    lead_id = reservoir[0].candidate.story_id
+
+    def _in_top(s) -> bool:
+        return bool(s.candidate.top_story) and (front_page or (s.candidate.geo_region in regions))
+
+    def _group_key(s):
+        ent = s.candidate.primary_entity_id
+        if not ent:
+            return None  # no primary entity → exempt, never grouped
+        return (ent, (s.candidate.primary_category or "").split(".")[0])
+
+    def _clears_topic_bar(s) -> bool:
+        cat = s.candidate.primary_category
+        return (s.normalized_score >= (bar - _fresh_category_relief(s, ref_now))
+                and any(_matches_category(cat, tc) for tc in topic_cats))
+
+    groups: dict = {}
+    for s in reservoir:
+        if not _in_top(s):
+            continue
+        k = _group_key(s)
+        if k is None:
+            continue
+        groups.setdefault(k, []).append(s)
+
+    remove: set[str] = set()
+    for k, members in groups.items():
+        if len(members) < 2:
+            continue
+        # Winner: the lead if it's in this group (invariant — index 0 is never demoted); else the
+        # higher-merit story (tiebreak lower story_id).
+        winner = next((m for m in members if m.candidate.story_id == lead_id), None)
+        if winner is None:
+            winner = min(members, key=lambda s: (-s.normalized_score, _sid_key(s.candidate.story_id)))
+        for loser in members:
+            if loser is winner:
+                continue
+            loser.candidate.top_story = False   # demote out of the top block
+            kept = _clears_topic_bar(loser)
+            if not kept:
+                remove.add(loser.candidate.story_id)
+            logger.info(
+                "top_block_guard: demoted story=%s (shared entity+topcat=%s with kept=%s) "
+                "kept_as_followed_topic=%s", loser.candidate.story_id, list(k),
+                winner.candidate.story_id, kept,
+            )
+
+    if not remove:
+        return reservoir
+    return [s for s in reservoir if s.candidate.story_id not in remove]
+
+
 def finalize_selection(
     scored: list,
     *,
@@ -67,6 +160,7 @@ def finalize_selection(
     preset: str,
     dropped: set[str],
     dedup_fn=dedup_same_event,
+    now: datetime | None = None,
 ) -> list[dict]:
     """PURE canonical pipeline over an already-scored reservoir: qualify_and_order → drop
     excluded/heard/skipped → dedup_same_event (BEFORE cap, on representative titles) →
@@ -85,6 +179,12 @@ def finalize_selection(
         stub = [{"story_id": s.candidate.story_id, "headline": s.candidate.title or ""} for s in reservoir]
         kept = {d["story_id"] for d in dedup_fn(stub)}
         reservoir = [s for s in reservoir if s.candidate.story_id in kept]
+
+    # Deterministic top-block dedup: after the LLM same-event dedup (its backstop), before cap.
+    reservoir = guard_top_block(
+        reservoir, include_top_stories=include_top_stories,
+        include_categories=include_categories, preset=preset, now=now,
+    )
 
     display = cap_bulletin(
         reservoir, include_top_stories=include_top_stories,
