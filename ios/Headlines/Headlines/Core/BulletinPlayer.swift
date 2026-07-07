@@ -133,10 +133,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// STREAMING: per-segment-index audio readiness (from /readiness), driving the Netflix-style
     /// running-order rings + grey→black rows. Bumps trigger the list to re-render.
     @Published private(set) var segmentReady: [Int: Bool] = [:]
-    /// Overall bulletin audio-synthesis progress (0…1) from /readiness. Per-segment readiness is
-    /// binary, so this is the honest CONTINUOUS signal the download rings fill against (real
-    /// progress, not a pulse); a row still snaps to solid the moment its own segment is ready.
-    @Published private(set) var synthProgress: Double = 0
 
     // MARK: Accessors
 
@@ -481,19 +477,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
             }
             if segmentReady[rs.index] != true { segmentReady[rs.index] = true }
         }
-        // Overall synthesis progress for the download rings (prefer the server's 0–100 hint;
-        // fall back to ready/total). Monotonic — never let a poll jitter it backwards.
-        let frac: Double
-        if r.allReady == true {
-            frac = 1
-        } else if let f = r.progressFraction {
-            frac = f
-        } else if r.totalSegments > 0 {
-            frac = Double(r.readySegments) / Double(r.totalSegments)
-        } else {
-            frac = synthProgress
-        }
-        if frac > synthProgress { synthProgress = frac }
         if changed { rebuildTimeline() }
         if _heldEnqueue { _heldEnqueue = false; enqueueNext() }   // a held segment may now be ready
         fulfilPendingTapIfReady()                                 // a pending-tapped story may now be playable
@@ -565,6 +548,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
         let seg = segments[start.arrayIndex]
         return seg.url != nil || segmentReady[seg.index] == true
+    }
+
+    /// The story unit currently being SYNTHESISED — the first not-yet-ready unit (synthesis is
+    /// forward-sequential, so ready units are contiguous from the front). Drives the running-order
+    /// spinner: only this row spins; ready rows are clean, later rows are plain. nil when every
+    /// unit is ready.
+    var synthesisingUnitIndex: Int? {
+        _storyUnits.firstIndex { !isUnitReady($0) }
     }
 
     /// Seek to a story unit's start and begin playing it. Used by the tracklist so
@@ -870,7 +861,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         pendingTapUnitIndex = nil
         bufferingUnitIndex  = nil
         segmentReady = [:]
-        synthProgress = 0
         teardownQueuePlayer()
         manifest       = nil
         segments       = []
