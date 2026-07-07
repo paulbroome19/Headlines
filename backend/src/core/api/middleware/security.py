@@ -145,6 +145,24 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
 
         # PART 1 — shared app key on gated paths.
+        #
+        # ┌─────────────────────────────────────────────────────────────────────────────┐
+        # │ TODO(2026-07-07): APP-KEY ENFORCEMENT IS OFF IN PROD.                        │
+        # │ REQUIRE_API_KEY is unset → settings.require_api_key=False, so /data/* and    │
+        # │ /feeds/* are served with NO app-key check. This is a DELIBERATE dark-ship:   │
+        # │ the server shipped before the iOS app learned to send the key, so turning it │
+        # │ on now would 401 every existing client. To flip it ON, in THIS ORDER:        │
+        # │   1. Generate a strong key:  openssl rand -hex 32                            │
+        # │   2. Ship an iOS build that sends it as the `X-API-Key` header on every      │
+        # │      /data/* and /feeds/* request, and wait until that build is live for     │
+        # │      ~all users (staged rollout complete) — otherwise old clients 401.       │
+        # │   3. THEN set BOTH on the Headlines service together:                        │
+        # │        API_ACCESS_KEY=<key>   AND   REQUIRE_API_KEY=true                     │
+        # │      (both at once — the guard below fails CLOSED with 503 if the flag is on │
+        # │      while API_ACCESS_KEY is empty).                                         │
+        # │   Rollback = set REQUIRE_API_KEY=false (no redeploy of the app needed).      │
+        # │   See the API-protection-rollout memo for the full flip/rollback runbook.    │
+        # └─────────────────────────────────────────────────────────────────────────────┘
         if settings.require_api_key and _is_key_gated(path):
             server_key = (settings.api_access_key or "").strip()
             if not server_key:
