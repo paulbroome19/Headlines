@@ -36,6 +36,26 @@ router = APIRouter(prefix="/data/profiles", tags=["profiles"])
 logger = logging.getLogger(__name__)
 
 
+def _sources_by_story_id(story_ids: list[str]) -> dict[str, list[str]]:
+    """Ranked top-`_SOURCE_ATTRIBUTION_LIMIT` display outlets per story (excluded outlets
+    dropped, unknowns kept), from data.normalisation_articles. Shared by the cached full
+    manifest AND the streaming skeleton so a fresh streaming play shows the same sources the
+    cached path does."""
+    if not story_ids:
+        return {}
+    with SessionLocal() as db:
+        rows = db.execute(text("""
+            SELECT story_id::text AS sid, source
+            FROM data.normalisation_articles
+            WHERE story_id::text = ANY(:ids)
+              AND source IS NOT NULL AND source <> '' AND source <> 'unknown'
+        """), {"ids": story_ids}).fetchall()
+    raw: dict[str, list[str]] = {}
+    for sid, src in rows:
+        raw.setdefault(sid, []).append(src)
+    return {sid: rank_sources(srcs, limit=_SOURCE_ATTRIBUTION_LIMIT) for sid, srcs in raw.items()}
+
+
 def _prepare_first_bulletin(profile_id: int) -> None:
     """
     Warm a new user's FIRST bulletin in the background, right after onboarding.
@@ -308,27 +328,11 @@ def _build_full_manifest(
         str(s["story_id"]): s.get("headline") or "" for s in plan.get("stories_list", [])
     }
 
-    story_ids_for_sources = [
+    sources_by_story_id = _sources_by_story_id([
         str(seg["story_id"])
         for seg in plan["segments"]
         if seg.get("type") == "story" and seg.get("story_id")
-    ]
-    sources_by_story_id: dict[str, list[str]] = {}
-    if story_ids_for_sources:
-        with SessionLocal() as db:
-            src_rows = db.execute(text("""
-                SELECT story_id::text AS sid, source
-                FROM data.normalisation_articles
-                WHERE story_id::text = ANY(:ids)
-                  AND source IS NOT NULL AND source <> '' AND source <> 'unknown'
-            """), {"ids": story_ids_for_sources}).fetchall()
-        raw_by_story: dict[str, list[str]] = {}
-        for sid, src in src_rows:
-            raw_by_story.setdefault(sid, []).append(src)
-        sources_by_story_id = {
-            sid: rank_sources(srcs, limit=_SOURCE_ATTRIBUTION_LIMIT)
-            for sid, srcs in raw_by_story.items()
-        }
+    ])
 
     manifest_segments: list[dict[str, Any]] = []
     for i, seg in enumerate(plan["segments"], start=0):
@@ -437,6 +441,14 @@ def get_manifest(
     if prep.get("dispatch"):
         background_tasks.add_task(run_background_assembly, **prep["bg"])
 
+    # Sources up front, same as the cached path — so a FRESH streaming play shows the ranked
+    # outlets immediately (not only after the bulletin is cached). Cheap: one query, no LLM.
+    skeleton_sources = _sources_by_story_id([
+        str(seg["story_id"])
+        for seg in prep["segments"]
+        if seg.get("type") == "story" and seg.get("story_id")
+    ])
+
     skeleton_segments: list[dict[str, Any]] = []
     for i, seg in enumerate(prep["segments"]):
         item: dict[str, Any] = {
@@ -445,6 +457,7 @@ def get_manifest(
         if seg.get("type") == "story" and seg.get("story_id"):
             item["story_id"] = str(seg["story_id"])
             item["title"] = seg.get("title") or ""
+            item["sources"] = skeleton_sources.get(str(seg["story_id"]), [])
         skeleton_segments.append(item)
 
     return {
