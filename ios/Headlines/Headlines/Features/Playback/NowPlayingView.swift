@@ -142,37 +142,32 @@ struct NowPlayingView: View {
     }
 
     /// Generation loader — mirrors the Playback layout: the dark Solari board sits in the
-    /// now-playing card's position (churning through status lines) and a determinate
-    /// 0→100% bar sits in the scrubber's position.
+    /// now-playing card's position (churning through status lines) with a quiet spinner just
+    /// beneath it as an "ongoing work" signal (NOT a determinate percentage bar).
     ///
     /// PACING IS A FIXED, EVEN VISUAL SEQUENCE — decoupled from backend progress. The paced
     /// stages advance purely on a timer (`LoaderTiming.stageIndex`), each exactly
-    /// `stageSeconds`, so no stage can freeze while a slow manifest loads. The bar is
-    /// elapsed-driven too, so it moves at a steady rate. Real readiness governs only
-    /// DISMISSAL: the gate holds the loader (and thus the final DWELL stage) until
-    /// `safe_to_start`, then leaves `.preparing` → the loader is replaced by the player. So
-    /// the paced stages are evenly timed and only the last stage dwells to absorb the wait.
+    /// `stageSeconds`, so no stage can freeze while a slow manifest loads. Real readiness
+    /// governs only DISMISSAL: the gate holds the loader (and thus the final DWELL stage)
+    /// until `safe_to_start`, then leaves `.preparing` → the loader is replaced by the player.
+    /// So the paced stages are evenly timed and only the last stage dwells to absorb the wait.
     private var preparingState: some View {
         VStack(spacing: 0) {
-            // Board + progress bar are ONE coupled card unit, PINNED TO THE TOP at the same
-            // vertical level as the playback now-playing card (Spacer(16) → card), with the
-            // bar 18pt beneath — the same rhythm as the scrubber under that card. So the
-            // loader "transforms" seamlessly into the playback screen: board where the card
-            // appears, bar where the scrubber appears. The rest of the screen is empty below.
-            VStack(spacing: 18) {
+            // Board + spinner are ONE unit, PINNED TO THE TOP at the same vertical level as the
+            // playback now-playing card (Spacer(16) → card). The board "transforms" seamlessly
+            // into the playback card (matchedGeometry `morphBoard`); the spinner beneath is a
+            // calm reassurance that dismisses with the loader. The rest of the screen is empty.
+            VStack(spacing: 24) {
                 // STAGE WORD — one stage per `stageSeconds` on a plain timer (coarse cadence
-                // is enough; the word only changes at stage boundaries). NOT loadProgress.
+                // is enough; the word only changes at stage boundaries). Drives the flip-board.
                 TimelineView(.periodic(from: loaderStart, by: 0.2)) { ctx in
                     let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
                     loaderBoard(lineIndex: LoaderTiming.stageIndex(elapsed: elapsed))
                 }
-                // DETERMINATE BAR — even step per stage (LoaderTiming.barFill); the final
-                // raise to 100% happens on ready (player.loaderComplete). The bar's own
-                // .animation ramps each step so the climb reads smooth + steady.
-                TimelineView(.periodic(from: loaderStart, by: 0.05)) { ctx in
-                    let elapsed = max(0, ctx.date.timeIntervalSince(loaderStart))
-                    loaderProgressBar(fill: player.loaderComplete ? 1.0 : LoaderTiming.barFill(elapsed: elapsed))
-                }
+                // ONGOING SIGNAL — the same subtle black spinner the running-order shows on a
+                // synthesising story, sitting under the board. A quiet "still working" (no
+                // percentage racing the flip-board); it spins until the gate dismisses the loader.
+                loaderSpinner
             }
             .padding(.top, 16)   // pin to the top — same level as the playback card
             Spacer(minLength: 0) // empty space below
@@ -216,34 +211,16 @@ struct NowPlayingView: View {
         .matchedGeometryEffect(id: "morphBoard", in: morph)
     }
 
-    /// Determinate progress bar in the scrubber's position. `fill` (0–1) is the
-    /// elapsed-driven, evenly-paced value from LoaderTiming — NOT backend progress — so it
-    /// advances smoothly in quarters and never sits frozen while the manifest loads.
-    /// No numeric counter: the split-flap board flicker is the hero motion; the bar just
-    /// fills quietly as reassurance — one moving thing, not a competing percentage.
-    private func loaderProgressBar(fill: Double) -> some View {
-        VStack(spacing: 10) {
-            HStack {
-                Text("ASSEMBLING")
-                    .font(.label(11)).tracking(2)
-                    .foregroundColor(inkMuted)
-                Spacer()
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(ink.opacity(0.12))
-                    Capsule().fill(ink)
-                        .frame(width: max(0, geo.size.width * fill))
-                        // Ramp each per-stage step (and the final raise to 100%) so the bar
-                        // reads as a smooth, steady climb rather than a hard jump.
-                        .animation(.easeInOut(duration: 0.55), value: fill)
-                }
-            }
-            .frame(height: 4)
-        }
-        .padding(.horizontal, 4)
-        // Becomes the scrubber: matched frame morphs into `scrubberSection` on the flip.
-        .matchedGeometryEffect(id: "morphScrubber", in: morph)
+    /// Quiet ongoing-work signal beneath the flip-board — the SAME custom black spinner the
+    /// running-order shows on a synthesising story (`DownloadSpinner`), just scaled up a touch
+    /// and centred. It replaces the old determinate 0→100 bar: a calm "still working", not a
+    /// race to 100% that competes with the flip-board flicker. It spins for the loader's whole
+    /// life and is removed when the state leaves `.preparing` (i.e. the safe_to_start dismiss).
+    private var loaderSpinner: some View {
+        DownloadSpinner(color: ink.opacity(0.6))
+            .scaleEffect(1.5)
+            .frame(height: 22)
+            .accessibilityLabel("Preparing your briefing")
     }
 
     /// Calm, human fail state — never a status code or raw error. The ↻ machined
@@ -376,7 +353,7 @@ struct NowPlayingView: View {
 
     private var headlineFlapCells: some View {
         GeometryReader { geo in
-            let layout = headlineLayout(currentHeadline.uppercased(), width: geo.size.width)
+            let layout = headlineLayout(currentHeadline.uppercased(), width: geo.size.width, height: geo.size.height)
             VStack(alignment: .leading, spacing: layout.gap) {
                 ForEach(Array(layout.rows.enumerated()), id: \.offset) { _, row in
                     HStack(spacing: layout.gap) {
@@ -390,21 +367,25 @@ struct NowPlayingView: View {
                     }
                 }
             }
-            // Centre the headline vertically in the reserved box so a SHORT (1–2 row) headline
-            // sits balanced instead of pinned to the top with a big empty gap below.
+            // Centre the (now board-filling) headline vertically so it sits balanced — the cell
+            // size is scaled UP to fill the reserved height, so a short headline no longer leaves
+            // a big dark void; a long headline shrinks to fit and centres the same way.
             .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
         }
         .frame(height: headlineHeight)
     }
 
-    /// Word-wrap the headline into flap-cell rows, auto-sizing the cell so the
-    /// longest word fits and the whole headline stays within a row cap.
-    private func headlineLayout(_ text: String, width: CGFloat) -> (cell: CGSize, gap: CGFloat, rows: [[Character]]) {
+    /// Word-wrap the headline into flap-cell rows and auto-size the cell to FILL the board: the
+    /// largest cell that (a) fits the longest word across the width, (b) keeps rows within the cap,
+    /// and (c) fits the reserved height. So a SHORT headline scales up to fill the dark board
+    /// instead of leaving a void, while a LONG headline shrinks to fit — both stay graceful.
+    private func headlineLayout(_ text: String, width: CGFloat, height: CGFloat) -> (cell: CGSize, gap: CGFloat, rows: [[Character]]) {
         let gap: CGFloat = 2.5
-        let maxCellW: CGFloat = 22
+        let absMaxCellW: CGFloat = 36   // ceiling so a 1–2 word headline stays bold, not cartoonish
         let minCellW: CGFloat = 11
         let maxRows = 4
         let words = text.split(separator: " ").map(String.init)
+        let longest = words.map(\.count).max() ?? 0
 
         func rowsAt(_ cellW: CGFloat) -> [[Character]] {
             var rows: [[Character]] = []
@@ -419,21 +400,31 @@ struct NowPlayingView: View {
             return rows
         }
 
-        // Largest cell that fits the longest single word AND keeps rows ≤ cap.
-        var cellW = maxCellW
-        if let longest = words.map(\.count).max(), longest > 0 {
-            cellW = min(maxCellW, (width - CGFloat(max(0, longest - 1)) * gap) / CGFloat(longest))
+        guard width > 0, height > 0, !words.isEmpty else {
+            return (CGSize(width: minCellW, height: minCellW * 1.5), gap, rowsAt(minCellW))
         }
-        cellW = max(minCellW, cellW)
-        while cellW > minCellW && rowsAt(cellW).count > maxRows {
-            cellW -= 1
+
+        // Search down from the ceiling for the largest cell that satisfies width + row-cap + height
+        // — i.e. the cell size that fills the board without overflowing it.
+        var cellW = minCellW
+        var cw = absMaxCellW
+        while cw >= minCellW {
+            let rows = rowsAt(cw)
+            let longestFits = longest == 0 || (CGFloat(longest) * cw + CGFloat(max(0, longest - 1)) * gap) <= width
+            let contentH = CGFloat(rows.count) * cw * 1.5 + CGFloat(max(0, rows.count - 1)) * gap
+            if rows.count <= maxRows && longestFits && contentH <= height {
+                cellW = cw
+                break
+            }
+            cw -= 0.5
         }
         return (CGSize(width: cellW, height: cellW * 1.5), gap, rowsAt(cellW))
     }
 
     private var headlineHeight: CGFloat {
-        // Reserve up to ~3 rows of headline; flap cells size to fit within.
-        110
+        // Reserved headline box; the flap cell scales UP to fill this height for short headlines
+        // and DOWN (wrapping to ≤4 rows) for long ones — see headlineLayout.
+        118
     }
 
     // MARK: - Scrubber + bulletin timers
@@ -459,8 +450,9 @@ struct NowPlayingView: View {
                     .foregroundColor(ink)
             }
         }
-        // Morph destination for the loader's progress bar (same id as loaderProgressBar).
-        .matchedGeometryEffect(id: "morphScrubber", in: morph)
+        // Reveals with the card (fade + rise) as the board morph settles — the loader no longer
+        // has a progress bar to morph FROM, so the scrubber simply eases in beneath the card.
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
     // MARK: - Transport
