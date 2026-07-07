@@ -153,30 +153,21 @@ CATEGORY_TIEBREAK_STRENGTH = 0.20
 #     rather than being evicted (keeps the fresh-category-relief behaviour intact).
 SOURCE_AUTHORITY_STRENGTH = 0.30   # trusted lift (was a flat 0.10). ⚑ tune.
 UNKNOWN_AUTHORITY_FACTOR = 0.60    # front-page down-rank for untrusted/unknown stories. ⚑ tune.
-TIER_AUTHORITY_BONUS: dict[int, float] = {1: 1.0, 2: 0.6, 3: 0.3}  # legacy; superseded by resolve_authority
-
-# Lead lock: the first N bulletin slots are pinned to importance rank and require a
-# lead-eligible (trusted) story, so the biggest story leads and an unknown
-# single-source item can never occupy a lead slot. Used by thresholds + connective.
-LEAD_PIN_COUNT = 3
-
 # 0–10 normalisation: score10 = 10 · importance / (importance + IMPORTANCE_HALF).
-# IMPORTANCE_HALF is the importance value that maps to 5/10. Calibrated against the
-# live importance distribution (max raw importance ~6): 0.9 maps the biggest stories
-# to ~8.7 and the bulk to ~6.5, so the front/top-stories bar is actually reachable
-# (was 2.2 → max score 7.34, BELOW the 7.5 bar, so via_front never fired). ⚑ recalibrate
-# as coverage richens (the raw ceiling rises on multi-source days).
+# IMPORTANCE_HALF maps an importance value to 5/10. NOTE: compute_importance (with the
+# freshness term) is RANK-TIME ONLY — it orders the editorial review set. The REQUEST path
+# selects on the persisted, time-invariant merit_score from data.ranked_stories (scorer.
+# compute_merit → bulletin.selection), NOT on live importance. Calibrated against the live
+# importance distribution (max raw ~6): 0.9 maps the biggest stories to ~8.7. ⚑ recalibrate.
 IMPORTANCE_HALF = 0.9
 
 # ── Threshold + filter-order selection (personalisation lives HERE) ──────────────
-# A preset is a QUALITY BAR (not a count): a story qualifies for a selected category
-# when its 0–10 normalized_score clears the preset's bar. Quick = high bar (only the
-# big stuff), Standard = middle, Deep = lower bar (more depth). One bar per preset,
-# applied uniformly to every selected source (front page, region bucket, topic). Bars
-# calibrated against live prod scores (max reachable ~8.6, bulk 6–7) so each preset
-# yields a genuinely different, non-empty bulletin. Length is an OUTPUT of what clears
-# the bar, bounded per-category by PRESET_DEPTH and globally by MAX_BULLETIN_STORIES.
-# ⚑ recalibrate as coverage richens (the raw score ceiling rises on multi-source days).
+# A preset is a QUALITY BAR (not a count): a story qualifies for a selected category when its
+# 0–10 score clears the preset's bar. On the REQUEST path that score is the persisted
+# merit_score (the stable ranked list), applied uniformly to every selected source (front
+# page, region bucket, topic). Quick = high bar (only the big stuff), Standard = middle, Deep
+# = lower bar (more depth). Length is an OUTPUT of what clears the bar, bounded per-category by
+# PRESET_DEPTH and globally by MAX_BULLETIN_STORIES. ⚑ recalibrate as coverage richens.
 PRESET_BAR: dict[str, float] = {"short": 7.0, "medium": 6.4, "detailed": 6.0}
 DEFAULT_PRESET = "medium"
 

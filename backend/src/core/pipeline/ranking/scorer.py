@@ -160,9 +160,6 @@ def score_story(
 
     # Day-level importance model — coverage-driven; the axis thresholds/depth use.
     importance, normalized = compute_importance(candidate, category_weight, now=now)
-    # Base lead-eligibility (regions unknown here; thresholds.py finalises it once the
-    # selected regions are known, so region-whitelisted names can become eligible).
-    _, lead_eligible = story_authority(candidate)
 
     return ScoredStory(
         candidate=candidate,
@@ -175,5 +172,4 @@ def score_story(
         cluster_weight=cluster,
         importance=importance,
         normalized_score=normalized,
-        lead_eligible=lead_eligible,
     )

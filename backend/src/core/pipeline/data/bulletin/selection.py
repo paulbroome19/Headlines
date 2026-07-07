@@ -7,8 +7,8 @@ single canonical pipeline; `resolve_materialised_selection` runs it once per (pr
 request_hash), pins it to a ranking run, and stores the result so both the preview and the
 final briefing read identical ordered story ids.
 
-Scope: the `read_from_ranked_list=true` path (prod). The legacy live-scoring path is left on
-its existing code behind the flag.
+Selection reads the stable ranked list (data.ranked_stories) — the only selection path
+(the read_from_ranked_list flag and the live-scoring fallback were retired: audit §7 B.9).
 
 Order (per the task): qualify_and_order → dropped-filter → dedup_same_event → cap_bulletin.
 dedup runs BEFORE cap (so cap fills N with distinct events) and operates on the candidates'
@@ -24,7 +24,6 @@ from datetime import date, datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from core.platform.config.settings import settings
 from core.pipeline.data.bulletin.connective import uk_now
 from core.pipeline.data.bulletin.edition import UserDailyEditionRepo, _categories_for
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event
@@ -45,19 +44,6 @@ from core.pipeline.ranking.thresholds import (
 )
 
 logger = logging.getLogger(__name__)
-
-_ensured = False
-
-
-def _ensure_columns(db: Session) -> None:
-    """Idempotent: pin the materialised selection to a ranking run (mirrors editorial_review's
-    runtime ADD COLUMN IF NOT EXISTS pattern — the alembic graph has multiple heads)."""
-    global _ensured
-    if _ensured:
-        return
-    db.execute(text("ALTER TABLE data.user_daily_editions ADD COLUMN IF NOT EXISTS ranking_run_id BIGINT"))
-    db.commit()
-    _ensured = True
 
 
 def _excluder(exclude_categories: list[str] | None):
@@ -203,7 +189,7 @@ def build_selection(
     preset: str,
     dedup: bool = True,
 ) -> list[dict]:
-    """The canonical ordered selection (read_from_ranked_list path): load the stable-list
+    """The canonical ordered selection (from the stable ranked list): load the stable-list
     reservoir, then finalize_selection. `dedup=False` gives the fast pre-dedup order for the
     cold-start streaming skeleton (never on the first-play LLM path)."""
     candidates = load_story_ranking_candidates(db)
@@ -234,7 +220,6 @@ def get_materialised_selection(
     """READ-ONLY: the stored materialised (deduped) selection for today, or None if not built
     yet. Used by the streaming skeleton so it matches the final briefing when the preview has
     already materialised it — without ever running the LLM on the first-play path."""
-    _ensure_columns(db)
     day = day or uk_now().date()
     row = db.execute(
         text("""SELECT story_ids, ranking_run_id FROM data.user_daily_editions
@@ -279,7 +264,6 @@ def resolve_materialised_selection(
         )
         return ordered, _depths_for(ordered), latest_run
 
-    _ensure_columns(db)
     day = uk_now().date()
     row = db.execute(
         text("""SELECT story_ids, ranking_run_id FROM data.user_daily_editions

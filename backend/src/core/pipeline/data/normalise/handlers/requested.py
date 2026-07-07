@@ -30,7 +30,7 @@ def handle_normalise_requested(event: dict) -> None:
     - categorise article into taxonomy categories
     - insert clean rows into data.normalisation_articles
     - persist entity definitions + article/entity links
-    - enqueue data.summarise.requested (temporary next step)
+    - enqueue data.cluster.requested (the next stage in the ingest cascade)
     """
 
     payload = event.get("payload") or {}

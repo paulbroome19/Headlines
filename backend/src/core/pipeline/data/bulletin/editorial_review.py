@@ -63,8 +63,6 @@ CREATE TABLE IF NOT EXISTS data.editorial_reviews (
     UNIQUE (ranking_run_id, story_id)
 );
 """
-# Additive migration for an existing table (the CREATE above is a no-op once it exists).
-_MIGRATE = "ALTER TABLE data.editorial_reviews ADD COLUMN IF NOT EXISTS top_story BOOLEAN NOT NULL DEFAULT false;"
 _MARKER = "__reviewed__"   # sentinel row: this run was reviewed (even if 0 changes)
 _ensured = False
 
@@ -77,8 +75,7 @@ class EditorialRepo:
         global _ensured
         if _ensured:
             return
-        self.db.execute(text(_DDL))
-        self.db.execute(text(_MIGRATE))
+        self.db.execute(text(_DDL))  # CREATE TABLE already declares top_story; no runtime ALTER needed
         self.db.commit()
         _ensured = True
 

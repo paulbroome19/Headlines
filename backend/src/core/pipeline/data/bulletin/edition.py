@@ -1,24 +1,13 @@
 """
-Stable per-user DAILY EDITION of the bulletin.
+Store for the materialised per-(profile, edition_date, request_hash) selection.
 
-A user's bulletin should be their edition of the day, not a fresh random draw each
-tap. Without this, every regenerate re-scores from scratch against a live-updating
-DB (a new ranking run lands every few minutes), so the set churns — 2 stories, then
-7, then 1 — and an unheard story can vanish just because the re-roll scored slightly
-differently.
+This holds the ordered story-id set for a user's edition of the day so the home preview
+and the briefing render the SAME selection (see bulletin.selection, PR #157). The repo
+below is the IO; the selection logic + freshness pinning live in bulletin.selection.
 
-Mechanism: persist the ordered story-id set per (profile, edition_date, request_hash)
-in data.user_daily_editions. On each request:
-  • First edition of the day  → use the fresh selection, persist it.
-  • Subsequent regenerations   → REUSE the stored edition, but
-      - drop stories the user has actually HEARD (consumed); UNHEARD stories persist,
-      - refill freed slots from the current best unheard candidates,
-      - splice a genuinely bigger NEW lead (the current #1) to the front so breaking
-        news still surfaces,
-      - never re-roll the already-chosen unheard set on a whim.
-
-Edition boundary = the user's local (UK) date (uk_now), so it resets at local midnight.
-The reconcile step is a pure function (unit-testable); the repo + resolver do the IO.
+(The old reconcile/splice/refill machinery — reconcile_edition, select_edition_survivors,
+resolve_daily_edition — and the read_from_ranked_list=false live-scoring path were removed:
+audit §7 B.8/B.9. The stable ranked list is now the only selection path.)
 """
 from __future__ import annotations
 
@@ -27,97 +16,6 @@ from datetime import date
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-
-from core.platform.config.settings import settings
-from core.pipeline.data.bulletin.connective import uk_now
-from core.pipeline.data.bulletin.repos.user_story_state_repo import UserStoryStateRepo
-from core.pipeline.ranking.config import MAX_BULLETIN_STORIES
-from core.pipeline.ranking.depth import depth_for_rank
-from core.pipeline.ranking.thresholds import (
-    _bucket_index,
-    _matches_category,
-    _selection_context,
-    cap_bulletin,
-)
-
-# Absolute ceiling on stories held in an edition — the global hard cap. The effective
-# size is set by the preset's per-category depth (cap_bulletin); this just bounds the
-# total so a huge news day can never blow up the edition.
-EDITION_MAX = MAX_BULLETIN_STORIES
-
-
-def reconcile_edition(
-    existing_ids: list[str],
-    fresh_ids: list[str],
-    heard_ids: set[str],
-    *,
-    max_size: int = EDITION_MAX,
-) -> list[str]:
-    """
-    Reconcile a stored edition against the current fresh selection.
-
-    existing_ids — the edition's stored ordered story ids (strings).
-    fresh_ids    — the current selection's ordered story ids (best first).
-    heard_ids    — story ids the user has consumed (as strings).
-
-    Returns the new ordered id list:
-      - KEEP existing unheard stories in their stored order (stability).
-      - SPLICE the current top story to the front if it's new (not kept, not heard) —
-        genuinely bigger news leads.
-      - REFILL freed (heard) slots and fill up to max_size with the current best new
-        stories, in fresh order.
-    Deterministic; never drops an unheard kept story except to the size cap.
-    """
-    heard = set(heard_ids)
-    kept = [sid for sid in existing_ids if sid not in heard]  # stable, unheard persist
-    seen = set(kept)
-
-    final: list[str] = list(kept)
-    # Breaking-news lead: if the current #1 is new, put it first.
-    if fresh_ids:
-        lead = fresh_ids[0]
-        if lead not in heard and lead not in seen:
-            final.insert(0, lead)
-            seen.add(lead)
-
-    # Refill freed slots + top up to the cap with current best new stories.
-    for sid in fresh_ids:
-        if len(final) >= max_size:
-            break
-        if sid not in heard and sid not in seen:
-            final.append(sid)
-            seen.add(sid)
-
-    return final[:max_size]
-
-
-def select_edition_survivors(
-    existing_ids: list[str],
-    *,
-    reservoir_ids: set[str],
-    category_of,
-    topic_cats: list[str],
-) -> list[str]:
-    """Keep only stored edition ids that still BELONG to the current selection:
-      - in the current qualifier reservoir (a genuine top story admitted via the front-page/
-        region gate, or a followed-topic story clearing the bar), OR
-      - a followed-topic story that merely dipped below the bar (kept for stability).
-    Drop ids matching NO selected bucket — a wrong-category story, or a non-top story that
-    only ever entered the edition under older ungated behaviour — so the edition can't keep
-    surfacing categories the user doesn't follow. `category_of(sid)` gives a stored id's
-    primary category (from data.stories) for ids no longer in the reservoir.
-
-    This is the edition-stickiness half of the top_story fix: the gate keeps NEW soft stories
-    out of the reservoir; this evicts ones already stuck in a running edition."""
-    survivors: list[str] = []
-    for sid in existing_ids:
-        if sid in reservoir_ids:
-            survivors.append(sid)
-            continue
-        cat = category_of(sid)
-        if cat and any(_matches_category(cat, tc) for tc in topic_cats):
-            survivors.append(sid)
-    return survivors
 
 
 class UserDailyEditionRepo:
@@ -164,109 +62,3 @@ def _categories_for(db: Session, story_ids: list[str]) -> dict[str, str | None]:
     return {r[0]: r[1] for r in rows}
 
 
-def resolve_daily_edition(
-    db: Session,
-    *,
-    profile_id: int,
-    request_hash: str,
-    reservoir: list,
-    include_top_stories: bool,
-    include_categories: list[str] | None,
-    preset: str,
-) -> tuple[list[dict], dict[str, tuple[str, int]]]:
-    """
-    Return the stable (ordered, depths) for this profile's edition of the day, reconciled
-    against the fresh selection, and persist it. Same shape the assembler expects.
-
-    `reservoir` is the FULL filter-ordered qualifier list (ScoredStory) from
-    qualify_and_order. We drop already-heard/skipped stories, balance the UNHEARD
-    reservoir into the display set (cap_bulletin: per-category depth + global ceiling in
-    filter order), then reconcile against the stored edition for stability (keep stored
-    unheard, splice a genuinely bigger new lead, refill freed slots from the balanced set).
-    Balancing on the UNHEARD reservoir is what lets heard slots refill from deeper
-    candidates instead of shrinking the bulletin. Running order is the FILTER SEQUENCE.
-    """
-    # COLLAPSED edition (Phase 3, flag-gated): when the request path reads the STABLE ranked
-    # list, the reservoir is already stable and time-invariant, so the per-user reconcile /
-    # splice / refill / stored-edition machinery is no longer needed for stability. The edition
-    # is just a FILTER over the shared list: drop heard/skipped, balance + cap. The heard/skip
-    # guarantee is preserved (get_dropped_story_ids) and the 24h guarantee comes from the list's
-    # own prune; _fresh_category_relief still applies inside qualify_and_order. No writes to
-    # user_daily_editions.
-    if settings.read_from_ranked_list:
-        dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
-        unheard = [s for s in reservoir if s.candidate.story_id not in dropped]
-        display = cap_bulletin(
-            unheard, include_top_stories=include_top_stories,
-            include_categories=include_categories, preset=preset,
-        )
-        ordered = [{"story_id": s.candidate.story_id, "primary_category": s.candidate.primary_category}
-                   for s in display]
-        depths = {s.candidate.story_id: depth_for_rank(rank) for rank, s in enumerate(display)}
-        return ordered, depths
-
-    edition_date = uk_now().date()
-    repo = UserDailyEditionRepo(db)
-    existing = repo.get_story_ids(profile_id, edition_date, request_hash)
-
-    # "Done with" = heard (consumed) OR skipped-early (rejected) — filtered EVERYWHERE so a
-    # dealt-with story never returns (across regenerations AND the day boundary); unheard
-    # (queued) stories persist.
-    dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
-
-    # Evict stored ids that no longer BELONG to this selection (wrong category / a non-top story
-    # stuck from older ungated behaviour) BEFORE reconciling — so an edition can't keep surfacing
-    # unfollowed categories. Followed-topic stories that merely dipped below the bar are kept.
-    if existing:
-        reservoir_ids = {s.candidate.story_id for s in reservoir}
-        reservoir_cat = {s.candidate.story_id: s.candidate.primary_category for s in reservoir}
-        ext_missing = [sid for sid in existing if sid not in reservoir_cat]
-        ext_cat = _categories_for(db, ext_missing) if ext_missing else {}
-        _, _, topic_cats_ev = _selection_context(include_top_stories, include_categories)
-        existing = select_edition_survivors(
-            existing,
-            reservoir_ids=reservoir_ids,
-            category_of=lambda sid: ext_cat.get(sid),
-            topic_cats=topic_cats_ev,
-        )
-
-    # Balance the unheard reservoir into this preset's display set (depth + ceiling).
-    unheard = [s for s in reservoir if s.candidate.story_id not in dropped]
-    balanced = cap_bulletin(
-        unheard, include_top_stories=include_top_stories,
-        include_categories=include_categories, preset=preset,
-    )
-    balanced_ids = [s.candidate.story_id for s in balanced]
-
-    if existing is None:
-        final_ids = balanced_ids
-    else:
-        final_ids = reconcile_edition(existing, balanced_ids, dropped, max_size=EDITION_MAX)
-
-    repo.upsert(profile_id, edition_date, request_hash, final_ids)
-
-    # Category per id: from the reservoir where present, else data.stories (a stored story
-    # kept for stability that has since dropped out of the fresh reservoir).
-    cat_by_id: dict[str, str | None] = {s.candidate.story_id: s.candidate.primary_category for s in reservoir}
-    missing = [sid for sid in final_ids if sid not in cat_by_id]
-    if missing:
-        cat_by_id.update(_categories_for(db, missing))
-
-    # Running order = FILTER SEQUENCE (top-stories block → … → sport), by SELECTED-source
-    # bucket. Stable sort preserves the reconciled within-bucket order (rank + stability). A
-    # genuine top story (editorial top_story flag) sits in the top-stories block; carry the
-    # flag + geo from the reservoir (edition-only stored ids default to not-a-top-story).
-    front_page, regions, topic_cats = _selection_context(include_top_stories, include_categories)
-    top_by_id = {s.candidate.story_id: s.candidate.top_story for s in reservoir}
-    geo_by_id = {s.candidate.story_id: s.candidate.geo_region for s in reservoir}
-    final_ids.sort(key=lambda sid: _bucket_index(
-        cat_by_id.get(sid), top_by_id.get(sid, False), geo_by_id.get(sid),
-        topic_cats, front_page, regions,
-    ))
-
-    ordered: list[dict] = []
-    depths: dict[str, tuple[str, int]] = {}
-    for rank, sid in enumerate(final_ids):
-        ordered.append({"story_id": sid, "primary_category": cat_by_id.get(sid)})
-        depths[sid] = depth_for_rank(rank)
-    return ordered, depths
