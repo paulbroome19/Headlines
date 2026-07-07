@@ -20,8 +20,6 @@ from core.pipeline.data.ingest.events import DATA_INGEST_REQUESTED
 from core.pipeline.ranking.repos.ranking_run_repo import RankingRunRepo
 from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
 from core.pipeline.ranking.ranked_list import scored_from_ranked_list
-from core.pipeline.ranking.scorer import score_story
-from core.pipeline.ranking.category_ranker import get_category_weight
 from core.pipeline.ranking.thresholds import cap_bulletin, qualify_and_order
 from core.pipeline.ranking.depth import depth_for_rank, depth_tier_for_rank
 from core.pipeline.ranking.config import DEFAULT_PRESET
@@ -40,16 +38,10 @@ from core.pipeline.data.bulletin.connective import (
     generate_connective, generate_greeting, generate_bridges_and_outro, uk_now,
 )
 from core.pipeline.data.bulletin.outros import build_outro
-from core.pipeline.data.bulletin.edition import resolve_daily_edition
 from core.pipeline.data.bulletin.selection import (
     build_selection,
     get_materialised_selection,
     resolve_materialised_selection,
-)
-from core.pipeline.data.bulletin.editorial_review import (
-    apply_cached_editorial,
-    apply_editorial,
-    editorial_adjustments,
 )
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
@@ -308,49 +300,22 @@ def get_home_preview(profile_id: int):
     exclude_categories = list(profile.get("exclude_categories") or [])
     headline_by_id: dict[str, str] = {}
 
-    if settings.read_from_ranked_list:
-        # ONE materialised selection — byte-identical to what the briefing will open with.
-        filters: dict = {"preset": preset, "include_top_stories": include_top_stories}
-        if include_categories:
-            filters["include_categories"] = sorted(include_categories)
-        if exclude_categories:
-            filters["exclude_categories"] = sorted(exclude_categories)
-        if profile.get("name"):
-            filters["name"] = profile["name"].strip()
-        request_hash = compute_request_hash(filters)
-        with SessionLocal() as db:
-            ordered, _depths, _run = resolve_materialised_selection(
-                db, profile_id=profile_id, request_hash=request_hash,
-                include_top_stories=include_top_stories, include_categories=include_categories,
-                exclude_categories=exclude_categories, preset=preset,
-            )
-        cat_by_id = {o["story_id"]: o.get("primary_category") for o in ordered}
-    else:
-        # Legacy live-scoring path (read_from_ranked_list=false): unchanged inline selection.
-        with SessionLocal() as db:
-            candidates = load_story_ranking_candidates(db)
-            dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
-            scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
-        reservoir = qualify_and_order(
-            scored, include_top_stories=include_top_stories,
-            include_categories=include_categories, preset=preset,
+    # ONE materialised selection — byte-identical to what the briefing will open with.
+    filters: dict = {"preset": preset, "include_top_stories": include_top_stories}
+    if include_categories:
+        filters["include_categories"] = sorted(include_categories)
+    if exclude_categories:
+        filters["exclude_categories"] = sorted(exclude_categories)
+    if profile.get("name"):
+        filters["name"] = profile["name"].strip()
+    request_hash = compute_request_hash(filters)
+    with SessionLocal() as db:
+        ordered, _depths, _run = resolve_materialised_selection(
+            db, profile_id=profile_id, request_hash=request_hash,
+            include_top_stories=include_top_stories, include_categories=include_categories,
+            exclude_categories=exclude_categories, preset=preset,
         )
-
-        def _excluded(cat: str | None) -> bool:
-            return bool(cat) and any(cat == e or cat.startswith(e + ".") for e in exclude_categories)
-
-        reservoir = [
-            s for s in reservoir
-            if not _excluded(s.candidate.primary_category) and s.candidate.story_id not in dropped
-        ]
-        display = cap_bulletin(
-            reservoir, include_top_stories=include_top_stories,
-            include_categories=include_categories, preset=preset,
-        )
-        ordered = [{"story_id": s.candidate.story_id, "primary_category": s.candidate.primary_category}
-                   for s in display]
-        cat_by_id = {o["story_id"]: o["primary_category"] for o in ordered}
-        headline_by_id = {s.candidate.story_id: s.candidate.title or "" for s in display}
+    cat_by_id = {o["story_id"]: o.get("primary_category") for o in ordered}
 
     story_count = len(ordered)
     # Minutes estimate calibrated to real briefings (measured words/duration), not the
@@ -753,78 +718,6 @@ def _preset_from_minutes(max_duration_minutes: float | None) -> str:
     return "detailed"
 
 
-def _select_reservoir(
-    db,
-    *,
-    include_top_stories: bool,
-    include_categories: list[str] | None,
-    exclude_categories: list[str] | None,
-    preset: str,
-    ranking_run_id: int | None = None,
-    cache_only_editorial: bool = False,
-) -> list:
-    """
-    Score fresh candidates (coverage-driven + curated authority/UK-lean), then return the
-    full QUALIFIER RESERVOIR for this preset: every story that belongs to a chosen source
-    and clears the preset's bar, ordered by the user's FILTER SEQUENCE (top-stories → … →
-    sport), within-category by rank. No depth/ceiling cap here — cap_bulletin (or the
-    daily edition) applies balance + depth + ceiling on top. Returns `ScoredStory`s so the
-    balance step can see scores; excluded categories are filtered out.
-
-    ranking_run_id — enables the EDITORIAL top_story gate: the reviewed candidates get their
-    persisted significance/top-story flags applied BEFORE selection, so the front-page/region
-    blocks admit only genuine top stories (not high-coverage soft news).
-    cache_only_editorial — read ONLY precomputed flags (no LLM). The flags are computed once
-    at rank time; hot paths (the streaming skeleton) use this so they gate correctly without
-    ever blocking the response on a cold Haiku call. When False, a cold run computes the pass
-    lazily (blocking path) — a safety net if the rank-time precompute was skipped/failed.
-    """
-    candidates = load_story_ranking_candidates(db)
-
-    if settings.read_from_ranked_list:
-        # STABLE LIST: order by the persisted, time-invariant merit_score (insert-in-place,
-        # coverage-growth-only reorder) — no live re-scoring, so positions don't swing with
-        # recency. The list already carries the stable editorial top_story flag, so the live
-        # editorial pass is skipped here. Stories leave only via 24h age (list prune) or the
-        # heard/skip filter downstream — never because a newer story out-ranked them.
-        scored = scored_from_ranked_list(db, candidates)
-    else:
-        scored = [score_story(c, get_category_weight(c.primary_category)) for c in candidates]
-        if ranking_run_id is not None:
-            try:
-                if cache_only_editorial:
-                    apply_cached_editorial(db, ranking_run_id, scored)
-                else:
-                    apply_editorial(scored, editorial_adjustments(db, ranking_run_id, scored))
-            except Exception as e:  # never let the editor break assembly
-                logging.getLogger(__name__).warning("editorial pass skipped: %s", e)
-
-    reservoir = qualify_and_order(
-        scored,
-        include_top_stories=include_top_stories,
-        include_categories=include_categories,
-        preset=preset,
-    )
-
-    excludes = list(exclude_categories or [])
-
-    def _excluded(cat: str | None) -> bool:
-        if not cat:
-            return False
-        return any(cat == e or cat.startswith(e + ".") for e in excludes)
-
-    return [s for s in reservoir if not _excluded(s.candidate.primary_category)]
-
-
-def _cap_to_dicts(display: list) -> tuple[list[dict], dict[str, tuple[str, int]]]:
-    """Turn a capped, ordered ScoredStory list into (ordered_story_dicts, depths_by_rank)."""
-    ordered: list[dict] = []
-    depths: dict[str, tuple[str, int]] = {}
-    for s in display:
-        sid = s.candidate.story_id
-        depths[sid] = depth_for_rank(len(ordered))
-        ordered.append({"story_id": sid, "primary_category": s.candidate.primary_category})
-    return ordered, depths
 
 
 def _get_or_assemble_bulletin(
@@ -919,39 +812,14 @@ def _get_or_assemble_bulletin(
                 ]
         else:
             # ── Non-cached: day-level threshold selection + depth-by-rank ──────
-            # Score fresh candidates (coverage-driven), keep everything that clears
-            # its source's threshold for this preset, ordered by importance; depth
-            # scales with rank. Length is an OUTPUT of what qualifies, not a target.
-            # The profile path selects a deeper reservoir (not just the target) so the
-            # daily edition can drop already-heard stories and refill from candidates
-            # beyond the target instead of shrinking. The non-profile path takes exactly
-            # the preset target (its length control).
-            if settings.read_from_ranked_list:
-                # The ONE materialised selection (deduped, capped) — byte-identical to what the
-                # home preview showed. Both consume resolve_materialised_selection.
-                ordered, depths, _pin = resolve_materialised_selection(
-                    db, profile_id=profile_id, request_hash=request_hash,
-                    include_top_stories=include_top_stories, include_categories=include_categories,
-                    exclude_categories=exclude_categories, preset=preset,
-                )
-            else:
-                # Legacy live-scoring path (flag off): unchanged reservoir + edition/cap.
-                reservoir = _select_reservoir(
-                    db, include_top_stories=include_top_stories, include_categories=include_categories,
-                    exclude_categories=exclude_categories, preset=preset, ranking_run_id=ranking_run_id,
-                )
-                if profile_id is not None:
-                    ordered, depths = resolve_daily_edition(
-                        db, profile_id=profile_id, request_hash=request_hash, reservoir=reservoir,
-                        include_top_stories=include_top_stories, include_categories=include_categories,
-                        preset=preset,
-                    )
-                    db.commit()
-                else:
-                    ordered, depths = _cap_to_dicts(cap_bulletin(
-                        reservoir, include_top_stories=include_top_stories,
-                        include_categories=include_categories, preset=preset,
-                    ))
+            # The ONE materialised selection (deduped, capped) — byte-identical to what the home
+            # preview showed. Both preview and briefing consume resolve_materialised_selection;
+            # it drops heard/skipped, dedups, caps, and pins the day's ranking run.
+            ordered, depths, _pin = resolve_materialised_selection(
+                db, profile_id=profile_id, request_hash=request_hash,
+                include_top_stories=include_top_stories, include_categories=include_categories,
+                exclude_categories=exclude_categories, preset=preset,
+            )
 
             candidate_ids = [o["story_id"] for o in ordered[:_SUMMARISE_BUDGET]]
 
@@ -997,13 +865,8 @@ def _get_or_assemble_bulletin(
                     detail={"code": "no_stories", "message": "No stories match the requested filters"},
                 )
 
-            # TACTICAL #35: collapse same-event duplicates. On the read_from_ranked_list path the
-            # materialised selection already deduped (before cap), so re-running here would be a
-            # second, redundant Haiku call — skip it. Only the legacy live-scoring path still
-            # dedups post-summary. (Remove when #36 (embeddings) lands.)
-            if not settings.read_from_ranked_list:
-                stories = dedup_same_event(stories)
-
+            # (Same-event dedup already ran in the materialised selection, before cap — TACTICAL
+            # #35, in bulletin.selection. Remove that when #36 (embeddings) lands.)
             now_uk = uk_now()
             conn = generate_connective(
                 stories=stories,
@@ -1190,36 +1053,17 @@ def prepare_bulletin_for_manifest(
         # do we fall back to the fast PRE-DEDUP order (build_selection(dedup=False)); the background
         # then materialises the deduped final. The LEAD is identical either way — dedup keeps the
         # best-ranked member of each group, so it can never drop index 0 (opener-gate safe).
-        if settings.read_from_ranked_list:
-            mat = (get_materialised_selection(db, profile_id=profile_id, request_hash=request_hash)
-                   if profile_id is not None else None)
-            if mat is not None:
-                ordered, depths, _run = mat
-            else:
-                ordered = build_selection(
-                    db, profile_id=profile_id, include_top_stories=include_top_stories,
-                    include_categories=include_categories, exclude_categories=exclude_categories,
-                    preset=preset, dedup=False,
-                )
-                depths = {o["story_id"]: depth_for_rank(i) for i, o in enumerate(ordered)}
+        mat = (get_materialised_selection(db, profile_id=profile_id, request_hash=request_hash)
+               if profile_id is not None else None)
+        if mat is not None:
+            ordered, depths, _run = mat
         else:
-            # Legacy live-scoring path (flag off): editorial-gated reservoir + edition/cap (unchanged).
-            reservoir = _select_reservoir(
-                db, include_top_stories=include_top_stories, include_categories=include_categories,
-                exclude_categories=exclude_categories, preset=preset,
-                ranking_run_id=ranking_run_id, cache_only_editorial=True,
+            ordered = build_selection(
+                db, profile_id=profile_id, include_top_stories=include_top_stories,
+                include_categories=include_categories, exclude_categories=exclude_categories,
+                preset=preset, dedup=False,
             )
-            if profile_id is not None:
-                ordered, depths = resolve_daily_edition(
-                    db, profile_id=profile_id, request_hash=request_hash, reservoir=reservoir,
-                    include_top_stories=include_top_stories, include_categories=include_categories, preset=preset,
-                )
-                db.commit()
-            else:
-                ordered, depths = _cap_to_dicts(cap_bulletin(
-                    reservoir, include_top_stories=include_top_stories,
-                    include_categories=include_categories, preset=preset,
-                ))
+            depths = {o["story_id"]: depth_for_rank(i) for i, o in enumerate(ordered)}
 
         if not ordered:
             raise HTTPException(
@@ -1431,7 +1275,7 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
         # Read it if the preview already materialised it; else build+store it now (cold play-first) —
         # in the BACKGROUND, off the first-play path. dedup runs BEFORE cap, so this can differ from
         # deduping the pre-dedup skeleton, which is exactly why we rebuild rather than dedup candidate_ids.
-        if settings.read_from_ranked_list and profile_id is not None:
+        if profile_id is not None:
             with SessionLocal() as db:
                 final_ordered, _fd, _fr = resolve_materialised_selection(
                     db, profile_id=profile_id, request_hash=request_hash,

@@ -7,8 +7,8 @@ single canonical pipeline; `resolve_materialised_selection` runs it once per (pr
 request_hash), pins it to a ranking run, and stores the result so both the preview and the
 final briefing read identical ordered story ids.
 
-Scope: the `read_from_ranked_list=true` path (prod). The legacy live-scoring path is left on
-its existing code behind the flag.
+Selection reads the stable ranked list (data.ranked_stories) — the only selection path
+(the read_from_ranked_list flag and the live-scoring fallback were retired: audit §7 B.9).
 
 Order (per the task): qualify_and_order → dropped-filter → dedup_same_event → cap_bulletin.
 dedup runs BEFORE cap (so cap fills N with distinct events) and operates on the candidates'
@@ -203,7 +203,7 @@ def build_selection(
     preset: str,
     dedup: bool = True,
 ) -> list[dict]:
-    """The canonical ordered selection (read_from_ranked_list path): load the stable-list
+    """The canonical ordered selection (from the stable ranked list): load the stable-list
     reservoir, then finalize_selection. `dedup=False` gives the fast pre-dedup order for the
     cold-start streaming skeleton (never on the first-play LLM path)."""
     candidates = load_story_ranking_candidates(db)
