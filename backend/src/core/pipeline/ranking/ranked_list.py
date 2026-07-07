@@ -8,6 +8,12 @@ story's coverage genuinely grows (source_count jumps by both an absolute and a r
 margin) it is re-scored and moved up. Stories age out of the list past 24h. Position is
 ORDER BY merit_score DESC, story_id.
 
+The stable list stops rank CHURN (positions shuffling every ~15 min); it is NOT meant to
+freeze editorial VERDICTS. So the top_story flag — a front-page GATE, not an ordering signal
+— is re-stamped on EVERY placed row from the latest editorial verdict on every reviewed run,
+unconditionally (not growth-gated). merit_score is untouched by that re-stamp, so it can
+never reorder the list. (Merit itself only moves on coverage growth — see regrade_on_growth.)
+
 Phase 1: this runs ALONGSIDE the existing ranking_runs (dual-write). The request path does
 not read this list yet.
 """
@@ -34,7 +40,8 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class RankedListStats:
     inserted: int
-    regraded: int   # re-scored + moved on genuine coverage growth
+    regraded: int    # re-scored + moved on genuine coverage growth
+    restamped: int   # top_story flags flipped to the latest editorial verdict (no reorder)
     pruned: int
 
 
@@ -99,13 +106,39 @@ class RankedStoryRepo:
 
     def flagged_top_story_ids(self, ranking_run_id: int) -> set[str]:
         """story_ids the just-run editorial pass flagged top_story — the source of the stable
-        per-story flag written on insert / coverage-growth regrade."""
+        per-story flag written on insert and re-stamped every reviewed run."""
         rows = self.db.execute(
             text("""SELECT story_id FROM data.editorial_reviews
                     WHERE ranking_run_id = :r AND top_story = true AND story_id <> '__reviewed__'"""),
             {"r": ranking_run_id},
         ).all()
         return {str(r[0]) for r in rows}
+
+    def run_reviewed(self, ranking_run_id: int) -> bool:
+        """True once the editorial pass has recorded a verdict for this run (its `__reviewed__`
+        marker row exists). The unconditional flag re-stamp is gated on this so a run whose
+        editorial precompute failed or was skipped can NEVER wipe every flag to False."""
+        row = self.db.execute(
+            text("""SELECT 1 FROM data.editorial_reviews
+                    WHERE ranking_run_id = :r AND story_id = '__reviewed__' LIMIT 1"""),
+            {"r": ranking_run_id},
+        ).first()
+        return row is not None
+
+    def restamp_top_story(self, flagged: set[str]) -> int:
+        """Re-stamp top_story on EVERY placed row to this run's editorial verdict: True iff the
+        story is flagged, False otherwise. UNCONDITIONAL — not growth-gated. This only writes
+        `top_story`, never `merit_score`, so it cannot change positions (ORDER BY merit_score
+        DESC, story_id); and it only touches rows whose flag actually changes. Returns the number
+        of flags flipped. Callers MUST gate this on run_reviewed() so an unreviewed run can't
+        clear every flag."""
+        res = self.db.execute(
+            text("""UPDATE data.ranked_stories
+                       SET top_story = (story_id::text = ANY(:flagged))
+                     WHERE top_story IS DISTINCT FROM (story_id::text = ANY(:flagged))"""),
+            {"flagged": list(flagged)},
+        )
+        return res.rowcount or 0
 
 
 def scored_from_ranked_list(
@@ -141,6 +174,16 @@ def _coverage_grew(placed_sc: int, new_sc: int) -> bool:
     return new_sc >= placed_sc + COVERAGE_GROWTH_MIN_ABS and new_sc >= placed_sc * COVERAGE_GROWTH_MIN_FACTOR
 
 
+def top_story_flags(placed_ids: set[str], flagged: set[str]) -> dict[str, bool]:
+    """Pure: the correct top_story flag for every placed story given THIS run's editorial
+    verdict — True iff the story is in the run's flagged set. The flag is a front-page GATE,
+    not an ordering signal, and it is recomputed from the latest verdict every reviewed run,
+    so a story the editor has reversed on (e.g. demoted once its coverage looked incremental)
+    stops leading on the very next run instead of freezing at whatever it was when it entered
+    the list. restamp_top_story is the bulk-SQL equivalent of applying this map."""
+    return {sid: (sid in flagged) for sid in placed_ids}
+
+
 def maintain_ranked_list(
     db: Session, ranking_run_id: int, candidates: list[StoryRankingCandidate],
 ) -> RankedListStats:
@@ -163,8 +206,15 @@ def maintain_ranked_list(
         elif _coverage_grew(placed[sid], new_sc):
             merit = compute_merit(c, get_category_weight(c.primary_category))
             regraded += repo.regrade_on_growth(sid, merit, is_top, new_sc)
-        # else: placed and no genuine coverage growth → left exactly where it is.
+        # else: placed and no genuine coverage growth → merit left exactly where it is.
+
+    # Re-stamp the editorial GATE on EVERY placed row from this run's verdict — unconditionally,
+    # NOT growth-gated. top_story bypasses the bar and all caps, so a stale flag is maximally
+    # consequential; but it is a gate, not an ordering signal, and merit is untouched, so the
+    # re-stamp cannot churn positions. Skipped when the run had no editorial review, so a failed
+    # precompute can never wipe every flag to False.
+    restamped = repo.restamp_top_story(flagged) if repo.run_reviewed(ranking_run_id) else 0
 
     pruned = repo.prune_aged(RANKED_LIST_WINDOW_HOURS)
     db.commit()
-    return RankedListStats(inserted=inserted, regraded=regraded, pruned=pruned)
+    return RankedListStats(inserted=inserted, regraded=regraded, restamped=restamped, pruned=pruned)

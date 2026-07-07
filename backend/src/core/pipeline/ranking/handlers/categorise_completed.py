@@ -87,7 +87,7 @@ def handle_categorise_completed(event: dict) -> None:
         try:
             list_candidates = load_story_ranking_candidates(db, hours=RANKED_LIST_WINDOW_HOURS)
             stats = maintain_ranked_list(db, run_id, list_candidates)
-            logger.info("ranked_list: run=%s inserted=%d regraded=%d pruned=%d",
-                        run_id, stats.inserted, stats.regraded, stats.pruned)
+            logger.info("ranked_list: run=%s inserted=%d regraded=%d restamped=%d pruned=%d",
+                        run_id, stats.inserted, stats.regraded, stats.restamped, stats.pruned)
         except Exception:
             logger.exception("ranked_list maintenance skipped for run %s", run_id)
