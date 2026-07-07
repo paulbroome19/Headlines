@@ -1,7 +1,9 @@
 import asyncio
+import concurrent.futures
 import json as _json
 import logging
 import os
+import random
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -34,7 +36,10 @@ from core.pipeline.data.bulletin.repos.user_story_state_repo import (
 )
 from core.pipeline.data.bulletin.assembler import assemble
 from core.pipeline.data.bulletin.connective import ConnectiveResult
-from core.pipeline.data.bulletin.connective import generate_connective, generate_connective_rest, uk_now
+from core.pipeline.data.bulletin.connective import (
+    generate_connective, generate_greeting, generate_bridges_and_outro, uk_now,
+)
+from core.pipeline.data.bulletin.outros import build_outro
 from core.pipeline.data.bulletin.edition import resolve_daily_edition
 from core.pipeline.data.bulletin.editorial_review import (
     apply_cached_editorial,
@@ -1196,6 +1201,22 @@ def _bg_load_story_dicts(ranking_run_id: int, sids: list[str], cat_by_id: dict[s
     return out
 
 
+def _bg_headlines(ordered: list[dict], limit: int = 3) -> list[str]:
+    """Cheap read of the top `limit` stories' representative_title (same source the skeleton
+    manifest uses) so the greeting can be generated at T0 from headlines alone — no summaries.
+    Returns headlines in `ordered` order; missing titles come back as ''."""
+    sids = [str(o["story_id"]) for o in ordered[:limit]]
+    if not sids:
+        return []
+    with SessionLocal() as db:
+        rows = db.execute(text("""
+            SELECT id::text AS sid, representative_title FROM data.stories
+            WHERE id::text = ANY(:ids)
+        """), {"ids": sids}).fetchall()
+    by = {sid: (t or "") for sid, t in rows}
+    return [by.get(sid, "") for sid in sids]
+
+
 def _fill_prefix_and_synth(bulletin_id: int, prefix_segments: list[dict],
                            voice: str, model: str, audio_fmt: str) -> None:
     """Fill the skeleton's first segments (intro, lead OPENER, lead remainder, transition,
@@ -1285,9 +1306,11 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
                             name: str | None, is_first_bulletin: bool,
                             ordered: list[dict], depths: dict, candidate_ids: list[str],
                             profile_id: int | None = None) -> None:
-    """Background job (runs in a threadpool as a sync BackgroundTask): prioritised summarise
-    + incremental connective + prioritised/parallel TTS, filling the skeleton so /readiness
-    streams. Prioritises the first two stories, then finalises and synthesises the rest."""
+    """Background job (runs in a threadpool as a sync BackgroundTask). SPLIT connective for fast
+    first-play: the GREETING is generated ALONE (Haiku, from the lead headline — no summaries) so
+    it and the lead opener are the ONLY things on the first-play path; every transition + the outro
+    are generated in the background AFTER the start-pack is synthesising, so they never gate. Fills
+    the skeleton so /readiness streams; then finalises and synthesises the rest."""
     try:
         voice, model, audio_fmt = tts_voice(), tts_model(), tts_audio_format()
         cat_by_id = {str(o["story_id"]): o.get("primary_category") for o in ordered}
@@ -1295,39 +1318,63 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
         now_uk = uk_now()
         first_two = [str(s) for s in candidate_ids[:_SAFE_START_STORIES]]
 
-        # 1-3. Priority: summarise the top two, write the start-pack connective, fill + parallel TTS.
-        ensure_story_summaries(ranking_run_id, first_two, depths)
+        # 1. GREETING (Haiku) + start-pack summaries, IN PARALLEL. The greeting needs only the lead
+        #    headline (read cheaply, no summary), so it fires at T0 and overlaps summarisation —
+        #    taking the ~70s connective-Sonnet call OFF the first-play path entirely.
+        headlines = _bg_headlines(ordered, limit=3)
+        lead_headline = headlines[0] if headlines else ""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            greet_future = ex.submit(
+                generate_greeting,
+                lead_headline=lead_headline, trail_headlines=headlines[1:],
+                name=name, now=now_uk, is_first_bulletin=is_first_bulletin,
+            )
+            ensure_story_summaries(ranking_run_id, first_two, depths)  # runs while the greeting generates
+            greeting = greet_future.result()
+
+        # 2-3. Assemble the start-pack from the greeting + EMPTY tissue (no Sonnet), then fill +
+        #      parallel TTS gate-first (intro + opener). safe_to_start is reachable right here.
         start_stories = _bg_load_story_dicts(ranking_run_id, first_two, cat_by_id)
-        start_conn = (
-            generate_connective(stories=start_stories, name=name, now=now_uk,
-                                is_first_bulletin=is_first_bulletin)
-            if start_stories else None
-        )
         if start_stories:
-            start_result = assemble(start_stories, seed=seed, name=name, now=now_uk,
-                                    is_first_bulletin=is_first_bulletin, connective=start_conn)
+            if greeting:
+                start_ids = [str(s["story_id"]) for s in start_stories]
+                start_conn = ConnectiveResult(
+                    greeting=greeting, order=start_ids,
+                    transitions={sid: "" for sid in start_ids},  # bridges deferred to the background
+                    outro="",                                    # dropped by _fill_prefix_and_synth anyway
+                )
+                start_result = assemble(start_stories, seed=seed, name=name, now=now_uk,
+                                        is_first_bulletin=is_first_bulletin, connective=start_conn)
+            else:
+                # Greeting LLM failed → template intro/bridges for the start-pack (unchanged fallback).
+                start_result = assemble(start_stories, seed=seed, name=name, now=now_uk,
+                                        is_first_bulletin=is_first_bulletin, connective=None)
             _fill_prefix_and_synth(bulletin_id, start_result.segments, voice, model, audio_fmt)
 
-        # 4-5. Summarise the rest; write the remaining transitions + outro (continuing the voice).
+        # 4-5. BACKGROUND (post-gate): summarise the rest, then generate EVERY non-lead bridge +
+        #      the outro in one Sonnet call, continuing the greeting's voice. Never gates first-play.
         ensure_story_summaries(ranking_run_id, candidate_ids, depths)
         all_stories = dedup_same_event(_bg_load_story_dicts(ranking_run_id, [str(s) for s in candidate_ids], cat_by_id))
-        rest = None
-        if start_conn is not None and len(all_stories) > _SAFE_START_STORIES:
-            rest = generate_connective_rest(stories=all_stories, prior_greeting=start_conn.greeting,
-                                            prior_transitions=start_conn.transitions, name=name, now=now_uk)
 
-        # 6. Full connective (merged) → authoritative segments.
+        # 6. Full connective → authoritative segments. If the greeting exists, keep it verbatim
+        #    (its intro audio is already synthesised) and only fill bridges + outro; on bridge
+        #    failure fall back to silent bridges + a template outro. If there was no greeting, the
+        #    start-pack used templates, so finish the whole bulletin on the template path too.
         full_conn = None
-        if start_conn is not None:
-            merged = dict(start_conn.transitions)
-            outro = start_conn.outro
-            if rest is not None:
-                merged.update(rest[0])
-                outro = rest[1]
-            full_conn = ConnectiveResult(
-                greeting=start_conn.greeting, order=[str(s["story_id"]) for s in all_stories],
-                transitions=merged, outro=outro,
+        if greeting:
+            order_ids = [str(s["story_id"]) for s in all_stories]
+            bridges = generate_bridges_and_outro(
+                stories=all_stories, prior_greeting=greeting, name=name, now=now_uk,
             )
+            if bridges is not None:
+                transitions, outro = {sid: bridges[0].get(sid, "") for sid in order_ids}, bridges[1]
+            else:
+                transitions = {sid: "" for sid in order_ids}
+                outro = build_outro(random.Random(seed), name=name, now=now_uk, story_count=len(all_stories))
+            if order_ids:
+                transitions[order_ids[0]] = ""  # the lead leads straight from the greeting
+            full_conn = ConnectiveResult(greeting=greeting, order=order_ids,
+                                         transitions=transitions, outro=outro)
         result = assemble(all_stories, seed=seed, name=name, now=now_uk,
                           is_first_bulletin=is_first_bulletin, connective=full_conn)
 
@@ -1337,6 +1384,18 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
                 bulletin_id, segments=result.segments, script=result.script, story_count=len(all_stories),
             )
             db.commit()
+
+        # 7a. The start-pack synthesised its bridges as EMPTY placeholders (greeting-split defers
+        #     bridge generation). Now that the full connective has filled them, synthesise the
+        #     bridges that live INSIDE the start-pack boundary — _synth_remaining skips that range,
+        #     so without this the pre-story-2 bridge would stay pending forever.
+        boundary = _start_pack_boundary(result.segments, _SAFE_START_STORIES)
+        prefix_bridges = [
+            s for s in result.segments[:boundary]
+            if s.get("type") == "transition" and (s.get("text") or "").strip()
+        ]
+        if prefix_bridges:
+            synthesize_parallel(prefix_bridges, voice=voice, model=model, audio_format=audio_fmt)
 
         # 7b. Seed heard-tracking (user_story_state) for the STREAMING path. Only the cache-hit
         # manifest (_build_full_manifest) seeds otherwise, so a fresh streaming play — e.g. an

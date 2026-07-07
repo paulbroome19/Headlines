@@ -1,12 +1,27 @@
 """
 LLM-generated connective tissue for bulletins.
 
-Generates greeting, per-story transitions, and outro in a single Anthropic
-Sonnet call so they cohere across the full bulletin. Falls back to templates
-(via assembler) when the API is unavailable or the response is malformed.
+Two ways in:
+
+  • generate_connective()  — the WHOLE bulletin (greeting + every transition + outro)
+    in ONE Sonnet call. Used by the synchronous (cached / non-streaming) assembly path
+    where nothing is gating first-play.
+
+  • The SPLIT path for streaming first-play (data.run_background_assembly):
+      – generate_greeting()          greeting ALONE, via Haiku, from the lead HEADLINE only
+                                     (no summaries) so it fires at T0 and unblocks the intro
+                                     TTS — nothing except the greeting itself gates first-play.
+      – generate_bridges_and_outro() every non-lead transition + the outro, in the BACKGROUND
+                                     after the start-pack, fed the already-written greeting so
+                                     the whole briefing keeps one voice.
+
+Every prompt shares one persona/register block (`_VOICE`) so the greeting,
+transitions, and outro never drift apart. Falls back to templates (via assembler)
+when the API is unavailable or a response is malformed.
 
 Configuration (via settings / environment variables):
-  CONNECTIVE_MODEL   Optional. Default: settings.connective_model.
+  CONNECTIVE_MODEL   Optional. Default: settings.connective_model (Sonnet). Greeting+outro.
+  GREETING_MODEL     Optional. Default: settings.fallback_model (Haiku). Greeting only.
   ANTHROPIC_API_KEY  Required. Absent → returns None (fall back to templates).
 """
 from __future__ import annotations
@@ -41,6 +56,27 @@ def uk_now() -> datetime:
 def _model() -> str:
     import os
     return os.environ.get("CONNECTIVE_MODEL") or settings.connective_model
+
+
+def _greeting_model() -> str:
+    """Model for the greeting-only call — Haiku by default (fast + cheap). The greeting is
+    short and depends only on the lead headline, so it never needs the heavier connective
+    model, and keeping it off the Sonnet path is what unblocks first-play. Override via
+    GREETING_MODEL."""
+    import os
+    return os.environ.get("GREETING_MODEL") or settings.fallback_model
+
+
+# ── The VOICE — one shared persona/register block for EVERY spoken-tissue prompt ──────────
+# Greeting, transitions, and outro all paste this in, so the register can't drift between
+# them (requirement: no seam between the greeting and the bridges around the stories). If the
+# voice needs to change, it changes HERE, once. (Kept verbatim from the single-call prompt so
+# this refactor is register-neutral.)
+_VOICE = (
+    "You are a calm, intelligent morning-briefing host — a trusted person catching "
+    "the listener up, not a hype radio DJ. You use contractions, write for natural "
+    "rhythm, and avoid broadcast stiffness."
+)
 
 
 @dataclass(frozen=True)
@@ -94,9 +130,7 @@ def _build_prompt(
     example_transitions = json.dumps({sid: ("" if i == 0 else "...") for i, sid in enumerate(input_ids)})
 
     return (
-        "You are a calm, intelligent morning-briefing host — a trusted person catching "
-        "the listener up, not a hype radio DJ. You use contractions, write for natural "
-        "rhythm, and avoid broadcast stiffness.\n\n"
+        _VOICE + "\n\n"
         "Context for this bulletin:\n"
         f"- Listener's name: {name_str}\n"
         f"- Time of day: {time_word} (raw hour: {hour})\n"
@@ -183,15 +217,16 @@ def _build_prompt(
     )
 
 
-def _post_messages(prompt: str, *, max_tokens: int) -> dict | None:
-    """POST one user message to the connective Sonnet model; return the parsed JSON
-    response dict, or None on missing key / HTTP / network failure (caller falls back)."""
+def _post_messages(prompt: str, *, max_tokens: int, model: str | None = None) -> dict | None:
+    """POST one user message to an Anthropic model; return the parsed JSON response dict, or
+    None on missing key / HTTP / network failure (caller falls back). `model` defaults to the
+    connective (Sonnet) model; the greeting call passes the Haiku model."""
     api_key = settings.anthropic_api_key
     if not api_key:
         logger.debug("connective: ANTHROPIC_API_KEY not set — skipping LLM generation")
         return None
     body = json.dumps({
-        "model": _model(),
+        "model": model or _model(),
         "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
@@ -289,28 +324,123 @@ def generate_connective(
     return ConnectiveResult(greeting=greeting, order=order, transitions=transitions, outro=outro)
 
 
-# ── Incremental connective (streaming assembly) ──────────────────────────────
-# The streaming path generates the OPENING (greeting + the story-1→2 transition) first,
-# from just the top two summaries, so playback can start; the REST (remaining transitions
-# + outro) is generated in the background once the other stories are summarised. The rest
-# call is handed the already-written opening verbatim and told to CONTINUE that exact voice,
-# so the join is seamless — no tonal reset between the first transition and the rest.
+# ── Split path 1/2: the GREETING alone (Haiku, from the lead headline) ────────────────────
+# First-play gates ONLY on the greeting + the lead opener. The greeting needs nothing but the
+# time of day, the name, and the lead HEADLINE — no story summaries — so it can be generated at
+# T0 (before/alongside summarisation) on a fast Haiku call and its TTS started immediately. This
+# is what takes the ~70s connective-Sonnet call off the first-play critical path.
 
 
-def _build_rest_prompt(
+def _build_greeting_prompt(
+    *,
+    lead_headline: str,
+    trail_headlines: list[str],
+    name: str | None,
+    now: datetime,
+    is_first_bulletin: bool,
+) -> str:
+    hour = now.hour
+    time_word = _time_of_day(hour)
+    name_str = name if name else "no name provided (skip personalisation)"
+    trail = [h for h in (trail_headlines or []) if h]
+    trail_block = "\n".join(f"  - {h!r}" for h in trail) if trail else "  (none)"
+
+    return (
+        _VOICE + "\n\n"
+        "You are writing ONLY the GREETING that opens an audio news briefing — the warm menu that "
+        "points the listener at what's coming, then hands into the news. The stories themselves are "
+        "written separately, in this same voice; you write just the opening, so there's no seam.\n\n"
+        "Context:\n"
+        f"- Listener's name: {name_str}\n"
+        f"- Time of day: {time_word} (raw hour: {hour})\n"
+        f"- Is this their first-ever bulletin: {is_first_bulletin}\n"
+        f"- LEAD story headline: {lead_headline!r}\n"
+        f"- Other headlines you MAY lightly touch (optional):\n{trail_block}\n\n"
+        "GREETING:\n"
+        "Greet the listener for the UK time of day, then TRAIL the bulletin — like a radio "
+        "'coming up...' — then hand in. The greeting is a MENU, not the first course: it points at "
+        "stories, it does NOT report them in full.\n"
+        "- Personal greeting, name once if available (e.g. \"Evening, Paul.\" / \"Hi Paul.\"), using "
+        "the UK time of day. If no name, greet naturally without one.\n"
+        "- Lead with the LEAD headline: a topic phrase plus the single most striking thing IN that "
+        "headline. Optionally touch ONE of the other headlines above with a light topic phrase — no "
+        "more, and never trail everything.\n"
+        "- Work ONLY from the headlines given — do NOT invent facts, numbers, names, or details "
+        "beyond them.\n"
+        "- End with a short, natural hand-off into the bulletin (vary it: \"Here's the latest.\" / "
+        "\"Let's get into it.\" / similar).\n"
+        + (
+            "This is the listener's first-ever bulletin — give a slightly warmer welcome than usual.\n"
+            if is_first_bulletin
+            else ""
+        )
+        + "Target: \"Hi Paul. Big one tonight — the Venezuela earthquake. Plus a telecoms merger "
+        "worth watching. Here's the latest.\"\n"
+        "BANNED (the tells of a machine): NO story counts (\"three stories\"), NO durations (\"a "
+        "couple of minutes\"), NO commentary on the day's news volume (\"heavy news day\", \"a lot "
+        "going on\", \"quiet one\"). Stay inside the content.\n\n"
+        "TTS (read aloud): numbers and times as spoken words (\"fourteen hundred\", not \"1400\").\n\n"
+        "Output ONLY valid JSON — no markdown fences, no commentary:\n"
+        '{"greeting":"..."}'
+    )
+
+
+def generate_greeting(
+    *,
+    lead_headline: str,
+    trail_headlines: list[str] | None = None,
+    name: str | None,
+    now: datetime,
+    is_first_bulletin: bool,
+) -> str | None:
+    """Generate ONLY the greeting/intro, via a fast Haiku call, from the lead headline (plus a
+    couple of trail headlines) — no story summaries required, so this can fire at T0 and unblock
+    the intro TTS. Returns the greeting text, or None on failure (caller falls back to a template
+    intro)."""
+    prompt = _build_greeting_prompt(
+        lead_headline=lead_headline, trail_headlines=trail_headlines or [],
+        name=name, now=now, is_first_bulletin=is_first_bulletin,
+    )
+    raw = _post_messages(prompt, max_tokens=400, model=_greeting_model())
+    if raw is None:
+        return None
+    try:
+        text_content = raw["content"][0]["text"].strip()
+        if text_content.startswith("```"):
+            text_content = "\n".join(
+                l for l in text_content.splitlines() if not l.strip().startswith("```")
+            )
+        parsed = json.loads(text_content)
+        greeting = str(parsed["greeting"]).strip()
+        if not greeting:
+            raise ValueError("greeting is empty")
+    except (KeyError, IndexError, ValueError, json.JSONDecodeError, TypeError) as e:
+        logger.warning("greeting: malformed (%s) — falling back to template intro", e)
+        return None
+    logger.info("greeting: generated  model=%s  len=%d", _greeting_model(), len(greeting))
+    return greeting
+
+
+# ── Split path 2/2: every bridge + the outro, in the BACKGROUND ───────────────────────────
+# Generated AFTER the start-pack is synthesising, in one Sonnet call fed the already-written
+# greeting so the whole bulletin keeps one voice (continuity across bridges is why this is one
+# call, not per-story). Nothing here can gate first-play — it runs entirely after safe_to_start
+# is achievable. The lead needs no bridge (the greeting leads into it).
+
+
+def _build_bridges_prompt(
     *,
     stories: list[dict],
     prior_greeting: str,
-    prior_transitions: dict[str, str],
     name: str | None,
     now: datetime,
 ) -> str:
-    """Prompt for the REMAINING transitions (stories 3..N) + outro, continuing the voice
-    of an already-written greeting + first transition."""
+    """Prompt for EVERY non-lead story's transition + the outro, continuing the voice of the
+    already-written greeting."""
     hour = now.hour
     time_word = _time_of_day(hour)
     order = [str(s["story_id"]) for s in stories]
-    remaining = order[2:]  # story 1 leads from the greeting; story 2's bridge is already written
+    remaining = order[1:]  # every non-lead bridge; the lead leads straight from the greeting
 
     lines: list[str] = []
     for s in stories:
@@ -320,32 +450,26 @@ def _build_rest_prompt(
         category = (s.get("primary_category") or "general").split(".")[0]
         lines.append(f"  Story {sid}: [{category}] {descriptor!r}\n    Hook: {hook!r}")
     stories_block = "\n".join(lines)
-
-    lead_id = order[0] if order else ""
-    second_id = order[1] if len(order) > 1 else ""
-    written = (
-        f"GREETING (already written — do NOT rewrite):\n{prior_greeting!r}\n"
-        + (f"TRANSITION before story {second_id} (already written):\n{prior_transitions.get(second_id, '')!r}\n"
-           if second_id else "")
-    )
     remaining_ids = ", ".join(f'"{sid}"' for sid in remaining)
     example = json.dumps({sid: "..." for sid in remaining})
 
     return (
-        "You are the SAME calm, intelligent briefing host who has already written the opening "
-        "of this bulletin (below). CONTINUE in exactly that voice — same warmth, rhythm, and "
-        "register. Do not reset the tone; the listener should not hear a seam.\n\n"
+        _VOICE + "\n\n"
+        "The GREETING that opens this bulletin has already been written (below). CONTINUE in "
+        "exactly that voice — same warmth, rhythm, and register. Do not reset the tone; the "
+        "listener must not hear a seam between the greeting and these bridges.\n\n"
         f"Listener's name: {name if name else 'none (skip personalisation)'}\n"
         f"UK time of day: {time_word} (hour {hour}).\n\n"
-        f"{written}\n"
+        f"GREETING (already written — do NOT rewrite):\n{prior_greeting!r}\n\n"
         f"Full running order (FIXED, do not reorder): [{', '.join(order)}]\n"
         f"Stories:\n{stories_block}\n\n"
         "YOUR TASK: write ONLY (a) the transition that plays immediately BEFORE each of these "
-        f"remaining stories, in this fixed order: [{remaining_ids}], and (b) the outro.\n"
-        "- Each bridge references real content from the PREVIOUS story in the fixed order "
-        f"(the story before it), starting from the one after story {second_id}.\n"
+        f"stories, in this fixed order: [{remaining_ids}], and (b) the outro. The LEAD story needs "
+        "no bridge (the greeting leads straight into it), so do not write one for it.\n"
+        "- Each bridge references real content from the PREVIOUS story in the fixed order — a light "
+        "pivot, not a recap.\n"
         "- Vary naturally; never formulaic. Handle tonal shifts (e.g. into a sports result) with "
-        "grace — never \"On a lighter note!\". Some bridges can be very short.\n"
+        "grace — never \"On a lighter note!\". Some bridges can be very short or \"\".\n"
         "OUTRO: close warmly, name optional. Point at a SPECIFIC story to follow if any, never a "
         f"characterisation of the day. UK time-aware sign-off ({time_word}). No story counts, no "
         "durations, no commentary on the day's news volume.\n"
@@ -355,21 +479,20 @@ def _build_rest_prompt(
     )
 
 
-def generate_connective_rest(
+def generate_bridges_and_outro(
     *,
     stories: list[dict],
     prior_greeting: str,
-    prior_transitions: dict[str, str],
     name: str | None,
     now: datetime,
 ) -> tuple[dict[str, str], str] | None:
-    """Generate the remaining transitions (stories 3..N) + outro, continuing the opening's
-    voice. Returns ({story_id: transition}, outro) covering stories from index 2 onward, or
-    None on failure (caller falls back to templates for those bridges)."""
+    """Background (post-gate) generation of EVERY non-lead story's transition + the outro, in one
+    Sonnet call fed the already-written greeting so the whole briefing keeps one voice. NEVER on
+    the first-play path. Returns ({story_id: transition}, outro) covering stories from index 1
+    onward, or None on failure (caller falls back to silent bridges + a template outro)."""
     order = [str(s["story_id"]) for s in stories]
-    remaining = order[2:]  # empty for a 1-2 story bulletin → only the outro is generated
-    prompt = _build_rest_prompt(stories=stories, prior_greeting=prior_greeting,
-                                prior_transitions=prior_transitions, name=name, now=now)
+    remaining = order[1:]  # empty for a single-story bulletin → only the outro is generated
+    prompt = _build_bridges_prompt(stories=stories, prior_greeting=prior_greeting, name=name, now=now)
     raw = _post_messages(prompt, max_tokens=_MAX_TOKENS)
     if raw is None:
         return None
@@ -388,7 +511,7 @@ def generate_connective_rest(
             raise ValueError("transitions is not a dict")
         transitions = {sid: str(transitions_raw[sid]) for sid in remaining if sid in transitions_raw}
     except (KeyError, IndexError, ValueError, json.JSONDecodeError, TypeError) as e:
-        logger.warning("connective_rest: malformed (%s) — falling back to templates", e)
+        logger.warning("bridges: malformed (%s) — falling back to templates", e)
         return None
-    logger.info("connective_rest: generated  remaining=%d  outro_len=%d", len(transitions), len(outro))
+    logger.info("bridges: generated  bridges=%d  outro_len=%d", len(transitions), len(outro))
     return transitions, outro
