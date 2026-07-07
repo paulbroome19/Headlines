@@ -143,23 +143,26 @@ _TONE_GUIDANCE: dict[str, str] = {
 }
 
 
-# Per-tier audio_script length (depth-by-rank). Depth scales with the story's rank —
-# the lead gets room to breathe, the tail is a quick catch-up — but EVERY tier is a
-# natural spoken catch-up in the shared voice, never an essay and never a clipped
-# fact-list. Word figures are a soft guide; let the story run as long as it naturally
-# needs. Keep these in rough sync with ranking.config.DEPTH_TIERS (the duration budget).
+# Per-tier depth (depth-by-rank). The tier controls HOW FAR DOWN the story's priority list to
+# go — never how vague to be (see VOICE_BLOCK "DETAIL IS THE PRODUCT": a brief story is fewer
+# facts, not fuzzier ones). Every fact concrete, most important first. Word figures are a soft
+# budget guide, not a target to pad or clip to — let the facts set the length. Keep roughly in
+# sync with ranking.config.DEPTH_TIERS (the duration budget).
 _DEPTH_SPEC: dict[str, str] = {
     "lead":
-        "  The lead — give it room to breathe, ~6–8 sentences (~110 words). Set it up, connect "
-        "cause to effect, explain the mechanics so a newcomer gets it, and land why it matters.",
+        "  The lead — the FULL picture. Go the whole way down the story's priority list: every "
+        "concrete fact a curious listener would want, most important first, cause connected to "
+        "effect, then the stakes. Roughly ~110 words, but let the facts set the length.",
     "major":
-        "  ~4–5 sentences (~80 words). The story, a beat of context, and the stakes — flowing, "
-        "not rushed.",
+        "  A major story — the core plus the next tier of detail. The key facts, the mechanism or "
+        "number that earns them, and the stakes. Roughly ~80 words. Fewer facts than the lead, "
+        "never vaguer.",
     "standard":
-        "  ~3 sentences (~55 words). What happened and why it matters, in a natural breath.",
+        "  The essential facts — what happened, the one or two concrete details that matter most, "
+        "and why it lands. Roughly ~55 words. Fewer facts than a major story, each still specific.",
     "brief":
-        "  ~1–2 sentences (~35 words). The quick version — 'and also today…' — but still warm, "
-        "not a clipped headline.",
+        "  The essential core — the single most important fact stated concretely, plus the one "
+        "detail that makes it land. Roughly ~35 words. Fewer facts, not fuzzier ones.",
 }
 
 
@@ -186,9 +189,11 @@ def _build_prompt(
     if depth_tier and depth_tier in _DEPTH_SPEC:
         depth_spec = _DEPTH_SPEC[depth_tier]
     elif depth_words:
-        depth_spec = f"  around {depth_words} words — a natural spoken catch-up, no padding, no essay."
+        depth_spec = (f"  The core concrete facts, most important first — roughly {depth_words} words, "
+                      "but let the facts set the length. Fewer facts, never vaguer.")
     else:
-        depth_spec = "  ~3–5 sentences (~70 words). A natural spoken catch-up, not a report."
+        depth_spec = ("  The core concrete facts, most important first — roughly ~70 words, but let the "
+                      "facts set the length. Fewer facts, never vaguer.")
 
     return (
         VOICE_BLOCK + "\n\n"

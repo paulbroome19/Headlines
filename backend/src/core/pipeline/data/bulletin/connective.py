@@ -371,12 +371,10 @@ def _build_greeting_prompt(
             if is_first_bulletin
             else ""
         )
-        + "Target: \"Hi Paul. Big one tonight — the Venezuela earthquake. Plus a telecoms merger "
-        "worth watching. Here's the latest.\"\n"
-        "BANNED (the tells of a machine): NO story counts (\"three stories\"), NO durations (\"a "
-        "couple of minutes\"), NO commentary on the day's news volume (\"heavy news day\", \"a lot "
-        "going on\", \"quiet one\"). Stay inside the content.\n\n"
-        "TTS (read aloud): numbers and times as spoken words (\"fourteen hundred\", not \"1400\").\n\n"
+        + "Shape (do NOT copy the wording — vary it every time): \"Morning, Paul. Top of the list, a "
+        "big earthquake in Venezuela — plus a telecoms merger worth a look. Here's the latest.\"\n"
+        "Trail the lead, don't report it: name the topic and the single most striking thing in the "
+        "headline, no more. The banned patterns and TTS rules in the voice above apply.\n\n"
         "Output ONLY valid JSON — no markdown fences, no commentary:\n"
         '{"greeting":"..."}'
     )
@@ -465,6 +463,9 @@ def _build_bridges_prompt(
         "no bridge (the greeting leads straight into it), so do not write one for it.\n"
         "- Each bridge references real content from the PREVIOUS story in the fixed order — a light "
         "pivot, not a recap.\n"
+        "- A bridge pivots FROM the previous story INTO the next. It must NEVER restate the next "
+        "story's opening line — the body delivers that; you only set it up. One sentence, two at "
+        "most.\n"
         "- Vary naturally; never formulaic. Handle tonal shifts (e.g. into a sports result) with "
         "grace — never \"On a lighter note!\". Some bridges can be very short or \"\".\n"
         "OUTRO: close warmly, name optional. Point at a SPECIFIC story to follow if any, never a "
