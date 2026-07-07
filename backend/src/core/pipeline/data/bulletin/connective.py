@@ -438,12 +438,20 @@ def _build_bridges_prompt(
     remaining = order[1:]  # every non-lead bridge; the lead leads straight from the greeting
 
     lines: list[str] = []
-    for s in stories:
+    prev_bucket: str | None = None
+    for i, s in enumerate(stories):
         sid = str(s["story_id"])
         hook = _extract_hook(s)
         descriptor = s.get("headline") or hook or "(no descriptor)"
-        category = (s.get("primary_category") or "general").split(".")[0]
-        lines.append(f"  Story {sid}: [{category}] {descriptor!r}\n    Hook: {hook!r}")
+        bucket = (s.get("primary_category") or "general").split(".")[0]
+        if i == 0:
+            tag = ""  # the lead takes no bridge
+        elif bucket != prev_bucket:
+            tag = f"\n    → BRIDGE CROSSES CATEGORY: {prev_bucket} → {bucket}. SIGNPOST the move to {bucket}."
+        else:
+            tag = f"\n    → same category ({bucket}): story-to-story bridge, no signpost."
+        lines.append(f"  Story {sid}: [{bucket}] {descriptor!r}{tag}\n    Hook: {hook!r}")
+        prev_bucket = bucket
     stories_block = "\n".join(lines)
     remaining_ids = ", ".join(f'"{sid}"' for sid in remaining)
     example = json.dumps({sid: "..." for sid in remaining})
@@ -466,6 +474,11 @@ def _build_bridges_prompt(
         "- A bridge pivots FROM the previous story INTO the next. It must NEVER restate the next "
         "story's opening line — the body delivers that; you only set it up. One sentence, two at "
         "most.\n"
+        "- CATEGORY SIGNPOSTS: each story above is tagged as either a category boundary or "
+        "same-category. Where it says 'BRIDGE CROSSES CATEGORY', name the destination category "
+        "naturally inside the flowing sentence (\"That's the politics covered — onto business, and "
+        "this one affects your bills.\"). A signpost is a full sentence, NEVER a terse fragment "
+        "(\"Business now.\" is banned). Same-category bridges stay story-to-story with no signpost.\n"
         "- Vary naturally; never formulaic. Handle tonal shifts (e.g. into a sports result) with "
         "grace — never \"On a lighter note!\". Some bridges can be very short or \"\".\n"
         "OUTRO: close warmly, name optional. Point at a SPECIFIC story to follow if any, never a "
