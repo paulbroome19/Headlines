@@ -1485,9 +1485,11 @@ enum LoaderTiming {
     static let pacedStages: Int = 4              // evenly-timed stages covering ~0–8s
     static var visibleStages: Int { pacedStages + 1 }   // + a final dwell stage for overrun
     static var expectedSeconds: Double { stageSeconds * Double(pacedStages) }   // ~8s
-    // Small floor (~4s ≈ two stages) so a cached/instant briefing shows a readable stage
-    // or two rather than flashing — but NOT the full window (a fast briefing dismisses on ready).
-    static var minLoaderSeconds: Double { stageSeconds * 2 }
+    // Small ABSOLUTE floor so a cached/instant briefing shows a readable stage or two rather
+    // than flashing — DECOUPLED from stageSeconds so a longer, calmer stage cadence doesn't
+    // drag the fast/cached path out (at stageSeconds=5 the old `stageSeconds * 2` forced a 10s
+    // hold on already-ready briefings). A fast briefing still dismisses on readiness above this.
+    static let minLoaderSeconds: Double = 4.0
     /// The bar climbs on the timer to this ceiling across the stages; the FINAL raise to
     /// 1.0 is done on ready (BulletinPlayer.loaderComplete) — a justified final jump.
     static let nearFullCeiling: Double = 0.9
