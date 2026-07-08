@@ -239,20 +239,34 @@ def synthesize(
     voice: str,
     model: str,
     audio_format: str,
+    previous_text: str | None = None,
+    next_text: str | None = None,
 ) -> bytes | None:
     """
     Call the TTS provider and return raw audio bytes, or None on failure.
     Fail closed: returns None if the API key is absent or the call fails.
+
+    previous_text / next_text: the spoken text of the adjacent segments, passed to
+    the provider as prosody context so this segment's opening/closing intonation
+    flows with its neighbours (ElevenLabs request "stitching"). Text-only context —
+    NOT previous_request_id chaining — so segments stay independently synthesizable
+    (the streaming start-pack keeps rendering in parallel). Omitted on the edges.
     """
     if provider == "elevenlabs":
-        return _elevenlabs(text, voice=voice, model=model, audio_format=audio_format)
+        return _elevenlabs(
+            text, voice=voice, model=model, audio_format=audio_format,
+            previous_text=previous_text, next_text=next_text,
+        )
     logger.warning("tts_client: unknown provider %r — skipping", provider)
     return None
 
 
 # ── ElevenLabs ────────────────────────────────────────────────────────────────
 
-def _elevenlabs(text: str, *, voice: str, model: str, audio_format: str) -> bytes | None:
+def _elevenlabs(
+    text: str, *, voice: str, model: str, audio_format: str,
+    previous_text: str | None = None, next_text: str | None = None,
+) -> bytes | None:
     api_key = settings.elevenlabs_api_key
     logger.debug("tts_client ElevenLabs: api_key present=%s  voice=%s  model=%s", bool(api_key), voice, model)
     if not api_key:
@@ -266,7 +280,7 @@ def _elevenlabs(text: str, *, voice: str, model: str, audio_format: str) -> byte
     # alongside the api_key rather than threaded through synthesize()). Omitting them
     # lets ElevenLabs fall back to the voice's stored defaults, which differ from the
     # tuned playground sliders and sound more robotic. Env-overridable for tuning by ear.
-    body = json.dumps({
+    payload = {
         "text": text,
         "model_id": model,
         "voice_settings": {
@@ -275,7 +289,14 @@ def _elevenlabs(text: str, *, voice: str, model: str, audio_format: str) -> byte
             "style": settings.tts_style,
             "use_speaker_boost": settings.tts_use_speaker_boost,
         },
-    }).encode()
+    }
+    # Prosody stitching: give ElevenLabs the neighbouring spoken text so this
+    # segment's edges flow into them. Only sent when present (edges omit them).
+    if previous_text:
+        payload["previous_text"] = previous_text
+    if next_text:
+        payload["next_text"] = next_text
+    body = json.dumps(payload).encode()
 
     req = urllib.request.Request(
         url,

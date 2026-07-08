@@ -16,14 +16,15 @@ import urllib.request
 from dataclasses import dataclass
 
 from core.platform.config.settings import settings
+from core.pipeline.data.voice import VOICE_BLOCK
 
 logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.anthropic.com/v1/messages"
 _API_VERSION = "2023-06-01"
-# Headroom for the longest structured output: a ~260-word lead audio_script plus
-# summary_text + why_it_matters. 950 would truncate the deeper tiers (see DEPTH_TIERS).
-# max_tokens is a ceiling — only actual output is billed — so a generous cap is safe.
+# Headroom for the structured output: a natural spoken lead audio_script plus
+# summary_text + why_it_matters. max_tokens is a ceiling — only actual output is
+# billed — so a generous cap is safe.
 _MAX_TOKENS = 2000
 _TIMEOUT_SECONDS = 20
 
@@ -127,35 +128,41 @@ def summarise_story(
     return result
 
 
+# A light delivery steer per top-level category — how much warmth vs gravity to carry.
+# It shapes energy, never a verdict; the shared voice owns everything else.
 _TONE_GUIDANCE: dict[str, str] = {
-    "politics":      "Dry, measured. A slight knowing edge is fine. Avoid breathlessness.",
-    "world":         "Calm authority. If it's conflict or tragedy, gravity — not drama.",
-    "business":      "Clear, brisk. Numbers are the story — make them land.",
-    "technology":    "Measured curiosity. Not hype. Specific and grounded.",
-    "sport":         "Energy. Results matter — lead with the outcome.",
+    "politics":      "Relaxed and clear. Explain the play without taking a side.",
+    "world":         "Warm but careful. If it's conflict or tragedy, quiet gravity — never drama.",
+    "business":      "Easy and plain. Let the key number carry it.",
+    "technology":    "Curious and grounded. No hype.",
+    "sport":         "A bit of energy. Lead with the result, then the story of it.",
     "entertainment": "Light, a little playful. Still specific.",
-    "health":        "Reassuring, not alarmist. Precision over generalisation.",
-    "science":       "Wonder, not jargon. Make the finding feel significant.",
-    "climate":       "Serious but not catastrophising. Concrete data where possible.",
+    "health":        "Warm and precise, not alarmist.",
+    "science":       "Curious — make the finding land, plainly, no jargon.",
+    "climate":       "Serious and concrete, never catastrophising.",
 }
 
 
-# Per-tier audio_script spec (depth-by-rank). Depth scales with the story's rank
-# in the bulletin: the lead gets a full treatment, the tail a sentence or two.
+# Per-tier depth (depth-by-rank). The tier controls HOW FAR DOWN the story's priority list to
+# go — never how vague to be (see VOICE_BLOCK "DETAIL IS THE PRODUCT": a brief story is fewer
+# facts, not fuzzier ones). Every fact concrete, most important first. Word figures are a soft
+# budget guide, not a target to pad or clip to — let the facts set the length. Keep roughly in
+# sync with ranking.config.DEPTH_TIERS (the duration budget).
 _DEPTH_SPEC: dict[str, str] = {
     "lead":
-        "  ~260 words, 9–13 sentences — the LEAD story: full treatment. Hook first "
-        "sentence, develop with specific facts, context and the key players, then a "
-        "forward-looking close. This is the anchor of the bulletin — give it room.",
+        "  The lead — the FULL picture. Go the whole way down the story's priority list: every "
+        "concrete fact a curious listener would want, most important first, cause connected to "
+        "effect, then the stakes. Roughly ~110 words, but let the facts set the length.",
     "major":
-        "  ~180 words, 7–9 sentences. Hook, the key facts with context, and why it "
-        "matters. A full report, just tighter than the lead.",
+        "  A major story — the core plus the next tier of detail. The key facts, the mechanism or "
+        "number that earns them, and the stakes. Roughly ~80 words. Fewer facts than the lead, "
+        "never vaguer.",
     "standard":
-        "  ~110 words, 4–6 sentences. The headline facts, the immediate significance, "
-        "and a line of context. Rounded, not clipped.",
+        "  The essential facts — what happened, the one or two concrete details that matter most, "
+        "and why it lands. Roughly ~55 words. Fewer facts than a major story, each still specific.",
     "brief":
-        "  ~55 words, 2–3 sentences. The essential facts, briskly — 'also today…'. "
-        "Crisp but complete.",
+        "  The essential core — the single most important fact stated concretely, plus the one "
+        "detail that makes it land. Roughly ~35 words. Fewer facts, not fuzzier ones.",
 }
 
 
@@ -178,17 +185,22 @@ def _build_prompt(
     tone_line = _TONE_GUIDANCE.get(top_cat, "Calm, authoritative, conversational.")
     tone_block = f"Category: {top_cat or 'general'}\nTone for this story: {tone_line}"
 
-    # Depth-by-rank: the audio_script length target for this story's tier.
+    # Depth-by-rank: the audio_script length feel for this story's tier.
     if depth_tier and depth_tier in _DEPTH_SPEC:
         depth_spec = _DEPTH_SPEC[depth_tier]
     elif depth_words:
-        depth_spec = f"  ~{depth_words} words — match length to importance; concise, no padding."
+        depth_spec = (f"  The core concrete facts, most important first — roughly {depth_words} words, "
+                      "but let the facts set the length. Fewer facts, never vaguer.")
     else:
-        depth_spec = "  4–6 sentences, 120–180 words. Written to be heard, not read."
+        depth_spec = ("  The core concrete facts, most important first — roughly ~70 words, but let the "
+                      "facts set the length. Fewer facts, never vaguer.")
 
     return (
-        "You are a senior producer at a national radio news station — the kind whose bulletins "
-        "listeners actually remember. Your job: write story segments that hold attention during a commute.\n\n"
+        VOICE_BLOCK + "\n\n"
+        "──────────\n"
+        "YOUR TASK: write the spoken text for ONE story in the briefing. The 'audio_script' is what "
+        "the listener HEARS — it must be exactly the voice above (that IS what a story sounds like "
+        "here). The other three fields are short written metadata, not spoken.\n\n"
         f"Story topic: {representative_title}\n\n"
         f"{tone_block}\n\n"
         f"Source articles (most recent first):\n{articles_text}\n\n"
@@ -201,38 +213,25 @@ def _build_prompt(
         "  Max 12 words. Active voice, present tense. No source attribution.\n\n"
 
         "summary_text:\n"
-        "  2–3 sentences. Factual prose only.\n\n"
+        "  2–3 sentences. Factual prose only (written metadata, not spoken).\n\n"
 
         "why_it_matters:\n"
         "  1–2 sentences. Name who is affected and what concrete change or decision this signals.\n"
         "  BANNED: 'ongoing concerns', 'raises questions about', 'highlights the importance of', "
         "'amid concerns', 'underscores', 'it remains to be seen', or any phrase that fits every story.\n\n"
 
-        "audio_script:\n"
+        "audio_script:  ← THE SPOKEN STORY. This is the one that must be in the voice above.\n"
         f"{depth_spec}\n"
-        "  Written to be heard, not read. Match the word target above — it scales with the\n"
-        "  story's importance in this bulletin (lead deep, tail brisk).\n\n"
-
-        "  FIRST SENTENCE — this is the bulletin hook. It must:\n"
-        "    - Name something specific: a person, a number, a place, a concrete fact\n"
-        "    - Create tension or curiosity — what's at stake, what's surprising, what changed\n"
-        "    - Be 1 sentence only — punchy, complete, works as a standalone opener\n"
-        "    - NEVER start with: 'Authorities', 'Officials', 'The government', 'Sources say',\n"
-        "      'It has been', 'There has been', 'A man has', 'A woman has', or any passive opener\n\n"
-
-        "  BODY (only if the word target allows — a brief has no body): develop with at least one\n"
-        "    specific fact per two sentences. A specific fact = a name, a number, a date, a place, a\n"
-        "    direct quote, a concrete consequence. Vary sentence length. Contractions required — it's,\n"
-        "    they've, here's, won't. No broadcast stiffness.\n\n"
-
-        "  CLOSE (longer treatments): forward-looking — what happens next, who's affected, the stake.\n"
-        "    NOT: vague implications, rhetorical questions, or 'the story is developing'.\n\n"
-
-        "  BANNED PHRASES (never use in audio_script):\n"
-        "    'officials are considering', 'raises questions about', 'ongoing concerns',\n"
-        "    'the situation remains', 'according to reports', 'sources say',\n"
-        "    'many are wondering', 'in a developing story', 'more on this as it unfolds',\n"
-        "    'the story continues to develop', 'it remains unclear', 'amid uncertainty'\n\n"
+        "  Length scales with the story's rank (lead has room to breathe, the tail is quick), but "
+        "every tier is that same warm spoken catch-up. Open naturally and pull the listener in — a "
+        "concrete detail (a person, a number, a place), NOT a passive newsroom opener ('Authorities', "
+        "'Officials', 'The government', 'Sources say', 'It has been', 'There has been', 'A man has'). "
+        "Then connect the dots: cause to effect, the mechanics, why it lands for the people in it — "
+        "all of it drawn from the articles below, nothing invented, no verdict on who's right.\n"
+        "  BANNED PHRASES (newsroom filler that breaks the voice): 'officials are considering', "
+        "'raises questions about', 'ongoing concerns', 'the situation remains', 'according to "
+        "reports', 'sources say', 'many are wondering', 'in a developing story', 'more on this as it "
+        "unfolds', 'the story continues to develop', 'it remains unclear', 'amid uncertainty'.\n\n"
 
         "confidence:\n"
         "  0.0–1.0. How clearly the articles support one coherent story "

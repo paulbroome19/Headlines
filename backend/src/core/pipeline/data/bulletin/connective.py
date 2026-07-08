@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from core.platform.config.settings import settings
+from core.pipeline.data.voice import VOICE_BLOCK
 from core.pipeline.data.bulletin.intros import _extract_hook
 
 logger = logging.getLogger(__name__)
@@ -68,15 +69,11 @@ def _greeting_model() -> str:
 
 
 # ── The VOICE — one shared persona/register block for EVERY spoken-tissue prompt ──────────
-# Greeting, transitions, and outro all paste this in, so the register can't drift between
-# them (requirement: no seam between the greeting and the bridges around the stories). If the
-# voice needs to change, it changes HERE, once. (Kept verbatim from the single-call prompt so
-# this refactor is register-neutral.)
-_VOICE = (
-    "You are a calm, intelligent morning-briefing host — a trusted person catching "
-    "the listener up, not a hype radio DJ. You use contractions, write for natural "
-    "rhythm, and avoid broadcast stiffness."
-)
+# The greeting, the bridges, the outro, AND the story summariser all paste in the SAME block
+# (core.pipeline.data.voice.VOICE_BLOCK), so there's no seam between a story body and the tissue
+# around it. The voice changes in ONE place. NOTE: this feeds the PROMPTS only — the greeting
+# still runs on Haiku (generate_greeting, _greeting_model) at T0, unchanged.
+_VOICE = VOICE_BLOCK
 
 
 @dataclass(frozen=True)
@@ -374,12 +371,10 @@ def _build_greeting_prompt(
             if is_first_bulletin
             else ""
         )
-        + "Target: \"Hi Paul. Big one tonight — the Venezuela earthquake. Plus a telecoms merger "
-        "worth watching. Here's the latest.\"\n"
-        "BANNED (the tells of a machine): NO story counts (\"three stories\"), NO durations (\"a "
-        "couple of minutes\"), NO commentary on the day's news volume (\"heavy news day\", \"a lot "
-        "going on\", \"quiet one\"). Stay inside the content.\n\n"
-        "TTS (read aloud): numbers and times as spoken words (\"fourteen hundred\", not \"1400\").\n\n"
+        + "Shape (do NOT copy the wording — vary it every time): \"Morning, Paul. Top of the list, a "
+        "big earthquake in Venezuela — plus a telecoms merger worth a look. Here's the latest.\"\n"
+        "Trail the lead, don't report it: name the topic and the single most striking thing in the "
+        "headline, no more. The banned patterns and TTS rules in the voice above apply.\n\n"
         "Output ONLY valid JSON — no markdown fences, no commentary:\n"
         '{"greeting":"..."}'
     )
@@ -443,12 +438,20 @@ def _build_bridges_prompt(
     remaining = order[1:]  # every non-lead bridge; the lead leads straight from the greeting
 
     lines: list[str] = []
-    for s in stories:
+    prev_bucket: str | None = None
+    for i, s in enumerate(stories):
         sid = str(s["story_id"])
         hook = _extract_hook(s)
         descriptor = s.get("headline") or hook or "(no descriptor)"
-        category = (s.get("primary_category") or "general").split(".")[0]
-        lines.append(f"  Story {sid}: [{category}] {descriptor!r}\n    Hook: {hook!r}")
+        bucket = (s.get("primary_category") or "general").split(".")[0]
+        if i == 0:
+            tag = ""  # the lead takes no bridge
+        elif bucket != prev_bucket:
+            tag = f"\n    → BRIDGE CROSSES CATEGORY: {prev_bucket} → {bucket}. SIGNPOST the move to {bucket}."
+        else:
+            tag = f"\n    → same category ({bucket}): story-to-story bridge, no signpost."
+        lines.append(f"  Story {sid}: [{bucket}] {descriptor!r}{tag}\n    Hook: {hook!r}")
+        prev_bucket = bucket
     stories_block = "\n".join(lines)
     remaining_ids = ", ".join(f'"{sid}"' for sid in remaining)
     example = json.dumps({sid: "..." for sid in remaining})
@@ -468,6 +471,17 @@ def _build_bridges_prompt(
         "no bridge (the greeting leads straight into it), so do not write one for it.\n"
         "- Each bridge references real content from the PREVIOUS story in the fixed order — a light "
         "pivot, not a recap.\n"
+        "- A bridge pivots FROM the previous story INTO the next. It must NEVER restate the next "
+        "story's opening line — the body delivers that; you only set it up. One sentence, two at "
+        "most.\n"
+        "- CATEGORY SIGNPOSTS: each story above is tagged as a category boundary or same-category. "
+        "Where it says 'BRIDGE CROSSES CATEGORY', write ONE flowing sentence that does BOTH jobs — "
+        "names the new category naturally AND hooks the next story's specific "
+        "substance. Pattern: [close previous] — [category], and [a specific pull into the next "
+        "story]. E.g. \"That's the politics covered — onto business, where Microsoft's cuts are "
+        "hitting closer to home than the headlines suggest.\" NEVER a standalone label ('Now onto "
+        "business.', 'Business now.') — if it would work as a section header, it's wrong. "
+        "Same-category bridges stay story-to-story, no signpost.\n"
         "- Vary naturally; never formulaic. Handle tonal shifts (e.g. into a sports result) with "
         "grace — never \"On a lighter note!\". Some bridges can be very short or \"\".\n"
         "OUTRO: close warmly, name optional. Point at a SPECIFIC story to follow if any, never a "
