@@ -1178,31 +1178,52 @@ def _start_pack_boundary(segments: list[dict], n_stories: int) -> int:
     return end if seen else len(segments)
 
 
+def _unit_start_index(segments: list[dict]) -> dict[str, int]:
+    """story_id → the index of the FIRST segment the client waits on to START that story: its
+    preceding TRANSITION (the bridge a tap plays from) when it has one, else the story segment.
+
+    Prioritising from the bridge matters because a tap on a story (offset 0) begins on the bridge,
+    so that's the segment the client's readiness/pending check keys off. Pivoting on the story
+    segment alone left the bridge in the BACKFILL (synthesised last) while the client sat waiting
+    on it — the tap-to-a-distant-story stall. Skip-forward starts past the bridge (on the opener),
+    so it's unaffected either way; keying on the bridge fixes tap without regressing skip."""
+    out: dict[str, int] = {}
+    for i, s in enumerate(segments):
+        if s.get("type") == "story" and s.get("story_id"):
+            sid = str(s["story_id"])
+            if sid not in out:
+                out[sid] = i - 1 if i - 1 >= 0 and segments[i - 1].get("type") == "transition" else i
+    return out
+
+
+def _reprioritise_order(remaining: list[int], pidx: int | None) -> list[int]:
+    """FORWARD-THEN-BACKFILL: given the still-to-synthesise indices (current order) and the first
+    segment index `pidx` of the bumped story unit, return the bumped unit + everything AFTER it,
+    then the BACKFILLED earlier gap. No-op if nothing is bumped or the unit is already done (pidx
+    not in `remaining`). Example (jump to story 7 of 10): bridge7, 7, 8, 9, 10, then the 3-6 gap.
+    Pure/deterministic so the reorder is unit-testable without Redis or a synth call."""
+    if pidx is None or pidx not in remaining:
+        return remaining
+    forward = [i for i in remaining if i >= pidx]
+    backfill = [i for i in remaining if i < pidx]
+    return forward + backfill
+
+
 def _synth_remaining(bulletin_id: int, segments: list[dict],
                      voice: str, model: str, audio_fmt: str) -> None:
-    """Synthesise every segment after the start-pack, honouring a tap/skip priority hint with
-    the FORWARD-THEN-BACKFILL rule: when a story N is bumped (Redis key), synthesise N next,
-    then everything AFTER N in order (N+1, N+2, … end), then BACKFILL the skipped gap (the
-    earlier still-unready ones). Example (10 stories, jump to 7): 7, 8, 9, 10, then 3, 4, 5, 6."""
+    """Synthesise every segment after the start-pack, honouring a tap/skip priority hint with the
+    forward-then-backfill rule (see _reprioritise_order). The hint is re-read from Redis on EVERY
+    iteration and synthesis is strictly SEQUENTIAL (one segment at a time), so a bumped story jumps
+    the queue after only the current in-flight call — nothing else competes for it."""
     # The start-pack synthesised intro + the first _SAFE_START_STORIES stories (the lead's
     # opener+remainder count as ONE story) + their transitions — skip exactly those, derived
     # from the structure rather than a hardcoded count (the lead split makes it 5, not 4).
     already = set(range(_start_pack_boundary(segments, _SAFE_START_STORIES)))
     remaining = [i for i in range(len(segments)) if i not in already]
-    # story_id → its FIRST segment index (the opener for the split lead), so a skip jumps to the
-    # start of that story, not mid-way through it.
-    story_idx: dict[str, int] = {}
-    for i, s in enumerate(segments):
-        if s.get("type") == "story" and s.get("story_id"):
-            story_idx.setdefault(str(s["story_id"]), i)
+    story_idx = _unit_start_index(segments)
     while remaining:
-        prio = _get_synth_priority(bulletin_id)
-        pidx = story_idx.get(prio) if prio else None
-        if pidx is not None and pidx in remaining:
-            # Reorder the queue: the bumped story + everything after it, then the earlier gap.
-            forward = [i for i in remaining if i >= pidx]
-            backfill = [i for i in remaining if i < pidx]
-            remaining = forward + backfill
+        prio = _get_synth_priority(bulletin_id)                       # re-read every loop (live)
+        remaining = _reprioritise_order(remaining, story_idx.get(prio) if prio else None)
         nxt = remaining.pop(0)
         seg = segments[nxt]
         if (seg.get("text") or "").strip():
