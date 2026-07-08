@@ -35,11 +35,10 @@ from .config import (
     COUNTRY_TIEBREAK_STRENGTH,
     DEFAULT_PRESET,
     FRESH_CATEGORY_RELIEF,
-    FRONT_PAGE_REGION_LEAN,
-    FRONT_PAGE_REGION_LEAN_DEFAULT,
     MAX_BULLETIN_STORIES,
     PRESET_BAR,
     PRESET_DEPTH,
+    TOP_STORIES_REGION_ORDER,
     TOP_STORIES_REGIONS,
 )
 from .models import ScoredStory
@@ -67,23 +66,41 @@ def region_adjusted_score(s: ScoredStory) -> float:
     return s.normalized_score * factor
 
 
-def _front_page_lean(geo_region: str | None, regions: set[str]) -> float:
-    """Weighted UK-forward lift for ordering the TOP STORIES block: a top story whose region is
-    among the user's SELECTED top-stories regions is lifted — UK highest (a UK app leads with
-    UK), then US, then any other selected region. A multiplier (not a hard sort), so a genuinely
-    huge non-UK story can still lead. 1.0 when the story's region isn't a selected one (e.g. the
-    bare front page, where the existing country_weight tiebreak still applies)."""
-    if geo_region and geo_region in regions:
-        return FRONT_PAGE_REGION_LEAN.get(geo_region, FRONT_PAGE_REGION_LEAN_DEFAULT)
-    return 1.0
+def _subject_region(primary_category: str | None) -> str:
+    """SUBJECT region for top-block ordering, derived deterministically from the primary_category
+    prefix: politics.uk → uk, politics.us → us, politics.europe → europe; everything else
+    (politics.world AND every non-politics category) → world.
+
+    Replaces the old geo_region-based lean. geo_region is SOURCE region and UK-saturated, so it
+    could not tell a UK-subject story from a global one. LIMITATION: only politics.* carries a
+    subject region from the prefix, so a UK-subject business/health top story sorts as 'world'
+    until the editorial region emission (post-demo geographic model) lands."""
+    c = primary_category or ""
+    if c == "politics.uk" or c.startswith("politics.uk."):
+        return "uk"
+    if c == "politics.us" or c.startswith("politics.us."):
+        return "us"
+    if c == "politics.europe" or c.startswith("politics.europe."):
+        return "europe"
+    return "world"
 
 
-def _top_block_order(s: ScoredStory, bucket: int, top_idx: int, regions: set[str]) -> float:
-    """normalized_score for topic buckets; in the TOP STORIES block it's lifted by the
-    front-page region lean so UK top stories lead when UK is selected (weighted, not absolute)."""
+def _region_rank(region: str) -> int:
+    """Position of a subject region in the configured order (an unlisted region sorts last)."""
+    try:
+        return TOP_STORIES_REGION_ORDER.index(region)
+    except ValueError:
+        return len(TOP_STORIES_REGION_ORDER)
+
+
+def _top_block_rank(s: ScoredStory, bucket: int, top_idx: int) -> tuple[int, float]:
+    """Within-bucket sort sub-key. In the TOP STORIES block, order by SUBJECT-region group first
+    (TOP_STORIES_REGION_ORDER — UK leads a UK app), then by score within the group. For every
+    other (topic) bucket the region component is a constant, so ordering is by score exactly as
+    before. A tuple (region_rank, -score) so it slots straight into the order key."""
     if bucket == top_idx:
-        return s.normalized_score * _front_page_lean(s.candidate.geo_region, regions)
-    return s.normalized_score
+        return (_region_rank(_subject_region(s.candidate.primary_category)), -s.normalized_score)
+    return (0, -s.normalized_score)
 
 
 def _selection_context(include_top_stories: bool, include_categories: list[str] | None):
@@ -182,13 +199,14 @@ def qualify_and_order(
             seen.add(sid)
 
     # Filter sequence (top-stories block → politics → … → sport), within-bucket by rank; in the
-    # Top Stories block the score is lifted by the selected-region UK lean so UK leads; the
-    # country_weight region_adjusted_score breaks remaining ties, story_id for determinism.
+    # Top Stories block ordering is by SUBJECT region group (UK first) then score, so UK top
+    # stories lead a UK front page; the country_weight region_adjusted_score breaks remaining
+    # ties, story_id for determinism.
     top_idx = filter_category_index("top-stories")
 
     def _order_key(s: ScoredStory):
         b = _bucket_of(s, topic_cats, front_page, regions)
-        return (b, -_top_block_order(s, b, top_idx, regions), -region_adjusted_score(s), s.candidate.story_id)
+        return (b, _top_block_rank(s, b, top_idx), -region_adjusted_score(s), s.candidate.story_id)
 
     qualifying.sort(key=_order_key)
     return qualifying
@@ -235,7 +253,7 @@ def cap_bulletin(
 
     kept.sort(key=lambda s: (
         (b := _bucket_of(s, topic_cats, front_page, regions)),
-        -_top_block_order(s, b, top_idx, regions),
+        _top_block_rank(s, b, top_idx),
         s.candidate.story_id,
     ))
     return kept

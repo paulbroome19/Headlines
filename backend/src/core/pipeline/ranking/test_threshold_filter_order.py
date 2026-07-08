@@ -171,19 +171,68 @@ def test_fresh_relief_clears_a_just_under_bar_breaking_story():
     assert "brk_new" in q_new
 
 
-def test_uk_lean_weighted_in_top_stories_block():
-    # Both UK + US top-stories selected: the weighted lean (uk 1.35 > us 1.15) puts a UK top
-    # story ahead of a COMPARABLE US one, but a genuinely bigger US story still surfaces at the
-    # top (weighted, not strict UK-first).
-    sel = ["top-stories.uk", "top-stories.us"]
-    stories = [
-        _ss("uk_ord",  "politics.uk", 7.0, geo="uk", top=True),
-        _ss("us_ord",  "politics.us", 7.5, geo="us", top=True),
-        _ss("us_huge", "politics.us", 9.0, geo="us", top=True),
-        _ss("uk_big",  "politics.uk", 8.0, geo="uk", top=True),
-    ]
-    order = [s.candidate.story_id for s in qualify_and_order(
-        stories, include_top_stories=False, include_categories=sel, preset="medium")]
-    assert order.index("uk_ord") < order.index("us_ord")   # UK gets a thumb over comparable US
-    assert order[0] == "uk_big"                             # UK_big (8.0×1.35) leads
-    assert order.index("us_huge") == 1                      # but a huge US story isn't buried
+# The reported scenario: a UK profile with the bare 'top-stories' front page ON. front_page=True
+# admits every flagged top story regardless of geo, so these pin the top-block ORDERING.
+def _top_order(stories):
+    return [s.candidate.story_id for s in qualify_and_order(
+        stories, include_top_stories=True, include_categories=["top-stories"], preset="medium")]
+
+
+def test_top_block_is_strict_region_order_uk_first():
+    # Deterministic UK-first: ALL UK-subject top stories lead the block, THEN US — regardless of
+    # score. Replaces the old geo_region-weighted lean (which let a huge US story jump ahead and,
+    # worse, discriminated nothing because geo_region is UK-saturated).
+    order = _top_order([
+        _ss("uk_ord",  "politics.uk", 7.0, top=True),
+        _ss("us_ord",  "politics.us", 7.5, top=True),
+        _ss("us_huge", "politics.us", 9.0, top=True),   # top score, but US → below every UK story
+        _ss("uk_big",  "politics.uk", 8.0, top=True),
+    ])
+    assert order == ["uk_big", "uk_ord", "us_huge", "us_ord"]   # all UK (by score), then all US
+
+
+def test_todays_prod_case_uk_leads_over_higher_scoring_us():
+    # The live TestFlight case: NATO (politics.us) outscores the UK stories, and geo_region is
+    # UK-saturated for ALL of them (source bias), yet Farage + Prince Harry (politics.uk, both
+    # flagged post-#167) must LEAD the top block on a UK front page.
+    order = _top_order([
+        _ss("nato",    "politics.us", 9.0, geo="uk", top=True),   # geo 'uk' (source bias) — now ignored
+        _ss("sanders", "politics.us", 8.4, geo="uk", top=True),
+        _ss("farage",  "politics.uk", 8.2, geo="uk", top=True),
+        _ss("harry",   "politics.uk", 8.1, geo="uk", top=True),
+    ])
+    assert order[:2] == ["farage", "harry"]        # UK subject leads
+    assert order[2:] == ["nato", "sanders"]        # US after, despite higher merit
+
+
+def test_region_order_config_is_respected(monkeypatch):
+    # The block follows TOP_STORIES_REGION_ORDER (config-driven, per-user later): flip US ahead of
+    # UK and US leads — even though the UK story scores higher. Patch the exact module
+    # qualify_and_order lives in (relative vs absolute import can otherwise differ under pytest).
+    import sys
+    monkeypatch.setattr(sys.modules[qualify_and_order.__module__],
+                        "TOP_STORIES_REGION_ORDER", ["us", "uk", "europe", "world"])
+    order = _top_order([_ss("uk1", "politics.uk", 9.0, top=True),
+                        _ss("us1", "politics.us", 6.0, top=True)])
+    assert order == ["us1", "uk1"]
+
+
+def test_single_region_day_is_pure_score_order():
+    # All top stories UK-subject: region rank is equal, so ordering is by score exactly as before
+    # — the region change is a no-op when the day is single-region.
+    order = _top_order([_ss("a", "politics.uk", 6.0, top=True),
+                        _ss("b", "politics.uk", 9.0, top=True),
+                        _ss("c", "politics.uk", 7.5, top=True)])
+    assert order == ["b", "c", "a"]
+
+
+def test_europe_and_world_fall_after_uk_and_us():
+    # Full region ladder uk → us → europe → world; a non-politics flagged top story (no subject
+    # region from the prefix) sorts as 'world', last — the documented limitation.
+    order = _top_order([
+        _ss("world_biz", "business.markets", 9.5, top=True),   # non-politics → 'world'
+        _ss("eu",        "politics.europe",  6.0, top=True),
+        _ss("us",        "politics.us",      6.5, top=True),
+        _ss("uk",        "politics.uk",      6.2, top=True),
+    ])
+    assert order == ["uk", "us", "eu", "world_biz"]   # world_biz last despite the top score

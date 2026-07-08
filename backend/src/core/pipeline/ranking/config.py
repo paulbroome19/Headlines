@@ -214,14 +214,15 @@ TOP_STORIES_REGIONS: set[str] = {"uk", "us", "europe", "middle-east", "africa", 
 # without burying a clearly-bigger US/world story. ⚑ tune.
 COUNTRY_TIEBREAK_STRENGTH = 0.25
 
-# Front-page UK lean (Phase 3): a WEIGHTED lift applied to the TOP STORIES block ordering for a
-# top story whose region is among the user's SELECTED top-stories regions — so when UK (and US)
-# are both selected, UK top stories lead, but a genuinely huge non-UK story can still surface (a
-# multiplier, not a hard sort). UK first (home bias for a UK app), then US, then any other
-# selected region. On the bare front page (no region selected) this is 1.0 and the existing
-# country_weight tiebreak still applies. ⚑ tune.
-FRONT_PAGE_REGION_LEAN: dict[str, float] = {"uk": 1.35, "us": 1.15}
-FRONT_PAGE_REGION_LEAN_DEFAULT = 1.10
+# Top-block region order: the TOP STORIES block is ordered by SUBJECT region group first (UK
+# leads a UK app), then by score within a group. Config-driven so it can become a per-user
+# preference later. Subject region is derived from the primary_category prefix in thresholds
+# (_subject_region) — a deterministic replacement for the old FRONT_PAGE_REGION_LEAN, which
+# multiplied score by a lean keyed on geo_region. geo_region is SOURCE region and UK-saturated
+# (UK outlets cover everything, so global stories read 'uk' and collected the lean too), so the
+# lean discriminated nothing and ordering fell back to merit — US stories led a UK front page.
+# A region not listed here sorts last. ⚑ per-user ordering later.
+TOP_STORIES_REGION_ORDER: list[str] = ["uk", "us", "europe", "world"]
 
 # ── Depth by rank (four coarse tiers; word target feeds the summariser prompt) ──
 # Assigned by a story's position in the final ordered bulletin. Lead deep, tail
