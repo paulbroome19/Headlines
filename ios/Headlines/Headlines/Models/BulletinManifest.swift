@@ -12,6 +12,12 @@ struct ManifestSegment: Decodable, Identifiable {
     let storyId: String?
     let title: String?
     let sources: [String]?   // top ranked outlets for this story (credibility-ordered)
+    // Bridge binding (backend bridge_guard): a `transition` carries the exact ordered story PAIR
+    // it was written for — it FOLLOWS prevStoryId and PREVIEWS nextStoryId. If a reorder/reconcile
+    // separates it from that pair, it must not play (it would name the wrong story). nil on
+    // non-transitions and on older bulletins (unbound → not validated).
+    let prevStoryId: String?
+    let nextStoryId: String?
 
     var id: Int { index }
     var isStory: Bool { type == "story" }
@@ -23,6 +29,8 @@ struct ManifestSegment: Decodable, Identifiable {
         case durationMs  = "duration_ms"
         case storyHash   = "story_hash"
         case storyId     = "story_id"
+        case prevStoryId = "prev_story_id"
+        case nextStoryId = "next_story_id"
     }
 }
 

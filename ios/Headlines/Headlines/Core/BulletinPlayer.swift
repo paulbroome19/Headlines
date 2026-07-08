@@ -210,6 +210,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
     // STREAMING: enqueue hit a not-yet-synthesised (nil-url) segment and is HOLDING; the
     // readiness poll resumes it once that segment's audio arrives.
     private var _heldEnqueue     = false
+    // BUG 2/3 — segments that will NEVER play: a genuine/stall-reaped failure (readiness
+    // state=="failed") or a client-ceiling timeout. enqueue skips them; the end gate ignores them.
+    private var failedSegmentIdx: Set<Int> = []
+    // Client-side ceiling on a single HOLD (belt-and-braces to the backend stall watchdog).
+    private var holdStartedAt: Date?
+    private var holdStartedIdx: Int?
+    private let holdCeilingSeconds: TimeInterval = 45
     private var _readinessPollTask: Task<Void, Never>?
     private var _allReady        = false
     // The skeleton manifest iOS first receives is PRE-dedup; the backend overwrites the stored
@@ -491,8 +498,20 @@ final class BulletinPlayer: NSObject, ObservableObject {
             }
             if segmentReady[rs.index] != true { segmentReady[rs.index] = true }
         }
+        // BUG 2 — surface FAILED segments (genuine failures AND backend stall-watchdog reaps) so
+        // enqueue skips them rather than holding forever.
+        for rs in r.segments where rs.state == "failed" {
+            if failedSegmentIdx.insert(rs.index).inserted { changed = true }
+        }
+        // Client-side ceiling: never HOLD on one segment past holdCeilingSeconds, even if the
+        // backend hasn't yet marked it failed — mark it failed locally and let enqueue skip it.
+        if _heldEnqueue, let started = holdStartedAt, let idx = holdStartedIdx,
+           Date().timeIntervalSince(started) > holdCeilingSeconds {
+            failedSegmentIdx.insert(idx)
+            changed = true
+        }
         if changed { rebuildTimeline() }
-        if _heldEnqueue { _heldEnqueue = false; enqueueNext() }   // a held segment may now be ready
+        if _heldEnqueue { _heldEnqueue = false; enqueueNext() }   // a held segment may now be ready or skippable
         fulfilPendingTapIfReady()                                 // a pending-tapped story may now be playable
         _allReady = (r.allReady == true)
         return _allReady
@@ -534,11 +553,25 @@ final class BulletinPlayer: NSObject, ObservableObject {
             if let h = s.storyHash, hashBy[sid] == nil { hashBy[sid] = h }
             if let src = s.sources, srcBy[sid] == nil { srcBy[sid] = src }
         }
+        // // UNVERIFIED — the readiness snapshot (ReadinessSegment) does NOT carry the bridge
+        // binding, so preserve each transition's bound (prev,next) story pair across the rebuild
+        // keyed by segment index — else the reconcile that this guard exists for would wipe the
+        // binding (nil pair → treated as unbound → a stale bridge would play). This is correct
+        // whenever readiness keeps indices stable (the url-merge common case). If readiness ever
+        // RENUMBERS indices on a reorder, backfill from the payload instead: add
+        // prev_story_id/next_story_id to ReadinessSegment and read rs.prevStoryId here.
+        var bindBy = [Int: (String?, String?)]()
+        for s in segments where s.type == "transition" {
+            if s.prevStoryId != nil || s.nextStoryId != nil {
+                bindBy[s.index] = (s.prevStoryId, s.nextStoryId)
+            }
+        }
 
         // Rebuild the segment list from the authoritative (deduped) readiness snapshot.
         segments = r.segments.sorted { $0.index < $1.index }.map { rs -> ManifestSegment in
             let sid = rs.storyId
             let realDur = (rs.durationMs ?? 0) > 0 ? rs.durationMs : nil
+            let bind = bindBy[rs.index]
             var ms = ManifestSegment(
                 index:      rs.index,
                 type:       rs.type,
@@ -547,7 +580,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
                 storyHash:  sid.flatMap { hashBy[$0] },
                 storyId:    sid,
                 title:      sid.flatMap { titleBy[$0] },
-                sources:    sid.flatMap { srcBy[$0] }
+                sources:    sid.flatMap { srcBy[$0] },
+                prevStoryId: bind?.0,
+                nextStoryId: bind?.1
             )
             if ms.durationMs == nil { ms.durationMs = Int(Self.estimatedSeconds(ms) * 1000) }
             return ms
@@ -1028,12 +1063,35 @@ final class BulletinPlayer: NSObject, ObservableObject {
         guard let p = player, nextEnqueueIdx < segments.count else { return }
         let seg = segments[nextEnqueueIdx]
 
+        // BUG 1 — STALE BRIDGE: a transition bound to a (prev,next) story pair that no longer
+        // matches its story neighbours in the running order must NOT play — it would name a story
+        // out of place ("now onto Argentina" after Belgium). Drop it to a clean cut and continue.
+        // (Mirror of backend bridge_guard. Decision: drop only — no regen; see docs/post-demo.md.)
+        if seg.type == "transition", isStaleBridge(seg) {
+            nextEnqueueIdx += 1
+            enqueueNext()
+            return
+        }
+        // BUG 2 — a FAILED/stalled segment (readiness state=="failed", incl. the backend stall
+        // watchdog, or our client ceiling) is SKIPPED, never held: advance past it so playback
+        // continues and the end gate reconciles.
+        if failedSegmentIdx.contains(seg.index) {
+            nextEnqueueIdx += 1
+            enqueueNext()
+            return
+        }
+
         // STREAMING: a not-yet-synthesised segment has no url — HOLD here (don't advance/skip).
-        // The readiness poll calls enqueueNext again the moment this segment's url arrives.
+        // The readiness poll calls enqueueNext again the moment this segment's url arrives — or,
+        // past the ceiling, marks it failed so the branch above skips it.
         guard let urlStr = seg.url else {
+            if !_heldEnqueue || holdStartedIdx != seg.index {
+                holdStartedAt = Date(); holdStartedIdx = seg.index
+            }
             _heldEnqueue = true
             return
         }
+        holdStartedAt = nil; holdStartedIdx = nil
         nextEnqueueIdx += 1
         _heldEnqueue = false
 
@@ -1073,6 +1131,46 @@ final class BulletinPlayer: NSObject, ObservableObject {
                     break
                 }
             }
+    }
+
+    // MARK: - Bridge guard + end-gate helpers (bugs 1 & 3)
+
+    /// Mirror of backend `bridge_guard`: a transition whose bound (prev,next) story ids no longer
+    /// match the story segments actually adjacent to it is STALE and must not play. Compares
+    /// against the segment-array order (catches dedup/reconcile shrink). Unbound (older) bulletins
+    /// have nil ids → never stale.
+    /// // UNVERIFIED — array-order check catches reconcile-shrink; a user-SKIP that reorders PLAY
+    /// without shrinking the array may need a play-order variant. Verify the football/skip case.
+    private func isStaleBridge(_ seg: ManifestSegment) -> Bool {
+        guard seg.type == "transition" else { return false }
+        guard seg.prevStoryId != nil || seg.nextStoryId != nil else { return false }
+        guard let i = segments.firstIndex(where: { $0.index == seg.index }) else { return false }
+        if let wantPrev = seg.prevStoryId, nearestStoryId(from: i, step: -1) != wantPrev { return true }
+        if let wantNext = seg.nextStoryId, nearestStoryId(from: i, step: +1) != wantNext { return true }
+        return false
+    }
+
+    private func nearestStoryId(from i: Int, step: Int) -> String? {
+        var j = i + step
+        while j >= 0 && j < segments.count {
+            if segments[j].type == "story" { return segments[j].storyId }
+            j += step
+        }
+        return nil
+    }
+
+    /// Any not-yet-enqueued segment that WILL actually play — excluding ones that are failed/
+    /// stall-reaped or a stale bridge (both get skipped). When false, the briefing is genuinely
+    /// over and `.ended` may fire.
+    private func hasRemainingPlayableSegment() -> Bool {
+        guard nextEnqueueIdx < segments.count else { return false }
+        for i in nextEnqueueIdx..<segments.count {
+            let s = segments[i]
+            if failedSegmentIdx.contains(s.index) { continue }
+            if s.type == "transition", isStaleBridge(s) { continue }
+            return true
+        }
+        return false
     }
 
     // MARK: - Playback callbacks
@@ -1133,7 +1231,15 @@ final class BulletinPlayer: NSObject, ObservableObject {
             // A genuine end has enqueued EVERYTHING (nextEnqueueIdx == count) with nothing held —
             // so this guard stops a pending-tap / streaming hold from false-firing .ended (which
             // would clear intendedPlaying + null currentSegment and poison every later tap).
-            if _heldEnqueue || nextEnqueueIdx < segments.count { return }
+            // BUG 3 — end when no PLAYABLE segment remains, not merely when nextEnqueueIdx reaches
+            // segments.count. Segments that will never play (failed/stall-reaped, or dropped stale
+            // bridges) are never enqueued, so the old `nextEnqueueIdx < count` test blocked .ended
+            // forever → ~20s dead air after the last real story. We still HOLD if a *real* (pending,
+            // recoverable) segment remains — that's normal streaming, not the end.
+            // // UNVERIFIED — this interacts with the false-.ended-on-skip guards above (09c76f6:
+            // the currentItem/prevSeg checks). Verify on device that skip / seek / mid-stream hold
+            // do NOT false-fire .ended, and that a genuine end (all real segments played) does.
+            if hasRemainingPlayableSegment() { return }
             guard playerState != .buffering, prevSeg != nil else { return }
             // Genuine end of the briefing: playback is over, so intent is no longer
             // "playing" — this is the one non-user event allowed to flip intent, so the
