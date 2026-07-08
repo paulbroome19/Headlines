@@ -43,6 +43,7 @@ from core.pipeline.data.bulletin.selection import (
     get_materialised_selection,
     resolve_materialised_selection,
 )
+from core.pipeline.data.bulletin.edition import UserDailyEditionRepo
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
@@ -309,7 +310,7 @@ def get_home_preview(profile_id: int):
         include_categories=include_categories, exclude_categories=exclude_categories,
         name=profile.get("name"),
     )
-    request_hash = compute_request_hash(filters)
+    request_hash = compute_request_hash(filters, day=uk_now().date())
     with SessionLocal() as db:
         ordered, _depths, _run = resolve_materialised_selection(
             db, profile_id=profile_id, request_hash=request_hash,
@@ -450,7 +451,7 @@ def assemble_bulletin(req: BulletinRequest):
         filters["max_stories"] = req.max_stories
     if req.name:
         filters["name"] = req.name.strip()
-    request_hash = compute_request_hash(filters)
+    request_hash = compute_request_hash(filters, day=uk_now().date())
 
     with SessionLocal() as db:
         run = RankingRunRepo(db).get_latest()
@@ -745,7 +746,7 @@ def _get_or_assemble_bulletin(
         preset=preset, include_top_stories=include_top_stories,
         include_categories=include_categories, exclude_categories=exclude_categories, name=name,
     )
-    request_hash = compute_request_hash(filters)
+    request_hash = compute_request_hash(filters, day=uk_now().date())
 
     bulletin_cached = False
     stories_list: list[dict] = []
@@ -909,6 +910,17 @@ def _get_or_assemble_bulletin(
             )
             bulletin_script = result.script
             story_count = len(stories)
+
+            # ONE membership: assembly may have dropped a selected story that had no summary for
+            # this run (a story is only appended above when its summary exists). Reconcile the
+            # edition to the ASSEMBLED set so the home preview (screen) shows exactly what plays —
+            # screen == skeleton == audio. Removal-only (assembled ⊆ pinned edition); no-op if the
+            # profile has no materialised edition.
+            if profile_id is not None:
+                UserDailyEditionRepo(db).reconcile_story_ids(
+                    profile_id, now_uk.date(), request_hash,
+                    [str(s["story_id"]) for s in stories],
+                )
             db.commit()
 
     return {
@@ -1015,7 +1027,7 @@ def prepare_bulletin_for_manifest(
         preset=preset, include_top_stories=include_top_stories,
         include_categories=include_categories, exclude_categories=exclude_categories, name=name,
     )
-    request_hash = compute_request_hash(filters)
+    request_hash = compute_request_hash(filters, day=uk_now().date())
 
     with SessionLocal() as db:
         run = RankingRunRepo(db).get_latest()
@@ -1342,6 +1354,14 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
             BulletinRepo(db).update_after_assembly(
                 bulletin_id, segments=result.segments, script=result.script, story_count=len(all_stories),
             )
+            # ONE membership: all_stories is the summarised (post-drop) set actually assembled, so
+            # reconcile the edition to it — the home preview (screen) then matches skeleton + audio.
+            # Removal-only; no-op if this profile has no materialised edition (cold play-first).
+            if profile_id is not None:
+                UserDailyEditionRepo(db).reconcile_story_ids(
+                    profile_id, now_uk.date(), request_hash,
+                    [str(s["story_id"]) for s in all_stories],
+                )
             db.commit()
 
         # 7a. The start-pack synthesised its bridges as EMPTY placeholders (greeting-split defers

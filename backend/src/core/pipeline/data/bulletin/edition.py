@@ -37,6 +37,26 @@ class UserDailyEditionRepo:
             ids = json.loads(ids)
         return [str(x) for x in ids]
 
+    def reconcile_story_ids(
+        self, profile_id: int, edition_date: date, request_hash: str, story_ids: list[str]
+    ) -> int:
+        """Update an EXISTING edition's story_ids to the assembled set — the ONE-membership rule:
+        when final assembly drops a story (no summary row for the play run), it must also leave the
+        screen, so screen == skeleton == audio. Removal-only in practice: `story_ids` is the
+        assembled order, a subsequence of the pinned edition, so this never reorders or adds. No-op
+        (returns 0) if no edition row exists (e.g. a cold play-first that never materialised a
+        preview); the pinned ranking_run_id is untouched. Idempotent."""
+        result = self.db.execute(
+            text("""
+                UPDATE data.user_daily_editions
+                   SET story_ids = CAST(:ids AS jsonb), updated_at = now()
+                 WHERE profile_id = :pid AND edition_date = :d AND request_hash = :h
+            """),
+            {"pid": profile_id, "d": edition_date, "h": request_hash,
+             "ids": json.dumps([str(x) for x in story_ids])},
+        )
+        return result.rowcount
+
     def upsert(self, profile_id: int, edition_date: date, request_hash: str, story_ids: list[str]) -> None:
         self.db.execute(
             text("""
