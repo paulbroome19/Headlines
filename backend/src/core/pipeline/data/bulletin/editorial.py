@@ -52,6 +52,13 @@ SIG_CLAMP = 2.0
 # this sits well above a normal day's few, only clipping a pathological over-flag.
 MAX_PROMOTIONS = 15
 
+# Version of the editorial BAR — the build_system rubric wording plus the FRONT_PAGE_N review
+# window. It is folded into the candidate fingerprint (editorial_review._candidate_fingerprint)
+# so a change to the bar invalidates cached verdicts: every candidate set is re-reviewed under
+# the new rubric on its next run instead of copying a pre-change twin. BUMP THIS whenever
+# build_system or FRONT_PAGE_N changes. (v2: region-relative UK bar + FRONT_PAGE_N 70→100.)
+RUBRIC_VERSION = 2
+
 
 @dataclass(frozen=True)
 class StoryMeta:
@@ -108,6 +115,16 @@ def build_system(valid_leaves: list[str]) -> str:
         "top story. Most news, even important-to-someone news, is not. Only the day's genuinely "
         "significant few qualify — typically a small handful (aim ~3-6), never a dozen; on a normal "
         "day EXPECT a major UK story or two among them.\n\n"
+        "REGION-RELATIVE BAR: judge a UK domestic story against the UK news bar — 'would this lead "
+        "the UK national bulletin today?' — NOT against the day's biggest global story. A story "
+        "that would lead the UK's own bulletin is a UK top story even if a larger US or "
+        "international story ran the same day; they do NOT compete for one slot, so never withhold "
+        "a UK flag just because a bigger foreign story exists. For example, a landmark UK court "
+        "ruling, a sitting MP or party leader resigning, or a major NHS strike would each clear "
+        "this bar — but treat these as ILLUSTRATIONS of the principle, not a checklist: apply the "
+        "same region-relative judgment to ANY major UK domestic story. This sharpens the UK bar "
+        "ONLY; it does not loosen anything else — the corporate, tech/product, celebrity, and "
+        "routine-sport/routine-politics exclusions below stand exactly as written.\n\n"
         "A story qualifies ONE of two ways:\n\n"
         "ROUTE 1 — BROAD HUMAN IMPACT. It affects, endangers, or genuinely matters to the "
         "general population:\n"
