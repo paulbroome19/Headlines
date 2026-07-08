@@ -38,11 +38,13 @@ private struct SummaryRequest: Encodable {
     struct EventItem: Encodable {
         let storyHash: String
         let storyId: String?
-        let action: String
+        let profileId: Int          // belt-and-braces: also send profile_id per event; the server
+        let action: String          // treats the top-level profile_id as authoritative and ignores it
         let positionPct: Double
         enum CodingKeys: String, CodingKey {
             case storyHash   = "story_hash"
             case storyId     = "story_id"
+            case profileId   = "profile_id"
             case action
             case positionPct = "position_pct"
         }
@@ -895,7 +897,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private func summaryRequest(pid: Int, events: [StoryEvent]) -> SummaryRequest {
         SummaryRequest(
             profileId: pid,
-            events: events.map { .init(storyHash: $0.storyHash, storyId: $0.storyId,
+            events: events.map { .init(storyHash: $0.storyHash, storyId: $0.storyId, profileId: pid,
                                        action: $0.action, positionPct: $0.positionPct) }
         )
     }
