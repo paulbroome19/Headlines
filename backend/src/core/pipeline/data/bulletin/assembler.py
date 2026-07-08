@@ -86,9 +86,15 @@ def assemble(
         for i, story in enumerate(ordered):
             if i > 0:
                 sid = str(story["story_id"])
+                # Bind the bridge to the PAIR it was written for, not to a position. A transition
+                # previews `next_story_id` and follows `prev_story_id`; if a play-time reorder/dedup
+                # ever separates it from that exact pair, it must be dropped (clean cut) or
+                # regenerated — never played naming the wrong story. See bridge_guard.
                 segments.append({
                     "type": "transition",
                     "text": connective.transitions.get(sid, ""),
+                    "prev_story_id": str(ordered[i - 1]["story_id"]),
+                    "next_story_id": sid,
                 })
 
             story_text = (story.get("audio_script") or "").strip() or (story.get("summary_text") or "")
@@ -124,7 +130,12 @@ def assemble(
                     used_in_bulletin=used_transitions,
                 )
                 used_transitions.add(transition_text)
-                segments.append({"type": "transition", "text": transition_text})
+                segments.append({
+                    "type": "transition",
+                    "text": transition_text,
+                    "prev_story_id": str(stories[i - 1]["story_id"]),
+                    "next_story_id": str(story["story_id"]),
+                })
 
             story_text = (story.get("audio_script") or "").strip() or (story.get("summary_text") or "")
             segments.append({
