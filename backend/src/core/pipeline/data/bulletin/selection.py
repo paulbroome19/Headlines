@@ -32,6 +32,7 @@ from core.pipeline.data.bulletin.event_dedup import dedup_same_event
 from core.pipeline.data.bulletin.repos.bulletin_repo import BulletinRepo
 from core.pipeline.data.bulletin.repos.user_story_state_repo import UserStoryStateRepo
 from core.pipeline.ranking.candidate_loader import load_story_ranking_candidates
+from core.pipeline.ranking.category_ranker import filter_category_index
 from core.pipeline.ranking.depth import depth_for_rank
 from core.pipeline.ranking.ranked_list import scored_from_ranked_list
 from core.pipeline.ranking.repos.ranking_run_repo import RankingRunRepo
@@ -407,30 +408,47 @@ def _ordered_from_ids(db: Session, ids: list[str]) -> list[dict]:
     return [{"story_id": sid, "primary_category": cats.get(sid)} for sid in ids]
 
 
+_CAT_INDEX_END = 10_000  # unknown category → sorts last (mirrors filter_category_index)
+
+
 def reconcile_edition_ids(
     stored_ids: list[str],
     dropped: set[str],
     fresh_ranked_ids: list[str],
+    cat_index_of: dict[str, int],
     target_count: int,
 ) -> tuple[list[str], bool]:
     """Living-edition reconcile (pure, unit-testable). On a home refresh / re-read of a pinned
-    edition: drop the stories the user is DONE with (consumed/skipped), keep every UNCONSUMED story
-    in its existing position (NO reshuffle), and backfill the freed slots from the current rankings
-    up to the original count. Returns (new_ids, changed).
+    edition: drop the stories the user is DONE with (consumed/skipped), keep the UNCONSUMED
+    survivors, backfill the freed slots from the current rankings up to the original count, and
+    return the whole list in FIXED CATEGORY ORDER. Returns (new_ids, changed).
 
-    - Survivors keep their relative order — the day-edition stability rule (refresh must not
-      reshuffle stories you haven't dealt with yet).
-    - Backfill = the top-ranked stories not already present and not dropped, appended after the
-      survivors; capped so the count never grows past the original.
-    - `changed` is False when nothing was dropped (the caller can skip the write AND the ranking
-      query on the hot path)."""
+    Ordering is the crux (blocker: a backfilled story must NOT land after the last category). Every
+    story is placed by `cat_index_of` = filter_category_index(primary_category) — the same
+    running-order key cap_bulletin uses (top-stories 0 … sport last). The sort is stable with a
+    secondary key that keeps SURVIVORS before backfill within a category and preserves each group's
+    prior relative order — so unconsumed stories don't reshuffle, top-block-first survivors stay
+    first in their bucket, and a backfill splices into its category's section, never the tail. The
+    result's category sequence is therefore always non-decreasing = a subsequence of the fixed
+    topic order. Called even when nothing was dropped (fresh empty) so a previously tail-appended
+    edition is healed on the next read.
+
+    `changed` is True when the returned order differs from a plain survivor list — the caller writes
+    only then."""
     survivors = [s for s in stored_ids if s not in dropped]
-    if len(survivors) == len(stored_ids):
-        return survivors, False
     present = set(survivors)
     need = max(0, target_count - len(survivors))
     backfill = [f for f in fresh_ranked_ids if f not in present and f not in dropped][:need]
-    return survivors + backfill, True
+
+    def key(is_backfill: int, idx: int, sid: str):
+        return (cat_index_of.get(sid, _CAT_INDEX_END), is_backfill, idx)
+
+    tagged = [(key(0, i, s), s) for i, s in enumerate(survivors)]
+    tagged += [(key(1, j, b), b) for j, b in enumerate(backfill)]
+    tagged.sort(key=lambda t: t[0])
+    new_ids = [s for _, s in tagged]
+    changed = new_ids != survivors  # reordered and/or backfilled
+    return new_ids, changed
 
 
 def get_materialised_selection(
@@ -509,26 +527,31 @@ def resolve_materialised_selection(
         ids = [str(x) for x in (row[0] if isinstance(row[0], list) else __import__("json").loads(row[0]))]
         # LIVE heard/skip filter on the materialised path (audit §8): drop stories consumed/skipped
         # SINCE the edition was pinned, and stably backfill the gaps from current rankings — so a
-        # heard story never lingers on the home list or in a regenerated briefing until the next
-        # day. Unconsumed stories keep their positions (no reshuffle). Cheap when nothing was
-        # consumed (no ranking query, no write).
+        # heard story never lingers on the home list or in a regenerated briefing until the next day.
+        # The reconcile ALSO re-orders by fixed category index (filter_category_index) so a backfill
+        # can never land after the last category (blocker) and any prior tail-append self-heals.
         dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
         survivors = [s for s in ids if s not in dropped]
-        if len(survivors) == len(ids):
-            ordered = _ordered_from_ids(db, ids)
-            return ordered, _depths_for(ordered), pinned_run
-        # A gap opened → backfill from the CURRENT ranked list (LLM-free: dedup=False keeps the
-        # deterministic guards but skips the paid same-event pass on this hot refresh path).
-        fresh = build_selection(
-            db, profile_id=profile_id, include_top_stories=include_top_stories,
-            include_categories=include_categories, exclude_categories=exclude_categories,
-            preset=preset, dedup=False,
-        )
+        # Backfill only when a gap opened (avoids the ranking query on the untouched hot path).
+        fresh_ids: list[str] = []
+        if len(survivors) < len(ids):
+            fresh_ids = [
+                o["story_id"] for o in build_selection(
+                    db, profile_id=profile_id, include_top_stories=include_top_stories,
+                    include_categories=include_categories, exclude_categories=exclude_categories,
+                    preset=preset, dedup=False,  # LLM-free on the hot refresh path
+                )
+            ]
+        # Category index for everything that could appear in the result.
+        involved = list(dict.fromkeys(survivors + fresh_ids))
+        cats = _categories_for(db, involved)
+        cat_index_of = {sid: filter_category_index(cats.get(sid)) for sid in involved}
         new_ids, _changed = reconcile_edition_ids(
-            ids, dropped, [o["story_id"] for o in fresh], target_count=len(ids),
+            ids, dropped, fresh_ids, cat_index_of, target_count=len(ids),
         )
-        UserDailyEditionRepo(db).reconcile_story_ids(profile_id, day, request_hash, new_ids)
-        db.commit()
+        if new_ids != ids:  # write only on an actual change (order and/or membership)
+            UserDailyEditionRepo(db).reconcile_story_ids(profile_id, day, request_hash, new_ids)
+            db.commit()
         ordered = _ordered_from_ids(db, new_ids)
         return ordered, _depths_for(ordered), pinned_run
 
