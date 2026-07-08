@@ -46,6 +46,7 @@ from core.pipeline.data.bulletin.selection import (
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
+    selection_filters,
     validate_filter_categories,
     select_stories,
     select_stories_by_duration,
@@ -282,12 +283,11 @@ def get_home_preview(profile_id: int):
     total minutes and the selected story count — WITHOUT generating audio, calling any
     LLM, or writing user_story_state.
 
-    Mirrors the bulletin's selection exactly (qualify_and_order + cap_bulletin, with
-    already-heard/skipped stories dropped read-only) so the preview matches what the
-    briefing will contain. The editorial LLM pass is intentionally skipped (kept cheap);
-    the mechanical selection is authoritative for a preview. Duration is a faithful
-    estimate from the depth word model (never seconds); exact minutes come from the
-    generated briefing.
+    Reads the SAME materialised (deduped) selection the briefing assembles from
+    (resolve_materialised_selection), so `story_count` and the tiles are exactly the stories
+    that will play — one list, one count. dedup runs on representative titles (no summaries,
+    no audio), so the preview stays cheap and LLM-light. Duration is a faithful estimate from
+    the depth word model (never seconds); exact minutes come from the generated briefing.
     """
     with SessionLocal() as db:
         profile = ProfileRepo(db).get_by_id(profile_id)
@@ -300,14 +300,14 @@ def get_home_preview(profile_id: int):
     exclude_categories = list(profile.get("exclude_categories") or [])
     headline_by_id: dict[str, str] = {}
 
-    # ONE materialised selection — byte-identical to what the briefing will open with.
-    filters: dict = {"preset": preset, "include_top_stories": include_top_stories}
-    if include_categories:
-        filters["include_categories"] = sorted(include_categories)
-    if exclude_categories:
-        filters["exclude_categories"] = sorted(exclude_categories)
-    if profile.get("name"):
-        filters["name"] = profile["name"].strip()
+    # ONE materialised selection — byte-identical to what the briefing will open with. The
+    # request_hash MUST be built the same way here and in the manifest/assemble paths, or the
+    # skeleton won't find this stored edition (see selection_filters / the #157 wiring bug).
+    filters = selection_filters(
+        preset=preset, include_top_stories=include_top_stories,
+        include_categories=include_categories, exclude_categories=exclude_categories,
+        name=profile.get("name"),
+    )
     request_hash = compute_request_hash(filters)
     with SessionLocal() as db:
         ordered, _depths, _run = resolve_materialised_selection(
@@ -740,13 +740,10 @@ def _get_or_assemble_bulletin(
              segments, stories_list, bulletin_cached, is_first_bulletin.
     """
     preset = _preset_from_minutes(max_duration_minutes)
-    filters: dict = {"preset": preset, "include_top_stories": include_top_stories}
-    if include_categories:
-        filters["include_categories"] = sorted(include_categories)
-    if exclude_categories:
-        filters["exclude_categories"] = sorted(exclude_categories)
-    if name:
-        filters["name"] = name.strip()
+    filters = selection_filters(
+        preset=preset, include_top_stories=include_top_stories,
+        include_categories=include_categories, exclude_categories=exclude_categories, name=name,
+    )
     request_hash = compute_request_hash(filters)
 
     bulletin_cached = False
@@ -1013,13 +1010,10 @@ def prepare_bulletin_for_manifest(
                                in-progress row from a concurrent request → dispatch=False).
     Fast: no LLM work here — just selection + a skeleton INSERT."""
     preset = _preset_from_minutes(max_duration_minutes)
-    filters: dict = {"preset": preset, "include_top_stories": include_top_stories}
-    if include_categories:
-        filters["include_categories"] = sorted(include_categories)
-    if exclude_categories:
-        filters["exclude_categories"] = sorted(exclude_categories)
-    if name:
-        filters["name"] = name.strip()
+    filters = selection_filters(
+        preset=preset, include_top_stories=include_top_stories,
+        include_categories=include_categories, exclude_categories=exclude_categories, name=name,
+    )
     request_hash = compute_request_hash(filters)
 
     with SessionLocal() as db:

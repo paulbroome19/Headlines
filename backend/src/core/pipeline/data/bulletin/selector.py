@@ -10,6 +10,37 @@ import json
 from typing import Any
 
 
+def selection_filters(
+    *,
+    preset: str,
+    include_top_stories: bool,
+    include_categories: list[str] | None = None,
+    exclude_categories: list[str] | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """The canonical selection-filter dict for a PROFILE-based briefing — the single source of
+    truth for the (profile, day) request_hash.
+
+    Home preview, the streaming skeleton, the cached/assemble path and the background assembly
+    ALL build it here so their request_hash can never drift. This closes the #157 wiring bug:
+    the manifest used to key `include_top_stories` off the client request (iOS hardcodes True)
+    while the preview keyed it off the profile, so a profile with top-stories OFF produced two
+    different hashes — the skeleton then missed the preview's materialised (deduped) selection
+    and fell back to the pre-dedup order (and a different set of stories) even in the warm path.
+
+    Keep the shape identical to every caller's cache key: `preset` + `include_top_stories` are
+    always present; categories (sorted) and name are included only when set.
+    """
+    filters: dict[str, Any] = {"preset": preset, "include_top_stories": include_top_stories}
+    if include_categories:
+        filters["include_categories"] = sorted(include_categories)
+    if exclude_categories:
+        filters["exclude_categories"] = sorted(exclude_categories)
+    if name:
+        filters["name"] = name.strip()
+    return filters
+
+
 def compute_request_hash(filters: dict[str, Any]) -> str:
     """
     16-char hex SHA-256 of the canonicalised filter dict.

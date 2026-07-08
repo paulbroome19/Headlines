@@ -388,6 +388,13 @@ def get_manifest(
     if profile is None:
         raise HTTPException(status_code=404, detail=f"Profile {profile_id} not found")
 
+    # The PROFILE is the source of truth for top-stories (home preview + warm-up both key on it).
+    # The client `req.include_top_stories` is hardcoded True and must NOT feed the request_hash,
+    # or a profile with top-stories OFF gets a different hash than the preview → the skeleton
+    # misses the preview's materialised (deduped) selection and serves the pre-dedup order (the
+    # #157 wiring bug). Keying on the profile keeps preview and briefing on one selection.
+    include_top_stories = profile.get("include_top_stories", True)
+
     voice = tts_voice() if not profile["voice"] else (
         lambda v: v.voice_id if v else tts_voice()
     )(get_voice(profile["voice"]))
@@ -417,7 +424,7 @@ def get_manifest(
         exclude_categories=profile["exclude_categories"],
         max_duration_minutes=profile.get("max_duration_minutes", 5),
         name=profile["name"],
-        include_top_stories=req.include_top_stories,
+        include_top_stories=include_top_stories,
     )
 
     if prep["mode"] == "cached":
@@ -428,7 +435,7 @@ def get_manifest(
             exclude_categories=profile["exclude_categories"],
             max_duration_minutes=profile.get("max_duration_minutes", 5),
             name=profile["name"],
-            include_top_stories=req.include_top_stories,
+            include_top_stories=include_top_stories,
         )
         return _build_full_manifest(
             plan, profile_id=profile_id, voice=voice, model=model,
