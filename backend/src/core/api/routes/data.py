@@ -40,6 +40,7 @@ from core.pipeline.data.bulletin.connective import (
 from core.pipeline.data.bulletin.outros import build_outro
 from core.pipeline.data.bulletin.selection import (
     build_selection,
+    display_titles,
     get_materialised_selection,
     resolve_materialised_selection,
 )
@@ -331,8 +332,12 @@ def get_home_preview(profile_id: int):
     ids = [o["story_id"] for o in ordered]
     standfirst_by_id: dict[str, str | None] = {}
     sources_by_id: dict[str, list[str]] = {}
+    display_by_id: dict[str, str] = {}
     if ids:
         with SessionLocal() as db:
+            # ONE display title everywhere — same clean source the manifest now uses, so Home and
+            # playback show identical headings (was: the raw latest-article title).
+            display_by_id = display_titles(db, [str(x) for x in ids])
             sum_rows = db.execute(text("""
                 SELECT DISTINCT ON (story_id::text) story_id::text AS sid, summary_text, content_hash
                 FROM data.story_summaries
@@ -378,7 +383,7 @@ def get_home_preview(profile_id: int):
     stories = [
         {
             "story_id": sid,
-            "headline": headline_by_id.get(sid, ""),
+            "headline": display_by_id.get(sid) or headline_by_id.get(sid, ""),
             "category": cat_by_id.get(sid),
             "standfirst": standfirst_by_id.get(sid),
             "sources": sources_by_id.get(sid, []),
@@ -984,13 +989,10 @@ def _skeleton_segments(db, ordered: list[dict]) -> list[dict]:
     story]..., outro) with EMPTY texts. Story segments carry story_id + title (from
     data.stories) so the manifest shows the running order immediately, before summaries."""
     story_ids = [str(o["story_id"]) for o in ordered]
-    titles: dict[str, str] = {}
-    if story_ids:
-        rows = db.execute(text("""
-            SELECT id::text AS sid, representative_title FROM data.stories
-            WHERE id::text = ANY(:ids)
-        """), {"ids": story_ids}).fetchall()
-        titles = {sid: (t or "") for sid, t in rows}
+    # ONE display title everywhere: prefer the clean summariser headline over the raw
+    # representative_title (which can overflow the playback board). iOS locks the title it first
+    # sees from the manifest, so the SKELETON must already carry the clean title.
+    titles = display_titles(db, story_ids) if story_ids else {}
     segs: list[dict] = [{"type": "intro", "text": ""}]
     for i, o in enumerate(ordered):
         sid = str(o["story_id"])
