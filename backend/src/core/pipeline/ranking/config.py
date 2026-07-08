@@ -199,13 +199,18 @@ PRESET_DEPTH: dict[str, int] = {"short": 3, "medium": 4, "detailed": 8}
 # over-represented categories first (a by-product of the round-robin fill order).
 MAX_BULLETIN_STORIES = 20
 
-# ── Top-Stories-by-region roll-up (Part 4) ───────────────────────────────────
-# Regions with a dedicated top-stories.<region> bucket (the taxonomy geo axis).
-# geo_region also carries 'latin-america', which has no leaf → those stories have
-# no dedicated regional bucket but still appear on the bare 'top-stories' front
-# page and via topic filters. ⚑ add 'latin-america' here + a taxonomy leaf if you
-# want a dedicated LatAm bucket.
-TOP_STORIES_REGIONS: set[str] = {"uk", "us", "europe", "middle-east", "africa", "asia"}
+# ── Top-Stories regional toggles (the FINAL top-stories spec) ─────────────────
+# The Top Stories filter has exactly these four regional toggles. A story's region is its
+# SUBJECT region, derived from the primary_category prefix (thresholds._subject_region):
+# politics.uk→uk, politics.us→us, politics.europe→europe, everything else→world. 'world' is the
+# catch-all (politics.world + every non-politics top story). middle-east/africa/asia were removed:
+# the pipeline cannot attribute subject region for them today (only politics.* carries it), so
+# they were dead switches — their return (via editorial region emission) is filed in
+# docs/post-demo.md. Their stories are reachable via WORLD until then.
+TOP_STORIES_REGIONS: set[str] = {"uk", "us", "europe", "world"}
+# The top block holds at most this many flagged top stories (highest-ranked across the toggled
+# regions); any remaining slots backfill from the user's followed topics. ⚑ tune.
+TOP_BLOCK_SIZE = 5
 
 # country_weight (from docs/ingestion-pool-design.md, via pool_taxonomy) applied
 # as a tiebreak — same principle as CATEGORY_TIEBREAK_STRENGTH. Bigger markets break
