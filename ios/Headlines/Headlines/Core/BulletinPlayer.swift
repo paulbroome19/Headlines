@@ -254,6 +254,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private var prevOutcome: PreviousOutcome = .natural
 
     private var accumulatedEvents = [StoryEvent]()
+    // Story hashes already recorded as skipped this briefing — dedups the skip event when a forward
+    // tap lands on a still-synthesising story and the user taps again while it's pending. Separate
+    // from the UI-facing consumedStoryHashes so a skip doesn't alter the "played" dimming.
+    private var _skippedStoryHashes: Set<String> = []
 
     // MARK: Init / deinit
 
@@ -875,6 +879,29 @@ final class BulletinPlayer: NSObject, ObservableObject {
         guard let payload = detachSummary() else { return nil }
         return try? JSONEncoder().encode(payload.request)
     }
+
+    /// Test seam: a 2-story briefing whose SECOND story is still synthesising (url == nil), currently
+    /// playing the first — so a forward `seekToStoryUnit` hits the pending-tap path. Exercises the
+    /// real skip → accumulate chain for the regression where the pending early-return dropped skips.
+    func _testConfigurePendingSkip(currentHash: String, currentStoryId: String) {
+        _bulletinId = 215
+        _profileId = 27
+        player = AVQueuePlayer()
+        func seg(_ i: Int, _ h: String, _ sid: String, url: String?) -> ManifestSegment {
+            ManifestSegment(index: i, type: "story", url: url, durationMs: 1000, storyHash: h,
+                            storyId: sid, title: "T\(i)", sources: [], prevStoryId: nil, nextStoryId: nil)
+        }
+        let s0 = seg(1, currentHash, currentStoryId, url: "https://example.com/0.mp3")  // current, READY
+        let s1 = seg(2, "hNext", "sNext", url: nil)                                     // target, PENDING
+        segments = [s0, s1]
+        _storyUnits = [
+            StoryUnit(index: 0, transitionSegment: nil, storySegments: [s0], cumulativeStartSeconds: 0),
+            StoryUnit(index: 1, transitionSegment: nil, storySegments: [s1], cumulativeStartSeconds: 1),
+        ]
+        currentSegment = s0
+        storyIndex = 0
+        currentUnitIndex = 0
+    }
     #endif
 
     /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a
@@ -1127,6 +1154,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         globalPositionPct    = 0
         consumedStoryHashes  = []
         accumulatedEvents    = []
+        _skippedStoryHashes  = []
         prevOutcome          = .natural
         lastSkipBackTime     = nil
         intendedPlaying      = false
@@ -1449,6 +1477,21 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // not just the opener.
         guard let (startArrayIdx, seekSeconds) = startSegment(for: unit, offsetSeconds: offsetSeconds) else { return }
 
+        // Record the skip of the CURRENT story on ANY forward seek — BEFORE the pending-tap early
+        // return below. This block used to live AFTER that return, so skipping to a story still
+        // synthesising (url == nil — the common "skip mid-stream" case) hit the return and DROPPED
+        // the skip event entirely: the user's skips silently never registered. Keyed to the current
+        // unit's seeded hash (survives a split-lead remainder); deduped via _skippedStoryHashes so
+        // repeated taps while the target is pending don't double-fire.
+        if clamped > storyIndex, let seg = currentSegment, seg.isStory,
+           let cur = storyUnit(forSegment: seg), let hash = cur.storyHash,
+           !_skippedStoryHashes.contains(hash) {
+            _skippedStoryHashes.insert(hash)
+            let ev = StoryEvent(storyHash: hash, storyId: cur.storyId, action: "skipped", positionPct: currentPositionPct)
+            fireEvent(ev)
+            accumulatedEvents.append(ev)
+        }
+
         // PENDING TAP — the start segment isn't synthesised yet. Do NOT tear down what's playing:
         // bump the story to the front of the synthesis queue, mark the row buffering, and record
         // the intent. applyReadiness fulfils the tap (real seek + play) the moment its audio
@@ -1472,14 +1515,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         navGeneration &+= 1
         let gen = navGeneration
 
-        // Fire skipped event for the current story when seeking forward — keyed to the UNIT's
-        // (seeded) hash so it lands even when skipping from mid-remainder of a split lead.
-        if clamped > storyIndex, let seg = currentSegment, seg.isStory,
-           let unit = storyUnit(forSegment: seg), let hash = unit.storyHash {
-            let ev = StoryEvent(storyHash: hash, storyId: unit.storyId, action: "skipped", positionPct: currentPositionPct)
-            fireEvent(ev)
-            accumulatedEvents.append(ev)
-        }
         prevOutcome = .userSkip
 
         // Update tracking immediately for responsive UI.
