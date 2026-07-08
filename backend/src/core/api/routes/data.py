@@ -1812,6 +1812,7 @@ def prioritise_story(bulletin_id: int, req: PrioritiseRequest):
 class BulletinEventRequest(BaseModel):
     profile_id: int
     story_hash: str
+    story_id: str | None = None   # preferred consumption key; falls back to hash→id resolution
     action: str        # started | completed | skipped | abandoned
     position_pct: float = 0.0
 
@@ -1844,9 +1845,13 @@ def record_bulletin_event(bulletin_id: int, req: BulletinEventRequest):
         return {"status": "no_change"}
 
     with SessionLocal() as db:
+        story_id = req.story_id or _story_id_by_hash(db, bulletin_id).get(req.story_hash or "")
+        if not story_id:
+            logger.info("event: bulletin=%s could not resolve story_id for hash=%s", bulletin_id, req.story_hash)
+            return {"status": "no_change"}
         updated = UserStoryStateRepo(db).transition_state(
             profile_id=req.profile_id,
-            story_hash=req.story_hash,
+            story_id=story_id,
             new_state=new_state,
         )
         db.commit()
@@ -1854,19 +1859,49 @@ def record_bulletin_event(bulletin_id: int, req: BulletinEventRequest):
     return {"status": "updated" if updated else "no_change"}
 
 
+def _story_id_by_hash(db, bulletin_id: int) -> dict[str, str]:
+    """{served story_hash → story_id} for a bulletin, recomputing compute_script_hash(text) per
+    story segment (the stored segments don't carry the hash — it's derived at serve time). Maps
+    BOTH opener and remainder hashes of a split lead to the same story_id, so an event keyed on any
+    of a story's segment hashes resolves to the story. Robust to hash drift across bulletins."""
+    b = BulletinRepo(db).get_by_id(bulletin_id)
+    if b is None:
+        return {}
+    segs = b["segments"]
+    if not isinstance(segs, list):
+        segs = _json.loads(segs)
+    out: dict[str, str] = {}
+    for s in segs:
+        if s.get("type") == "story" and s.get("story_id") and (s.get("text") or "").strip():
+            out[compute_script_hash(s["text"])] = str(s["story_id"])
+    return out
+
+
 @router.post("/bulletins/{bulletin_id}/summary")
 def record_bulletin_summary(bulletin_id: int, req: BulletinSummaryRequest):
     """
-    Batch state-transition endpoint called on app backgrounding/closure.
-    Applies all outstanding events that didn't fire live (network failures,
-    crashes). Idempotent — already-terminal rows are silently skipped.
+    Batch state-transition endpoint called on play-event flush (Home navigation / background).
+    Applies all outstanding events. Idempotent — already-terminal rows are silently skipped.
+    Consumption is keyed on story_id: each event's story_id is taken from the event (new clients)
+    or resolved from its story_hash via the bulletin's segments (older clients) — never matched on
+    the hash directly, which drifts across bulletins (split lead / re-summarise) and silently
+    dropped consumption before (the build-45 regression).
     """
     events = [e.model_dump() for e in req.events]
     with SessionLocal() as db:
+        hash_to_id = _story_id_by_hash(db, bulletin_id)
+        for ev in events:
+            if not ev.get("story_id"):
+                ev["story_id"] = hash_to_id.get(ev.get("story_hash") or "")
+        unresolved = sum(1 for ev in events if not ev.get("story_id"))
         updated = UserStoryStateRepo(db).transition_batch(
             profile_id=req.profile_id,
             events=events,
         )
         db.commit()
 
+    logger.info(
+        "summary: bulletin=%s profile=%s events=%d resolved=%d unresolved=%d rows_updated=%d",
+        bulletin_id, req.profile_id, len(events), len(events) - unresolved, unresolved, updated,
+    )
     return {"status": "ok", "updated": updated}

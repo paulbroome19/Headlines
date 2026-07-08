@@ -112,14 +112,18 @@ class UserStoryStateRepo:
         self,
         *,
         profile_id: int,
-        story_hash: str,
+        story_id: str,
         new_state: str,
     ) -> bool:
         """
-        Advance a queued row to new_state. The WHERE state='queued' guard makes
-        consumed and rejected terminal — they cannot be overwritten.
-        Returns True if a row was updated, False if it was already terminal or
-        did not exist (both are acceptable outcomes).
+        Advance a queued row to new_state, keyed on STORY_ID (not story_hash). A story's
+        script_hash changes across bulletins — when it becomes the split lead (opener+remainder),
+        or is re-summarised — while `insert_queued_batch` is ON CONFLICT (profile_id, story_id) DO
+        NOTHING, so the queued row keeps its FIRST hash forever. Keying the transition on the hash
+        therefore silently failed to consume any such story (the build-45 regression). Story
+        IDENTITY is the correct key: "the user heard/skipped THIS story", regardless of which
+        content version's audio played. The WHERE state='queued' guard keeps consumed/rejected
+        terminal. Returns True if a row was updated.
         """
         result = self.db.execute(
             text("""
@@ -127,12 +131,12 @@ class UserStoryStateRepo:
                 SET   state      = :new_state,
                       updated_at = now()
                 WHERE profile_id = :profile_id
-                  AND story_hash  = :story_hash
+                  AND story_id    = :story_id
                   AND state       = 'queued'
             """),
             {
                 "profile_id": profile_id,
-                "story_hash": story_hash,
+                "story_id": str(story_id),
                 "new_state": new_state,
             },
         )
@@ -146,17 +150,21 @@ class UserStoryStateRepo:
     ) -> int:
         """
         Apply state transitions for multiple events (summary endpoint).
-        events: list of dicts with 'story_hash', 'action', 'position_pct'.
+        events: list of dicts with 'story_id', 'action', 'position_pct'. Events without a resolved
+        story_id are skipped (the endpoint resolves it from story_hash via the bulletin segments).
         Returns count of rows actually updated.
         """
         updated = 0
         for ev in events:
+            sid = ev.get("story_id")
+            if not sid:
+                continue
             new_state = compute_new_state(ev["action"], ev.get("position_pct", 0.0))
             if new_state is None:
                 continue
             if self.transition_state(
                 profile_id=profile_id,
-                story_hash=ev["story_hash"],
+                story_id=str(sid),
                 new_state=new_state,
             ):
                 updated += 1
