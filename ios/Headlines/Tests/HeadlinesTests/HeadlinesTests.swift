@@ -63,6 +63,28 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertNil(player._testDetachedSummaryJSON(), "drain is one-shot — no double-send")
     }
 
+    /// Regression: skipping to a story whose audio is still synthesising (url == nil) used to hit
+    /// seekToStoryUnit's pending-tap early return BEFORE the skip event was recorded, so the skip
+    /// silently vanished (build-45 symptom: skips never stuck). The skip of the CURRENT story must be
+    /// captured on ANY forward skip and be in the flushed payload — skip → immediate close.
+    @MainActor
+    func testSkipToPendingStoryStillRecordsSkip() throws {
+        let player = BulletinPlayer()
+        player._testConfigurePendingSkip(currentHash: "farageHash", currentStoryId: "240779")
+
+        player.seekToStoryUnit(at: 1)   // skip forward to the still-synthesising next story (pending)
+
+        // Immediate close → the skip of the current story (Farage) must be in the posted payload.
+        let data = try XCTUnwrap(player._testDetachedSummaryJSON(),
+                                 "skipping to a PENDING story must still record the skip of the current one")
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let events = try XCTUnwrap(obj["events"] as? [[String: Any]])
+        XCTAssertTrue(
+            events.contains { ($0["story_id"] as? String) == "240779" && ($0["action"] as? String) == "skipped" },
+            "the skip of the current story (240779) must be in the flushed payload; got \(events)"
+        )
+    }
+
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
 
     /// Paced stages advance one per `stageSeconds` purely from elapsed time — no backend
