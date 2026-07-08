@@ -66,6 +66,41 @@ def test_dedup_runs_before_cap_and_lead_survives():
     assert "po1" in ids and "bu1" in ids
 
 
+def test_count_equals_played_on_the_dedup_case():
+    # The invariant the home count must satisfy: the number shown == the number that plays. Preview
+    # and briefing both render `finalize_selection` WITH dedup, so the count is the deduped length —
+    # never the pre-dedup one. Here a same-event pair collapses (4 candidates → 3 played).
+    pool = [_ss("ts1", "politics.us", 8.5, top=True), _ss("po1", "politics.uk", 8.0),
+            _ss("po_dup", "politics.uk", 6.0), _ss("bu1", "business.markets", 7.0)]
+
+    def dedup(stub):
+        ids = {d["story_id"] for d in stub}
+        return [d for d in stub if not ({"ts1", "po_dup"} <= ids and d["story_id"] == "po_dup")]
+
+    played = _finalize(pool, dedup_fn=dedup)
+    assert len(played) == 3                       # the count home shows == what actually plays
+    assert "po_dup" not in played
+
+
+def test_cold_skeleton_is_superset_and_final_is_the_deduped_played_count():
+    # Cold play-first serves the PRE-dedup order (dedup_fn=None) as a fast skeleton; the materialised
+    # FINAL dedups (dedup_fn=dedup). The played/preview count is the FINAL length — the skeleton may
+    # be longer and is corrected down to it (backend overwrite + the iOS reconcile from #161). The
+    # lead is identical either way, so the LLM-free first-play gate stays valid on the cold path.
+    pool = [_ss("ts1", "politics.us", 8.5, top=True), _ss("po1", "politics.uk", 8.0),
+            _ss("po_dup", "politics.uk", 6.0), _ss("bu1", "business.markets", 7.0)]
+
+    def dedup(stub):
+        ids = {d["story_id"] for d in stub}
+        return [d for d in stub if not ({"ts1", "po_dup"} <= ids and d["story_id"] == "po_dup")]
+
+    cold  = _finalize(pool, dedup_fn=None)        # pre-dedup skeleton (cold fallback)
+    final = _finalize(pool, dedup_fn=dedup)        # materialised deduped == the played set
+    assert set(final) <= set(cold)                 # dedup only ever removes
+    assert len(final) < len(cold)                  # it actually shrank here
+    assert cold[0] == final[0] == "ts1"            # lead identical → opener-gate safe on cold path
+
+
 def test_summary_less_story_is_kept_not_dropped():
     # finalize_selection never references summaries, so a story with no cached summary is still
     # selected (D3 = keep) — the briefing lazily summarises it; preview and briefing agree.
