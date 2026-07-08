@@ -324,8 +324,11 @@ def get_home_preview(profile_id: int):
     # summariser's word targets — see _preview_minutes.
     total_minutes = _preview_minutes(story_count)
 
-    # Join standfirst (cached summaries) + ranked sources for the displayed stories only.
-    ids = [o["story_id"] for o in ordered][:6]
+    # Join standfirst (cached summaries) + ranked sources for EVERY story in the running order —
+    # Home now renders the full table of contents (the same ordered selection the briefing plays),
+    # not just the first few. `ordered` is already capped at the bulletin size (≤ MAX_BULLETIN_STORIES),
+    # so these read-only joins stay bounded and cheap.
+    ids = [o["story_id"] for o in ordered]
     standfirst_by_id: dict[str, str | None] = {}
     sources_by_id: dict[str, list[str]] = {}
     if ids:
