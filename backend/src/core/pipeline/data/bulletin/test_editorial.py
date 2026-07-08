@@ -135,3 +135,44 @@ def test_review_empty_on_api_failure(monkeypatch):
 def test_review_tolerates_trailing_prose(monkeypatch):
     _mock(monkeypatch, '{"adjustments":[{"id":"1","significance":-1,"reason":"x"}]}\n\nDone.')
     assert E.review_front_page([_meta("1")], LEAVES)["1"].significance_delta == -1
+
+
+# ── region-relative UK bar (stopgap) ─────────────────────────────────────────
+
+def test_rubric_is_region_relative_and_illustrative():
+    # The bar for a UK story is region-relative ("would lead the UK national bulletin"), the UK
+    # examples are ILLUSTRATIVE not an exhaustive checklist, and the other exclusions are unchanged.
+    sys = E.build_system(LEAVES)
+    assert "lead the UK national bulletin" in sys          # region-relative framing
+    assert "compete for one slot" in sys                   # non-competitive with the biggest global story
+    assert "For example" in sys and "ILLUSTRATIONS of the principle" in sys  # illustrative, not a list
+    # strictness elsewhere is untouched
+    assert "Corporate/business news" in sys and "Tech/product news" in sys
+
+
+def test_uk_flag_survives_alongside_bigger_us_story():
+    # A significant-for-UK story (lower coverage/score) flagged alongside a BIGGER US story: both
+    # keep the flag. A UK top story is never dropped for being smaller than a US one. (The
+    # region-relative JUDGMENT lives in the prompt — guarded above; this guards the apply path.)
+    uk = _story("uk1", "politics.uk", 6.0)
+    us = _story("us1", "politics.us", 9.0)
+    apply_editorial([uk, us], {
+        "uk1": EditorialAdjustment("uk1", None, +1.0, "major UK court ruling", top_story=True),
+        "us1": EditorialAdjustment("us1", None, 0.0, "major US story", top_story=True),
+    })
+    assert uk.candidate.top_story is True and us.candidate.top_story is True
+
+
+def test_front_page_window_widened_to_100():
+    from core.pipeline.data.bulletin.editorial_review import FRONT_PAGE_N
+    assert FRONT_PAGE_N == 100   # was 70 — pulls high-merit/low-coverage stories into review
+
+
+def test_rubric_version_invalidates_fingerprint(monkeypatch):
+    # A bar-version bump must change the fingerprint so the same candidate set is RE-reviewed
+    # under the new rubric instead of copying a pre-change twin's verdicts.
+    from core.pipeline.data.bulletin import editorial_review as ER
+    stories = [_story("a", "science", 5.0), _story("b", "science", 4.0)]
+    fp1 = ER._candidate_fingerprint(stories)
+    monkeypatch.setattr(ER, "RUBRIC_VERSION", ER.RUBRIC_VERSION + 1)
+    assert ER._candidate_fingerprint(stories) != fp1

@@ -21,7 +21,7 @@ from core.pipeline.data.normalise.categorise.category_loader import load_valid_c
 from core.pipeline.ranking.category_ranker import get_category_tier
 from core.pipeline.ranking.models import ScoredStory
 from .editorial import (
-    MAX_PROMOTIONS, EditorialAdjustment, StoryMeta, _model, review_front_page,
+    MAX_PROMOTIONS, RUBRIC_VERSION, EditorialAdjustment, StoryMeta, _model, review_front_page,
 )
 from .event_dedup import dedup_same_event
 
@@ -47,7 +47,11 @@ CALL_BATCH = 200
 # call. The significance / top_story judgment needs the biggest stories side by side — a large
 # category-grouped batch (tier-laddered) buries them and flags nothing. This pass is
 # authoritative for the front page; it overrides the tiered result for these high-rank stories.
-FRONT_PAGE_N = 70
+# 100 (was 70): merit_score and normalized_score diverge, so genuinely major stories with lower
+# coverage rank (a UK court ruling; a second cluster of a big event) fell outside the top-70 and
+# were never reviewed. 100 pulls them into the editor's view. ⚑ widen further only if the input
+# prompt approaches the model's context / _MAX_TOKENS output budget.
+FRONT_PAGE_N = 100
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS data.editorial_reviews (
@@ -311,10 +315,14 @@ def editorial_adjustments(
 
 
 def _candidate_fingerprint(scored: list[ScoredStory]) -> str:
-    """Stable digest of the candidate SET (its story ids). Two ranking runs with the same
-    candidates get the same flags, so they can share one review."""
+    """Stable digest of the candidate SET (its story ids) AND the editorial bar version. Two
+    ranking runs share one review only when BOTH the candidates and the rubric/window match — so
+    a RUBRIC_VERSION bump invalidates every cached verdict and forces a fresh review under the new
+    bar (without it, a rubric change would silently copy pre-change flags for any already-reviewed
+    candidate set)."""
     ids = sorted(s.candidate.story_id for s in scored)
-    return hashlib.sha1("|".join(ids).encode("utf-8")).hexdigest()
+    payload = f"r{RUBRIC_VERSION}|" + "|".join(ids)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
 def precompute_editorial_for_run(db: Session, ranking_run_id: int, scored: list[ScoredStory]) -> str:
