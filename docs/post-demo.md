@@ -127,3 +127,30 @@ Backfill interpretation (documented, in case it's revisited): "highest-ranked fo
 stories, in topic order" = membership by **rank** (the best topic stories fill the spare slots),
 presentation by **topic (filter) order** — mirroring the top block's rank-membership /
 group-presentation split.
+
+---
+
+# Bridge integrity: single-bridge regeneration (deferred)
+
+Shipped (backend PR #171 + iOS build 38): transitions are **bound** to the ordered story pair
+they were written for (`prev_story_id`, `next_story_id`), and a stale bridge — one whose bound
+pair no longer matches its adjacent story segments after a reorder/dedup-reconcile — is **dropped
+to a clean cut** at play time (backend `bridge_guard.stale_transition_indices`; iOS mirrors it in
+`BulletinPlayer.isStaleBridge` and skips the segment in `enqueueNext`). This is the settled fix:
+a stale bridge is silently omitted, never played. No wrong-story audio ("now onto Argentina"
+after Belgium) can reach the user.
+
+**Deferred — regenerate the correct bridge instead of dropping it.** The clean-cut drop is
+correct and safe but slightly less smooth than a bridge written for the *actual* new neighbours.
+A future enhancement: when a stale bridge is detected, synthesise a fresh transition for the real
+(prev, next) pair rather than omitting it. NOT built for the demo:
+
+- Requires a **single-bridge (re)generation endpoint** — script one transition for an arbitrary
+  ordered pair, synth it, and merge the url in via the existing `/readiness` incremental path.
+  New scripting + audio-gen surface; new cache key; new failure mode (regen itself stalls → falls
+  back to the clean cut anyway).
+- The drop-to-clean-cut path already removes the *defect*; regen is a **smoothness** upgrade, not
+  a correctness one. Not worth the surface area under demo time pressure.
+
+Revisit only if clean cuts between reordered stories read as abrupt in real use. Until then the
+guard stays drop-only on both tiers.

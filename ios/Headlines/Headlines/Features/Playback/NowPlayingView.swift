@@ -52,6 +52,11 @@ struct NowPlayingView: View {
                         emptyState
                     case .failed:
                         failedState
+                    case .ended:
+                        // FEATURE — end-of-briefing completion (also bug 3's clean destination:
+                        // audio ends → this, zero dead air). Replay = play() at .ended restarts
+                        // from the top (restartFromBeginning); Home = the shared onClose.
+                        CompletionView(onHome: onClose, onReplay: { player.play() })
                     default:
                         playerBody
                     }
