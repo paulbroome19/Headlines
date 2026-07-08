@@ -7,7 +7,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date
 from typing import Any
+
+# Bump to retroactively invalidate every cached bulletin AND materialised edition — do this
+# whenever the selection ORDER or MEMBERSHIP logic changes (e.g. the #169/#170 region-grouped
+# top block), so a code change can never serve an old-order cached bulletin against a freshly
+# re-materialised edition. The version is folded into request_hash, so old rows simply stop
+# matching and are rebuilt on next request. (Was implicitly 1 pre-#170; 2 = post-#170 region order.)
+SELECTION_VERSION = 2
 
 
 def selection_filters(
@@ -41,12 +49,26 @@ def selection_filters(
     return filters
 
 
-def compute_request_hash(filters: dict[str, Any]) -> str:
+def compute_request_hash(
+    filters: dict[str, Any],
+    *,
+    day: date,
+    selection_version: int = SELECTION_VERSION,
+) -> str:
     """
-    16-char hex SHA-256 of the canonicalised filter dict.
+    16-char hex SHA-256 of the canonicalised (filters + day + selection_version) tuple.
     Used as the cache key in UNIQUE(ranking_run_id, request_hash).
+
+    `day` and `selection_version` are folded in so the BULLETIN cache key gains the same day
+    dimension the edition key already has (its `edition_date` column) — closing the asymmetry
+    where the edition re-materialised per day but the bulletin cache (ranking_run_id, request_hash)
+    was reused across days, so a selection-code change could serve an old-order cached bulletin
+    against a new-order edition. Both surfaces compute the hash here with the SAME day, so they
+    can never drift (the #157 parity invariant holds). Output stays 16-char hex, so callers that
+    use `int(request_hash, 16)` as the assembler RNG seed keep working.
     """
-    canonical = json.dumps(filters, sort_keys=True, separators=(",", ":"))
+    payload = {"f": filters, "d": day.isoformat(), "v": selection_version}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
