@@ -154,3 +154,30 @@ A future enhancement: when a stale bridge is detected, synthesise a fresh transi
 
 Revisit only if clean cuts between reordered stories read as abrupt in real use. Until then the
 guard stays drop-only on both tiers.
+
+---
+
+# Cluster INSERT race — add ON CONFLICT (deferred; symptoms quieted, not fixed)
+
+`cluster/handlers/requested.py` does a plain `INSERT INTO data.stories (... story_key ...) RETURNING
+id` on the else-branch (story not found → create). Under concurrency, two events for the SAME new
+`story_key` both take the else-branch and both INSERT → one wins, the other raises a unique
+violation on `story_key`. The consumer catches it and leaves the message pending; the retry then
+finds the row and takes the UPDATE branch, so it self-heals — but every collision throws.
+
+**Symptom (why it mattered):** each collision was logged by `consumer.py` as a FULL traceback, and
+during active ingest that flood consumed Railway's ~500 logs/sec budget and drowned every other
+diagnostic (it's what hid the `/summary` 422 for days — see docs/audit-followups.md "Test gaps").
+
+**Mitigation shipped (PR #186), NOT the fix:** the consumer now logs an `IntegrityError` as a single
+concise WARNING line instead of a traceback. The race still happens; it's just quiet and cheap now.
+
+**The actual fix (post-demo):** make the stories insert idempotent —
+`INSERT ... ON CONFLICT (story_key) DO UPDATE SET last_published_at = GREATEST(...),
+article_count = article_count + 1 RETURNING id`. This returns the id on both insert and
+conflict, eliminates the exception + retry, and merges the if/else create/update branches into one
+upsert. Watch the `article_count` increment on the DO UPDATE path so a re-delivered event can't
+double-count (story_articles is already `ON CONFLICT DO NOTHING`, so article linking stays
+idempotent — key the count off that, or only increment when a new story_articles row is actually
+inserted). Deferred deliberately: rewriting cluster-handler concurrency under demo pressure is
+exactly the kind of change we don't make this week.
