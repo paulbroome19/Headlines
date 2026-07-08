@@ -56,11 +56,12 @@ struct NowPlayingView: View {
                         // FEATURE — end-of-briefing completion (also bug 3's clean destination:
                         // audio ends → this, zero dead air). Replay = play() at .ended restarts
                         // from the top (restartFromBeginning); Home = the shared onClose.
+                        // Home tap → onClose → closePlayer snapshots + POSTs the play events, then
+                        // reloads Home (see HomeContainerView.closePlayer). We deliberately do NOT
+                        // flush from a .task here: dismissing the player cancels this view's tasks,
+                        // which would abort the POST mid-flight. Backgrounding is covered by the
+                        // scenePhase flush.
                         CompletionView(onHome: onClose, onReplay: { player.play() })
-                            // Flush the completed-story events as soon as the briefing ends, while
-                            // the user reads this screen — so tapping Home (or backgrounding) finds
-                            // the consumed states already committed and Home refreshes clean.
-                            .task { await player.flushSummary() }
                     default:
                         playerBody
                     }

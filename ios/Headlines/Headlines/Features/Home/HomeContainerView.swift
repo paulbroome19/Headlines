@@ -92,14 +92,17 @@ struct HomeContainerView: View {
     }
 
     private func closePlayer() {
-        // Stop audio and dismiss IMMEDIATELY (never block Home on the network), but drain the play
-        // events via the AWAITED flush so Home's preview refetch runs AFTER the consumed states are
-        // committed — otherwise Home re-offers the just-finished briefing. Flush failure re-queues
-        // the events (retried on the next refresh) and we still refetch (graceful degrade).
+        // Capture the play events BEFORE tearing the player down — stopSilently() nils the bulletin/
+        // profile ids and clears the event buffer, so draining after stop (the old bug) posted
+        // nothing. Snapshot first, then stop + dismiss immediately (never block Home on the network),
+        // then POST the snapshot and refetch — the POST runs in THIS view's Task (not the dismissed
+        // player screen's), so it can't be cancelled mid-flight. Home reloads only AFTER the POST so
+        // the just-finished briefing's consumed stories are gone.
+        let summary = player.detachSummary()
         player.stopSilently()
         showPlayer = false
         Task {
-            await player.flushSummary()
+            await player.postSummary(summary)
             await loadPreview()
         }
     }
