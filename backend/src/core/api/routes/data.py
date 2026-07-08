@@ -1817,9 +1817,23 @@ class BulletinEventRequest(BaseModel):
     position_pct: float = 0.0
 
 
+class SummaryEventItem(BaseModel):
+    """One event in the BATCH /summary payload. Deliberately does NOT require profile_id — the
+    top-level BulletinSummaryRequest.profile_id is authoritative. The batch used to reuse
+    BulletinEventRequest (which requires per-event profile_id), so the iOS flush — which sends
+    profile_id only at the top level — 422'd on EVERY request and silently recorded nothing (the
+    build-45 regression). `profile_id` is accepted-but-ignored here so a future client that sends it
+    per event still validates."""
+    story_hash: str
+    story_id: str | None = None
+    action: str
+    position_pct: float = 0.0
+    profile_id: int | None = None   # accepted, ignored — top-level profile_id wins
+
+
 class BulletinSummaryRequest(BaseModel):
     profile_id: int
-    events: list[BulletinEventRequest]
+    events: list[SummaryEventItem]
 
 
 @router.post("/bulletins/{bulletin_id}/event")
@@ -1900,8 +1914,17 @@ def record_bulletin_summary(bulletin_id: int, req: BulletinSummaryRequest):
         )
         db.commit()
 
-    logger.info(
+    # WARNING level (not INFO) so this survives the ingest cascade's log volume, and the counts are
+    # ALSO returned in the response — the client logs them (os_log), a path immune to server-side
+    # log rate-limiting. A diagnostic that gets rate-limited out isn't a diagnostic.
+    logger.warning(
         "summary: bulletin=%s profile=%s events=%d resolved=%d unresolved=%d rows_updated=%d",
         bulletin_id, req.profile_id, len(events), len(events) - unresolved, unresolved, updated,
     )
-    return {"status": "ok", "updated": updated}
+    return {
+        "status": "ok",
+        "updated": updated,
+        "received": len(events),
+        "resolved": len(events) - unresolved,
+        "unresolved": unresolved,
+    }
