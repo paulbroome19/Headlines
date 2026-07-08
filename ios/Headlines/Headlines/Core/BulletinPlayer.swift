@@ -809,11 +809,39 @@ final class BulletinPlayer: NSObject, ObservableObject {
         stopInternal(sendEvents: true)
     }
 
-    /// Stop audio WITHOUT draining events — the caller flushes explicitly (awaited) so Home's
-    /// preview fetch can be sequenced after the /summary POST commits. Used by the Home-navigation
-    /// path so a just-finished/left briefing's consumed stories are gone by the time Home reloads.
+    /// Stop audio and reset player state. Callers that need the play events MUST call
+    /// detachSummary() FIRST (stopInternal nils _bulletinId/_profileId and clears the event buffer).
     func stopSilently() {
         stopInternal(sendEvents: false)
+    }
+
+    /// A self-contained /summary payload snapshotted BEFORE teardown so it survives stopSilently()
+    /// (which nils the ids + clears the buffer) and can be POSTed from a Task the presenting view
+    /// doesn't own (so dismissing the player can't cancel it mid-flight).
+    struct SummaryPayload { let bulletinId: Int; fileprivate let request: SummaryRequest }
+
+    /// Synchronously drain the accumulated events into a payload (MainActor-atomic). Call this on
+    /// the main actor BEFORE stopSilently(), then hand the result to postSummary().
+    func detachSummary() -> SummaryPayload? {
+        guard let (bid, pid, events) = drainSummary() else { return nil }
+        return SummaryPayload(bulletinId: bid, request: summaryRequest(pid: pid, events: events))
+    }
+
+    /// POST a previously-detached payload and AWAIT it — so an immediately-following home-preview
+    /// fetch sees the committed consumed states. Owns no player state, so it's safe to run in a
+    /// Task on the parent view after the player screen is dismissed. Best-effort: on failure the
+    /// stories simply stay queued and re-appear until a later successful play/flush (no crash, no
+    /// block). Returns whether the POST succeeded.
+    @discardableResult
+    func postSummary(_ payload: SummaryPayload?) async -> Bool {
+        guard let payload else { return false }
+        do {
+            _ = try await client.post("data/bulletins/\(payload.bulletinId)/summary",
+                                      body: payload.request) as StatusResponse
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a
@@ -850,15 +878,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
     }
 
-    /// AWAITED flush — completes (or re-queues) before the caller proceeds, so an immediately
-    /// following home-preview fetch sees the new consumed states. Never blocks the UI itself: the
-    /// caller dismisses first and awaits this only to sequence the refetch.
-    func flushSummary() async {
-        guard let (bid, pid, events) = drainSummary() else { return }
-        let req = summaryRequest(pid: pid, events: events)
-        do { _ = try await client.post("data/bulletins/\(bid)/summary", body: req) as StatusResponse }
-        catch { accumulatedEvents.insert(contentsOf: events, at: 0) }            // retry next refresh
-    }
 
     // MARK: - Audio session
 
