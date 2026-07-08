@@ -1,30 +1,56 @@
 """
-Pre-TTS script normalisation.
+Pre-TTS script normalisation + the synthesis-time pronunciation lexicon.
 
-Applied to the assembled bulletin script before it is sent to ElevenLabs.
-Handles:
-  - Currency / number shorthand  (£2.3bn → "2.3 billion pounds")
-  - Percentage                   (10%  → "10 percent")
-  - Acronyms that need spacing   (verified to trip the voice model)
-  - Pronunciation overrides      (names / words the TTS mispronounces)
+Two distinct transforms live here, applied at DIFFERENT points in the pipeline
+because of how they interact with the segment audio cache:
+
+  1. normalise_for_tts()  — CONTENT normalisation, applied at ASSEMBLY time
+     (assembler.py), BEFORE the segment script_hash is computed. Handles:
+       - Currency / number shorthand  (£2.3bn → "2.3 billion pounds")
+       - Percentage                   (10%  → "10 percent")
+       - Acronyms that need spacing   (verified to trip the voice model)
+     These are stable, deterministic content rewrites that are rarely touched,
+     so it is fine for them to participate in the cache key.
+
+  2. apply_pronunciation_lexicon()  — RENDERING tweak, applied at SYNTHESIS time
+     (tts_client.synthesize()), AFTER script_hash is computed. Maps written
+     names/words to a phonetic respelling the voice renders correctly.
+
+WHY the lexicon is applied post-hash: it is the frequently-edited part (testers
+report new mispronunciations regularly). If it fed the cache key, every lexicon
+edit would re-hash — and therefore re-bill via ElevenLabs — every affected
+segment. Applying it after hashing means an edit only changes what fresh renders
+say; already-cached segments keep their old audio until the news naturally turns
+the cache over. See tts_client.synthesize() for the exact call site.
 """
 from __future__ import annotations
 
 import re
 
-# ── Pronunciation overrides ────────────────────────────────────────────────────
-# Maps exact strings (case-sensitive match) to the phonetic spelling the TTS
-# engine handles better. Keep sorted alphabetically. Extend as new problems
-# are discovered from listening sessions.
+# ── Pronunciation lexicon (applied at synthesis time — see module docstring) ────
+# Maps a written form → the spoken (phonetic) respelling the voice renders
+# correctly. Matching is WHOLE-WORD (\b…\b, never substrings) and CASE-SENSITIVE:
+# entries are matched exactly as written. Case-sensitivity is deliberate — it
+# preserves the written case and avoids mangling lowercase homographs (e.g.
+# "Musk" the person vs "musk" the scent; "Niger" the country vs a substring).
+#
+# HOW TO ADD AN ENTRY (when a tester reports a mispronounced name):
+#   1. Add   "WrittenForm": "Pho-net-ic",   below, grouped with its neighbours.
+#   2. Pick the respelling by EAR against the actual voice — render a short
+#      sample first (see docs/pronunciation-lexicon.md for the one-liner).
+#      eleven_multilingual_v2 does NOT support SSML <phoneme> tags, so plain
+#      respelling (hyphenated syllables, CAPS for stress) is the only lever.
+#   3. That's it — no cache flush needed. Fresh renders pick it up; cached
+#      segments keep their old audio until they naturally re-render.
 
-PRONUNCIATION_OVERRIDES: dict[str, str] = {
+PRONUNCIATION_LEXICON: dict[str, str] = {
     # UK political names that TTS commonly stumbles on
     "Keir":          "Keer",
     "Starmer":       "Star-mer",
     "Tánaiste":      "Tah-nish-tuh",
     "Taoiseach":     "Tee-shock",
     "Sunak":         "Soo-nak",
-    "Farage":        "Fa-rahj",
+    "Farage":        "Fa-rahzh",
     "Reeves":        "Reeves",          # fine — entry as documentation anchor
     # Place names
     "Kyiv":          "Keev",
@@ -127,20 +153,46 @@ def normalise_acronyms(text: str) -> str:
     return text
 
 
-# ── Pronunciation overrides ────────────────────────────────────────────────────
-
-def apply_pronunciation_overrides(text: str) -> str:
-    for word, replacement in PRONUNCIATION_OVERRIDES.items():
-        # Whole-word match, case-sensitive (proper nouns)
-        text = re.sub(rf"\b{re.escape(word)}\b", replacement, text)
-    return text
+# ── Pronunciation lexicon ───────────────────────────────────────────────────────
+# Built once from PRONUNCIATION_LEXICON: a single alternation so the whole text is
+# rewritten in one pass (not one pass per entry). Longer keys first so that if one
+# key is a prefix of another the longer wins. Case-sensitive (no re.IGNORECASE).
 
 
-# ── Master normaliser ──────────────────────────────────────────────────────────
+def _build_lexicon_pattern(lexicon: dict[str, str]) -> re.Pattern[str] | None:
+    if not lexicon:
+        return None
+    keys = sorted(lexicon, key=len, reverse=True)
+    alternation = "|".join(re.escape(k) for k in keys)
+    return re.compile(rf"\b(?:{alternation})\b")
+
+
+_LEXICON_PATTERN = _build_lexicon_pattern(PRONUNCIATION_LEXICON)
+
+
+def apply_pronunciation_lexicon(text: str) -> str:
+    """
+    Replace known written forms with their spoken respelling.
+
+    Applied at SYNTHESIS time (tts_client), AFTER the segment script_hash is
+    computed — so editing the lexicon never changes a cache key. Whole-word,
+    case-sensitive matching; substrings are never touched.
+    """
+    if _LEXICON_PATTERN is None:
+        return text
+    return _LEXICON_PATTERN.sub(lambda m: PRONUNCIATION_LEXICON[m.group(0)], text)
+
+
+# ── Master normaliser (content only — the lexicon is applied later, post-hash) ──
 
 def normalise_for_tts(script: str) -> str:
-    """Apply all normalisation passes in order before sending to TTS."""
+    """
+    Content normalisation applied at ASSEMBLY time, before script_hash.
+
+    NOTE: the pronunciation lexicon is deliberately NOT applied here — it runs at
+    synthesis time (see apply_pronunciation_lexicon) so lexicon edits don't
+    invalidate the audio cache. Only stable number/acronym rewrites live here.
+    """
     script = normalise_numbers(script)
     script = normalise_acronyms(script)
-    script = apply_pronunciation_overrides(script)
     return script

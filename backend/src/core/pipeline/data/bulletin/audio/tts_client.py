@@ -24,6 +24,7 @@ import logging
 import urllib.error
 import urllib.request
 
+from core.pipeline.data.bulletin.pronunciation import apply_pronunciation_lexicon
 from core.platform.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -251,7 +252,22 @@ def synthesize(
     flows with its neighbours (ElevenLabs request "stitching"). Text-only context —
     NOT previous_request_id chaining — so segments stay independently synthesizable
     (the streaming start-pack keeps rendering in parallel). Omitted on the edges.
+
+    Pronunciation lexicon: applied HERE, at the synthesis boundary — deliberately
+    AFTER script_hash is computed upstream (segment_synth / data.py) on the
+    un-substituted text. This is the seam for post-hash, TTS-only text tweaks (the
+    "em-dash post-processing" colocation point — no em-dash pass exists today, so
+    the lexicon is the first resident). Keeping it post-hash means editing the
+    lexicon never changes a cache key: only fresh renders pick up a new spelling;
+    already-cached segments keep their old audio until the cache turns over.
+    Applied to the neighbour context too, so the prosody conditioning matches what
+    those neighbours are actually rendered as.
     """
+    text = apply_pronunciation_lexicon(text)
+    if previous_text is not None:
+        previous_text = apply_pronunciation_lexicon(previous_text)
+    if next_text is not None:
+        next_text = apply_pronunciation_lexicon(next_text)
     if provider == "elevenlabs":
         return _elevenlabs(
             text, voice=voice, model=model, audio_format=audio_format,
