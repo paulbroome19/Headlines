@@ -15,6 +15,7 @@ import SwiftUI
 struct HomeContainerView: View {
     @AppStorage("userName")  private var userName = ""
     @AppStorage("profileId") private var profileId = 0
+    @Environment(\.scenePhase) private var scenePhase
 
     @StateObject private var player = BulletinPlayer()
     @State private var showPlayer = false
@@ -38,6 +39,11 @@ struct HomeContainerView: View {
         // Re-fetch when returning from the filters screen (selections may have changed).
         .onChange(of: showProfile) { _, presenting in
             if !presenting { Task { await loadPreview() } }
+        }
+        // Flush accumulated play events when the app backgrounds (fire-and-forget) so events aren't
+        // lost if the user leaves mid-briefing without returning to Home.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { player.sendSummary() }
         }
         .fullScreenCover(isPresented: $showPlayer) {
             NowPlayingView(player: player, onClose: closePlayer, onRetry: startBriefing)
@@ -86,7 +92,15 @@ struct HomeContainerView: View {
     }
 
     private func closePlayer() {
-        player.stop()
+        // Stop audio and dismiss IMMEDIATELY (never block Home on the network), but drain the play
+        // events via the AWAITED flush so Home's preview refetch runs AFTER the consumed states are
+        // committed — otherwise Home re-offers the just-finished briefing. Flush failure re-queues
+        // the events (retried on the next refresh) and we still refetch (graceful degrade).
+        player.stopSilently()
         showPlayer = false
+        Task {
+            await player.flushSummary()
+            await loadPreview()
+        }
     }
 }
