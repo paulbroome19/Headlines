@@ -96,27 +96,9 @@ rules:
       - "germany"
       - "italy"
       - "spain"
-
-  top-stories.asia:
-    keywords:
-      - "china"
-      - "japan"
-      - "india"
-      - "taiwan"
-
-  top-stories.middle-east:
-    keywords:
-      - "israel"
-      - "gaza"
-      - "iran"
-      - "saudi"
-
-  top-stories.africa:
-    keywords:
-      - "nigeria"
-      - "south africa"
-      - "kenya"
-      - "sudan"
+  # NOTE: top-stories.asia / .middle-east / .africa categorisation rules were removed with their
+  # toggles (final top-stories spec) — those regions can't be attributed today. Stories formerly
+  # caught here now take their content category and reach the block via WORLD. See docs/post-demo.md.
 
   # ── BUSINESS (⟦POOL⟧ business → these fine rules) ────────────────────────────
   business.markets:

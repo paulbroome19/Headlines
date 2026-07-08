@@ -39,6 +39,7 @@ from core.pipeline.ranking.thresholds import (
     DEFAULT_PRESET,
     PRESET_BAR,
     _fresh_category_relief,
+    _is_top_candidate,
     _matches_category,
     _selection_context,
     cap_bulletin,
@@ -84,13 +85,13 @@ def guard_top_block(
     if len(reservoir) < 2:
         return reservoir
 
-    front_page, regions, topic_cats = _selection_context(include_top_stories, include_categories)
+    toggled_regions, topic_cats = _selection_context(include_top_stories, include_categories)
     ref_now = now or datetime.now(timezone.utc)
     bar = PRESET_BAR.get(preset) or PRESET_BAR[DEFAULT_PRESET]
     lead_id = reservoir[0].candidate.story_id
 
     def _in_top(s) -> bool:
-        return bool(s.candidate.top_story) and (front_page or (s.candidate.geo_region in regions))
+        return _is_top_candidate(s.candidate.primary_category, s.candidate.top_story, toggled_regions)
 
     def _group_key(s):
         ent = s.candidate.primary_entity_id

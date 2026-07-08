@@ -9,13 +9,15 @@ version: 2
 categories:
 
   # Geographic "Top Stories" axis (⟦GEO⟧ — pool_country → geo_region).
+  # Four regional toggles (the final top-stories spec). Subject region is derived from the
+  # primary_category prefix; 'world' is the catch-all. middle-east/africa/asia were removed —
+  # the pipeline cannot attribute subject region for them today (dead switches); their return
+  # via editorial region emission is filed in docs/post-demo.md.
   top-stories:
     uk:
     us:
     europe:
-    middle-east:
-    africa:
-    asia:
+    world:
 
   politics:
     uk:

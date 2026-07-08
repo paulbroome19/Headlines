@@ -103,3 +103,27 @@ independent of both the stopgap and the geographic model — the same real-world
 `stories` rows. Investigate the anchor/hint keying that let the twin form (post-#156 the
 demoted-entity hint path fragments deliberately; a person-entity like Farage should still
 co-cluster). Not urgent for the demo; note for the clustering backlog.
+
+---
+
+# Top-stories: deferred pieces of the final spec
+
+The final top-stories spec (region-toggle membership + backfill) shipped, with two items parked:
+
+- **Middle East / Africa / Asia regional toggles.** Removed — the pipeline can't attribute subject
+  region for them today (subject region is derived from the `politics.*` prefix, and there is no
+  `politics.middle-east/africa/asia`). They were dead switches. Their stories now reach the top
+  block via **WORLD** (the catch-all). Bring them back when the editorial pass **emits a region
+  tag per flagged story** (the post-demo geographic model): then `_subject_region` reads the
+  editor's tag instead of the category prefix, and the toggle set can grow. Removed from
+  `TOP_STORIES_REGIONS`, `categories.yml`, and the `rules.yml` categorisation rules.
+- **Per-user region order (drag-to-reorder).** The top block is presented in config order
+  (`TOP_STORIES_REGION_ORDER = [uk, us, europe, world]`). `include_categories` is already an
+  ordered list, so honouring the user's own toggle order is a one-line switch in `cap_bulletin`
+  (order the region groups by first appearance in `include_categories` instead of the config).
+  Deferred only because iOS has no reorder UI yet — add drag-to-reorder, then flip the backend.
+
+Backfill interpretation (documented, in case it's revisited): "highest-ranked followed-topic
+stories, in topic order" = membership by **rank** (the best topic stories fill the spare slots),
+presentation by **topic (filter) order** — mirroring the top block's rank-membership /
+group-presentation split.
