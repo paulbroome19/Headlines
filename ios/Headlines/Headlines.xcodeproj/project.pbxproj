@@ -15,6 +15,7 @@
 		B2FF84569D170740B31174B5 /* SplitFlapLoadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E636183C39C5575969AF34C4 /* SplitFlapLoadingView.swift */; };
 		F37986372975A33AE9DC782A /* BoardFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = 098AB789F6EC577EAC5BB514 /* BoardFont.swift */; };
 		20A26E854E05EEF80D830F4B /* Board.swift in Sources */ = {isa = PBXBuildFile; fileRef = A505F4BA0B8230EE734B26BC /* Board.swift */; };
+		B0A7D7E47F00D5E6F7081111 /* SolariBoardText.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A7D7E47F00D5E6F7082222 /* SolariBoardText.swift */; };
 		AA01F4BA0B8230EE734B0001 /* MachinedDisc.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02F4BA0B8230EE734B0002 /* MachinedDisc.swift */; };
 		AA03F4BA0B8230EE734B0003 /* BottomActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA04F4BA0B8230EE734B0004 /* BottomActionBar.swift */; };
 		AA05F4BA0B8230EE734B0005 /* LightFilterTree.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA06F4BA0B8230EE734B0006 /* LightFilterTree.swift */; };
@@ -99,6 +100,7 @@
 		E636183C39C5575969AF34C4 /* SplitFlapLoadingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SplitFlapLoadingView.swift; path = Headlines/Features/Loading/SplitFlapLoadingView.swift; sourceTree = SOURCE_ROOT; };
 		098AB789F6EC577EAC5BB514 /* BoardFont.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BoardFont.swift; path = Headlines/Shared/Theme/BoardFont.swift; sourceTree = SOURCE_ROOT; };
 		A505F4BA0B8230EE734B26BC /* Board.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Board.swift; path = Headlines/Shared/Theme/Board.swift; sourceTree = SOURCE_ROOT; };
+		B0A7D7E47F00D5E6F7082222 /* SolariBoardText.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SolariBoardText.swift; path = Headlines/Shared/Theme/SolariBoardText.swift; sourceTree = SOURCE_ROOT; };
 		AA02F4BA0B8230EE734B0002 /* MachinedDisc.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachinedDisc.swift; path = Headlines/Shared/Theme/MachinedDisc.swift; sourceTree = SOURCE_ROOT; };
 		AA04F4BA0B8230EE734B0004 /* BottomActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BottomActionBar.swift; path = Headlines/Shared/Components/BottomActionBar.swift; sourceTree = SOURCE_ROOT; };
 		AA06F4BA0B8230EE734B0006 /* LightFilterTree.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LightFilterTree.swift; path = Headlines/Features/Filters/LightFilterTree.swift; sourceTree = SOURCE_ROOT; };
@@ -246,6 +248,7 @@
 			children = (
 			098AB789F6EC577EAC5BB514 /* BoardFont.swift */,
 			A505F4BA0B8230EE734B26BC /* Board.swift */,
+			B0A7D7E47F00D5E6F7082222 /* SolariBoardText.swift */,
 			AA02F4BA0B8230EE734B0002 /* MachinedDisc.swift */,
 				A1B2C3D4E5F60718293A4C06 /* TimeOfDay.swift */,
 				84E63FDDBB63801738F934BD /* Components */,
@@ -617,6 +620,7 @@
 				B2FF84569D170740B31174B5 /* SplitFlapLoadingView.swift in Sources */,
 				F37986372975A33AE9DC782A /* BoardFont.swift in Sources */,
 				20A26E854E05EEF80D830F4B /* Board.swift in Sources */,
+				B0A7D7E47F00D5E6F7081111 /* SolariBoardText.swift in Sources */,
 				AA01F4BA0B8230EE734B0001 /* MachinedDisc.swift in Sources */,
 				AA03F4BA0B8230EE734B0003 /* BottomActionBar.swift in Sources */,
 				AA05F4BA0B8230EE734B0005 /* LightFilterTree.swift in Sources */,
