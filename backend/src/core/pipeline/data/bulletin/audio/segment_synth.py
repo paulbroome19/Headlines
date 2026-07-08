@@ -63,6 +63,15 @@ _TTS_RETRY_BACKOFF = [0.5, 1.5]      # seconds of backoff before attempts 2 and 
 _FETCH_TIMEOUT_SECONDS = 30
 _MAX_PARALLEL_FETCHES = 8
 
+# Prosody stitching (previous_text/next_text) is applied to the background full-bulletin
+# path, but NOT the first-play START-PACK by default: measured on multilingual_v2 it adds
+# ~1.4s per segment (ElevenLabs processes the neighbour context — it is NOT free), which
+# would regress the T0 greeting/opener that the split architecture exists to protect. The
+# opening segments the start-pack pre-warms are served from cache (unstitched) by the full
+# bulletin anyway, so the net is: fast unstitched open, stitched tail. Flip to True to
+# stitch the open too (accepting the ~1.4s first-play cost).
+_STITCH_START_PACK = False
+
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
@@ -73,17 +82,24 @@ def synthesize_segment(
     voice: str,
     model: str,
     audio_format: str,
+    previous_text: str | None = None,
+    next_text: str | None = None,
 ) -> bytes | None:
     """
     Return audio bytes for a single segment (hot-generation worker entry point).
     Delegates to synthesize_segments() so cache/TTS/store logic is not duplicated.
     Returns None on TTS failure (fail-closed).
+
+    previous_text / next_text: this segment's spoken neighbours, for prosody
+    stitching. Passed explicitly because a lone segment can't see its own
+    neighbours — the caller (e.g. the start-pack) knows the running order.
     """
     results = synthesize_segments(
         [{"text": segment_text, "type": segment_type}],
         voice=voice,
         model=model,
         audio_format=audio_format,
+        neighbour_texts={0: (previous_text, next_text)},
     )
     return results[0]
 
@@ -94,6 +110,7 @@ def synthesize_segments(
     voice: str,
     model: str,
     audio_format: str,
+    neighbour_texts: dict[int, tuple[str | None, str | None]] | None = None,
 ) -> list[bytes | None]:
     """
     Synthesize audio for all bulletin segments, parallelising storage fetches
@@ -127,6 +144,12 @@ def synthesize_segments(
 
     active_map = {i: seg for i, seg in active}
     hashes = {i: compute_script_hash(seg["text"]) for i, seg in active}
+
+    # Prosody-stitch context: each segment's nearest spoken neighbours. Computed from
+    # the full ordered list unless the caller supplied an explicit map (the single-
+    # segment entry point does, since it can't see the neighbours itself).
+    if neighbour_texts is None:
+        neighbour_texts = _compute_neighbours(segments)
 
     # ── 1. Batch cache check ───────────────────────────────────────────────────
     with SessionLocal() as db:
@@ -164,6 +187,7 @@ def synthesize_segments(
     # ── 3. Sequential TTS for misses + stale re-generates ─────────────────────
     for i in sorted(misses):
         seg = active_map[i]
+        prev_text, next_text = neighbour_texts.get(i, (None, None))
         result[i] = _synthesize_and_cache(
             seg["text"],
             segment_type=seg.get("type", "story"),
@@ -172,6 +196,8 @@ def synthesize_segments(
             voice=voice,
             model=model,
             audio_format=audio_format,
+            previous_text=prev_text,   # stitch context — miss-only (hits served as-is)
+            next_text=next_text,
         )
 
     # ── 4. Timing log ─────────────────────────────────────────────────────────
@@ -200,19 +226,45 @@ def synthesize_parallel(
     items are skipped. Fire-and-store: writes data.segment_audio per success (which is what
     /readiness reads); return value is ignored. Failures are logged by _synthesize_and_cache
     and surface via data.segment_audio_failures."""
-    work = [s for s in segments if (s.get("text") or "").strip()]
+    work = [(i, s) for i, s in enumerate(segments) if (s.get("text") or "").strip()]
     if not work:
         return
-    def _one(seg: dict) -> None:
+    # Start-pack stays unstitched by default to protect the first-play gate (see
+    # _STITCH_START_PACK). Empty map → synthesize_segment gets (None, None) → no stitch.
+    neighbours = _compute_neighbours(segments) if _STITCH_START_PACK else {}
+    def _one(item: tuple[int, dict]) -> None:
+        i, seg = item
+        prev_text, next_text = neighbours.get(i, (None, None))
         synthesize_segment(
             seg["text"], segment_type=seg.get("type", "story"),
             voice=voice, model=model, audio_format=audio_format,
+            previous_text=prev_text, next_text=next_text,
         )
     with ThreadPoolExecutor(max_workers=min(len(work), max_workers)) as pool:
         list(pool.map(_one, work))
 
 
 # ── Private helpers ────────────────────────────────────────────────────────────
+
+def _compute_neighbours(
+    segments: list[dict],
+) -> dict[int, tuple[str | None, str | None]]:
+    """
+    For each non-empty segment, the text of its nearest non-empty spoken neighbours
+    (previous, next), keyed by original index. Empty segments (pause transitions) are
+    skipped as both keys and neighbours, so a segment stitches to what is actually
+    heard before/after it. Edges get None on the missing side.
+    """
+    texts = [(s.get("text") or "").strip() for s in segments]
+    out: dict[int, tuple[str | None, str | None]] = {}
+    for i, t in enumerate(texts):
+        if not t:
+            continue
+        prev_text = next((texts[j] for j in range(i - 1, -1, -1) if texts[j]), None)
+        next_text = next((texts[j] for j in range(i + 1, len(texts)) if texts[j]), None)
+        out[i] = (prev_text, next_text)
+    return out
+
 
 def _fetch_bytes(cached: dict) -> bytes | None:
     """
@@ -245,6 +297,8 @@ def _synthesize_and_cache(
     voice: str,
     model: str,
     audio_format: str,
+    previous_text: str | None = None,
+    next_text: str | None = None,
 ) -> bytes | None:
     """
     Call TTS for a cache miss or stale segment, then persist result.
@@ -266,6 +320,8 @@ def _synthesize_and_cache(
                 voice=voice,
                 model=model,
                 audio_format=audio_format,
+                previous_text=previous_text,
+                next_text=next_text,
             )
         except Exception as e:  # defensive — synthesize() is fail-closed, but never let it raise here
             audio = None
