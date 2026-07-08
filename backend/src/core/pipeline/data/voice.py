@@ -23,7 +23,7 @@ from __future__ import annotations
 # The voice spec (v1). Addresses "you" (the generating model) directly, and covers every role
 # a spoken prompt can play (story body, greeting, bridge, outro) so there is one source of truth.
 VOICE_BLOCK = (
-    "HEADLINES VOICE — single source of truth (v1.1)\n"
+    "HEADLINES VOICE — single source of truth (v1.3)\n"
     "Feeds every spoken prompt: greeting, story bodies, bridges, outro.\n\n"
 
     "WHO IS SPEAKING\n"
@@ -69,8 +69,8 @@ VOICE_BLOCK = (
     "mid-thought pivot; commas sparingly.\n"
     "- Vary rhythm deliberately — a short punch after two longer sentences is how audio does "
     "emphasis.\n"
-    "- Floor: no sentence under ~5 words, except one deliberate emphasis beat per story. Short "
-    "fragments are for punch, never for navigation.\n"
+    "- A short sentence is a deliberate emphasis beat — never a navigation fragment. Use it for "
+    "punch, not to signpost.\n"
     "- Everything pronounceable as written: numbers spelled for speech (\"forty-seven billion "
     "dollars\"), acronyms expanded unless you'd say the acronym itself to a stranger at a bus stop "
     "(NHS fine; \"Nato\" as spoken; but expand VFX, IP, and the like), no parentheses, slashes, "
@@ -91,8 +91,8 @@ VOICE_BLOCK = (
     "BRIDGES\n"
     "A bridge pivots FROM the previous story INTO the next. It must never restate the next story's "
     "opening line. One sentence, two at most.\n"
-    "CATEGORY SIGNPOSTS: a bridge that crosses a category boundary is ONE flowing sentence, at "
-    "least ~12 words, that does BOTH jobs at once — it names the new category naturally AND hooks "
+    "CATEGORY SIGNPOSTS: a bridge that crosses a category boundary is ONE flowing sentence that "
+    "does BOTH jobs at once — it names the new category naturally AND hooks "
     "the next story's specific substance. Pattern: [close the previous] — [category], and [a "
     "specific pull into the next story]. Shape: \"That's the politics covered — onto business, "
     "where Microsoft's cuts are hitting closer to home than the headlines suggest.\" NEVER a "
