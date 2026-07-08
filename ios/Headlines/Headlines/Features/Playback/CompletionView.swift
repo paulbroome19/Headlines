@@ -2,13 +2,10 @@
 //  CompletionView.swift
 //  Headlines
 //
-//  End-of-briefing completion state. Shown when playerState == .ended (NowPlayingView switch).
-//  Also the clean destination for the "dead air after the last story" fix: audio ends → this,
-//  zero dead air. Flip-board dark aesthetic (BoardColors), minimal, no new dependencies.
-//
-//  // UNVERIFIED — styling only (colours/spacing/type). Logic-free: two closures. Tune the look
-//  against FlapCell/the now-playing card if you want the full split-flap treatment; kept plain
-//  here to avoid coupling.
+//  End-of-briefing completion state (playerState == .ended). "YOU'RE ALL / CAUGHT UP" rendered on
+//  the app's real split-flap board — the SAME Solari treatment as the Home greeting (SolariBoardText
+//  + FlapCell on a boardCard tablet, on the light page) — with Replay + Home as the app's dark
+//  board buttons UNDER the board. No bespoke typography; reuses Board.swift / BoardColors.
 //
 
 import SwiftUI
@@ -17,52 +14,74 @@ struct CompletionView: View {
     let onHome: () -> Void
     let onReplay: () -> Void
 
+    private let rows = ["YOU'RE ALL", "CAUGHT UP"]
+    private let pageMargin: CGFloat = 20
+    private let boardPad: CGFloat = 26
+    private let cellGap: CGFloat = 3
+
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
+        GeometryReader { geo in
+            let boardInnerW = geo.size.width - pageMargin * 2 - boardPad * 2
+            let cellSz = SolariBoardText.cellSize(rows: rows, boardWidth: boardInnerW, gap: cellGap)
 
-            VStack(spacing: 6) {
-                Text("YOU'RE ALL")
-                Text("CAUGHT UP")
+            ZStack {
+                LightColors.page.ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    Spacer()
+
+                    // ── The dark flap-board tablet (same material as the Home greeting) ──
+                    VStack(spacing: 16) {
+                        SolariBoardText(rows: rows, cellSz: cellSz, gap: cellGap)
+                        Text("THAT'S THE BRIEFING")
+                            .font(.label(11)).tracking(2.5)
+                            .foregroundColor(BoardColors.character.opacity(0.5))
+                    }
+                    .padding(boardPad)
+                    .frame(maxWidth: .infinity)
+                    .boardCard(cornerRadius: 18)
+                    .padding(.horizontal, pageMargin)
+
+                    Spacer()
+
+                    // ── Actions UNDER the board — the app's dark board buttons ──
+                    HStack(spacing: 12) {
+                        actionButton("REPLAY", system: "arrow.counterclockwise", action: onReplay)
+                        actionButton("HOME", system: "house", action: onHome)
+                    }
+                    .padding(.horizontal, pageMargin)
+                    .padding(.bottom, 44)
+                }
             }
-            .font(.system(.largeTitle, design: .monospaced).weight(.bold))
-            .tracking(3)
-            .foregroundColor(BoardColors.character)
-            .multilineTextAlignment(.center)
-
-            Text("That's the briefing.")
-                .font(.system(.subheadline, design: .monospaced))
-                .foregroundColor(BoardColors.character.opacity(0.55))
-                .padding(.top, 14)
-
-            Spacer()
-
-            HStack(spacing: 14) {
-                actionButton("Replay", system: "arrow.counterclockwise", action: onReplay)
-                actionButton("Home", system: "house", action: onHome)
-            }
-            .padding(.bottom, 44)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(BoardColors.background.ignoresSafeArea())
     }
 
+    /// A dark board button: charcoal flap-tile fill, cream (character) label in the app's mono
+    /// label font, hairline seam edge — consistent with the board surfaces used elsewhere.
     private func actionButton(_ title: String, system: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(title, systemImage: system)
-                .font(.system(.body, design: .monospaced).weight(.semibold))
-                .foregroundColor(BoardColors.character)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(BoardColors.topFlapTop)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(BoardColors.seam, lineWidth: 1)
-                        )
-                )
+            HStack(spacing: 8) {
+                Image(systemName: system).font(.system(size: 14, weight: .semibold))
+                Text(title).font(.label(12)).tracking(2)
+            }
+            .foregroundColor(BoardColors.character)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 15)
+            .background(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(LinearGradient(colors: [BoardColors.topFlapTop, BoardColors.botFlapBottom],
+                                         startPoint: .top, endPoint: .bottom))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .stroke(BoardColors.seam, lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.28), radius: 5, y: 3)
+            )
         }
         .buttonStyle(.plain)
     }
+}
+
+#Preview {
+    CompletionView(onHome: {}, onReplay: {})
 }
