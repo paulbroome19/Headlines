@@ -18,8 +18,14 @@ def compute_new_state(action: str, position_pct: float) -> str | None:
     if action == "completed":
         return "consumed"
     if action == "skipped":
-        return "consumed" if position_pct >= CONSUMPTION_THRESHOLD else "rejected"
+        # SPEC: a skip = "not interested" = consumed, at ANY position. The listener made an active
+        # choice to move on, so the story must not recur (was: early skip → 'rejected'; that was a
+        # distinct state nothing else read — both 'consumed' and 'rejected' were already dropped —
+        # so this only makes the intent explicit and unambiguous).
+        return "consumed"
     if action == "abandoned":
+        # Passive drop-off (backgrounded / closed mid-play), NOT an active skip. Only counts as
+        # heard if they got most of the way through; otherwise it stays queued and eligible.
         return "consumed" if position_pct >= CONSUMPTION_THRESHOLD else None
     return None
 
