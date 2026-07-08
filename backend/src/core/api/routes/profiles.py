@@ -10,6 +10,7 @@ from core.platform.config.settings import settings
 from core.platform.config.voices import get_available_voices, get_voice
 from core.pipeline.data.profile.repos.profile_repo import ProfileRepo
 from core.pipeline.data.bulletin.repos.user_story_state_repo import UserStoryStateRepo
+from core.pipeline.data.bulletin.selection import display_titles
 from core.pipeline.data.bulletin.selector import validate_filter_categories, estimate_duration_seconds
 from core.pipeline.data.bulletin.audio.tts_client import (
     compute_script_hash,
@@ -324,9 +325,14 @@ def _build_full_manifest(
             )
 
     base_url = settings.public_api_base_url.rstrip("/")
-    titles_by_story_id = {
-        str(s["story_id"]): s.get("headline") or "" for s in plan.get("stories_list", [])
-    }
+    # ONE display title everywhere — same helper the skeleton manifest + home use, so a warm/cached
+    # play shows the identical clean heading (prefer summariser headline, else representative_title).
+    story_ids_for_titles = [
+        str(seg["story_id"]) for seg in plan["segments"]
+        if seg.get("type") == "story" and seg.get("story_id")
+    ]
+    with SessionLocal() as db:
+        titles_by_story_id = display_titles(db, story_ids_for_titles)
 
     sources_by_story_id = _sources_by_story_id([
         str(seg["story_id"])

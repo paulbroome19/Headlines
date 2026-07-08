@@ -363,6 +363,41 @@ def _representative_titles(db: Session, story_ids: list[str]) -> dict[str, str]:
     return {str(r["id"]): (r["representative_title"] or "") for r in rows}
 
 
+def pick_display_title(summariser_headline: str | None, representative_title: str | None) -> str:
+    """The ONE display title rule, shared by every surface (home, skeleton manifest, playback
+    manifest): prefer the summariser's clean generated headline (~6-10 words), fall back to the
+    story's representative_title (the raw wire headline, which can run 25+ words and overflow the
+    playback board). Pure so it is unit-testable without a DB."""
+    h = (summariser_headline or "").strip()
+    return h if h else (representative_title or "").strip()
+
+
+def display_titles(db: Session, story_ids: list[str]) -> dict[str, str]:
+    """{story_id: display_title} — the single title source for ALL surfaces. Clean summariser
+    headline (latest non-empty across any run, since summaries are cross-run cached) preferred;
+    else the representative_title. Fixes the split where the skeleton manifest + home showed the
+    raw representative_title while the assembled manifest showed the clean summariser headline."""
+    ids = [str(x) for x in story_ids]
+    if not ids:
+        return {}
+    rows = db.execute(
+        text("""
+            SELECT s.id::text AS sid,
+                   s.representative_title AS rep,
+                   (SELECT ss.headline
+                      FROM data.story_summaries ss
+                     WHERE ss.story_id = s.id::text
+                       AND ss.headline IS NOT NULL AND ss.headline <> ''
+                     ORDER BY ss.created_at DESC
+                     LIMIT 1) AS summ_headline
+              FROM data.stories s
+             WHERE s.id::text = ANY(:ids)
+        """),
+        {"ids": ids},
+    ).mappings()
+    return {r["sid"]: pick_display_title(r["summ_headline"], r["rep"]) for r in rows}
+
+
 def _depths_for(ordered: list[dict]) -> dict[str, tuple[str, int]]:
     return {o["story_id"]: depth_for_rank(i) for i, o in enumerate(ordered)}
 
