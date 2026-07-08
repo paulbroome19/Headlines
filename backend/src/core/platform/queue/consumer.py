@@ -80,12 +80,14 @@ class StreamConsumer:
                 try:
                     self._handle_message(msg_id, fields, db_factory)
                 except IntegrityError as e:
-                    # EXPECTED under concurrency (e.g. two events racing to INSERT the same
-                    # story_key) — the retry succeeds once the row exists. Log ONE concise line, not
-                    # a full traceback per event: that traceback flood was consuming the log
-                    # rate-limit budget and drowning every other diagnostic (e.g. the /summary line).
+                    # EXPECTED + self-healing under concurrency (two events racing to INSERT the same
+                    # story_key; the retry succeeds once the row exists). Log at DEBUG — it is NOT
+                    # actionable (the real fix is the filed ON CONFLICT upsert, docs/post-demo.md),
+                    # and at prod volume it still floods the log rate-limit budget and drowns the
+                    # actionable diagnostics (e.g. the /summary WARNING). WARNING is reserved for
+                    # things worth reading; this isn't one until the upsert lands.
                     detail = str(getattr(e, "orig", e)).splitlines()[0][:140]
-                    logger.warning(
+                    logger.debug(
                         "consumer: integrity conflict on message %s (%s) — left pending for retry",
                         msg_id, detail,
                     )
