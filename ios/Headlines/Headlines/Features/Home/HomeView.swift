@@ -52,7 +52,7 @@ struct HomeView: View {
                     lightTopBar
 
                     // The board is a FIXED, contained tablet filling the space between the top
-                    // bar and the action bar — its header (greeting/date/"YOUR TOP STORIES") is
+                    // bar and the action bar — its header (greeting/date/"YOUR NEXT BRIEFING") is
                     // pinned and only the story list scrolls WITHIN it (see boardTablet).
                     boardTablet(cellSz: cellSz)
                         .padding(.horizontal, pageMargin)
@@ -112,7 +112,7 @@ struct HomeView: View {
             creamRule
             Spacer().frame(height: 16)
 
-            // Eyebrow + the pull-to-refresh stamp inline: "YOUR TOP STORIES · LAST UPDATED 1:07PM".
+            // Eyebrow + the pull-to-refresh stamp inline: "YOUR NEXT BRIEFING · LAST UPDATED 1:07PM".
             // Pulling down on the story list below refreshes the stories and this time.
             Text(topStoriesEyebrow)
                 .font(.label(11)).tracking(2.5)
@@ -124,8 +124,11 @@ struct HomeView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     if let stories = preview?.stories, !stories.isEmpty {
+                        // The FULL table of contents — every story in the briefing's running order
+                        // (the materialised selection). The lead is the hero; the rest follow in
+                        // order and scroll within the board. Long (Deep ~20) lists just scroll.
                         storyBlock(stories[0], lead: true)
-                        ForEach(Array(stories.dropFirst().prefix(3))) { story in
+                        ForEach(Array(stories.dropFirst())) { story in
                             Spacer().frame(height: 18)
                             creamRule
                             Spacer().frame(height: 18)
@@ -185,17 +188,14 @@ struct HomeView: View {
     // MARK: - Bottom action (light page, separate from the board)
 
     private var assembleBar: some View {
-        // Mirrors the "YOUR TOP STORIES" eyebrow above — an eyebrow label + a quiet meta line
-        // beneath it — with the go-disc on the right. No boxing rules; clean, breathing room.
+        // Mirrors the "YOUR NEXT BRIEFING" eyebrow above — a quiet meta line with the go-disc on
+        // the right. No boxing rules; clean, breathing room.
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 5) {
-                // Faint hairline at the top of the block, spanning the label column (from
-                // "YOUR FULL BRIEFING" across to the disc) — not full-width. No bottom rule.
+                // Faint hairline at the top of the block, spanning the label column across to the
+                // disc — not full-width. No bottom rule.
                 Rectangle().fill(LightColors.ink.opacity(0.12)).frame(height: 1)
                     .padding(.bottom, 10)
-                Text("YOUR FULL BRIEFING")
-                    .font(.label(11)).tracking(2.5)
-                    .foregroundColor(LightColors.ink.opacity(0.5))
                 Text(metaLine)                                  // "10 MIN · 5 STORIES"
                     .font(.label(11)).tracking(2.0)
                     .foregroundColor(LightColors.ink.opacity(0.38))
@@ -251,11 +251,11 @@ struct HomeView: View {
         return f.string(from: date).uppercased()
     }
 
-    /// "YOUR TOP STORIES · LAST UPDATED 1:07PM" — the eyebrow with the pull-to-refresh stamp
+    /// "YOUR NEXT BRIEFING · LAST UPDATED 1:07PM" — the eyebrow with the pull-to-refresh stamp
     /// appended (just the eyebrow until the first fetch lands).
     private var topStoriesEyebrow: String {
-        guard let ts = lastUpdated else { return "YOUR TOP STORIES" }
-        return "YOUR TOP STORIES · LAST UPDATED \(timeStamp(ts))"
+        guard let ts = lastUpdated else { return "YOUR NEXT BRIEFING" }
+        return "YOUR NEXT BRIEFING · LAST UPDATED \(timeStamp(ts))"
     }
 
     /// Rendered width of a string in "cell units": each glyph is one cell, each space half.
