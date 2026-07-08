@@ -141,7 +141,10 @@ struct HomeView: View {
                 }
             }
             .refreshable { await onRefresh() }
-            .tint(cream)   // pull-to-refresh spinner is off-white so it shows on the dark board
+            // Light grey (secondary-text grey) so the spinner shows on the dark board. `.tint` alone
+            // isn't reliable for the refresh ProgressView — the authoritative colour is set on
+            // UIRefreshControl.appearance() in HeadlinesApp.init(); this keeps them consistent.
+            .tint(cream.opacity(0.5))
         }
         .padding(boardPad)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
