@@ -136,6 +136,7 @@ struct StoryUnit: Identifiable {
     }
     var totalDurationSeconds: Double  { transitionDurationSeconds + storyDurationSeconds }
     var storyHash: String? { storySegment.storyHash }
+    var storyId: String?  { storySegment.storyId }
     var title: String?    { storySegment.title }
     /// True if `segmentIndex` is any of this unit's segments (transition or a story part).
     func owns(segmentIndex: Int) -> Bool {

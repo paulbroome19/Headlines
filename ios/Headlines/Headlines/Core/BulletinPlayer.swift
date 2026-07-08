@@ -2,7 +2,13 @@ import AVFoundation
 import Combine
 import Foundation
 import MediaPlayer
+import os
 import UIKit
+
+/// Play-event flush chain logging — subsystem "flush". Filter in Console.app / `log stream` with
+/// `subsystem:com.headlines.flush` to see every flush (event count, bulletin) and its outcome, so
+/// a broken flush is never invisible again.
+private let flushLog = Logger(subsystem: "com.headlines.flush", category: "summary")
 
 // MARK: - Request / response types
 
@@ -31,10 +37,12 @@ private struct SummaryRequest: Encodable {
     let events: [EventItem]
     struct EventItem: Encodable {
         let storyHash: String
+        let storyId: String?
         let action: String
         let positionPct: Double
         enum CodingKeys: String, CodingKey {
             case storyHash   = "story_hash"
+            case storyId     = "story_id"
             case action
             case positionPct = "position_pct"
         }
@@ -53,6 +61,7 @@ private struct StatusResponse: Decodable {
 
 private struct StoryEvent {
     let storyHash: String
+    let storyId: String?
     let action: String
     let positionPct: Double
 }
@@ -823,7 +832,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// Synchronously drain the accumulated events into a payload (MainActor-atomic). Call this on
     /// the main actor BEFORE stopSilently(), then hand the result to postSummary().
     func detachSummary() -> SummaryPayload? {
-        guard let (bid, pid, events) = drainSummary() else { return nil }
+        guard let (bid, pid, events) = drainSummary() else {
+            flushLog.log("detach: nothing to flush (bulletin=\(self._bulletinId ?? -1, privacy: .public))")
+            return nil
+        }
+        flushLog.log("detach: \(events.count, privacy: .public) events bulletin=\(bid, privacy: .public) actions=\(events.map { $0.action }.joined(separator: ","), privacy: .public)")
         return SummaryPayload(bulletinId: bid, request: summaryRequest(pid: pid, events: events))
     }
 
@@ -836,13 +849,31 @@ final class BulletinPlayer: NSObject, ObservableObject {
     func postSummary(_ payload: SummaryPayload?) async -> Bool {
         guard let payload else { return false }
         do {
-            _ = try await client.post("data/bulletins/\(payload.bulletinId)/summary",
-                                      body: payload.request) as StatusResponse
+            let resp = try await client.post("data/bulletins/\(payload.bulletinId)/summary",
+                                             body: payload.request) as StatusResponse
+            flushLog.log("post: OK bulletin=\(payload.bulletinId, privacy: .public) updated=\(resp.updated ?? -1, privacy: .public)")
             return true
         } catch {
+            flushLog.error("post: FAILED bulletin=\(payload.bulletinId, privacy: .public) error=\(String(describing: error), privacy: .public)")
             return false
         }
     }
+
+    #if DEBUG
+    /// Test seam: seed a play event + the ids the flush needs, so a unit test can drive the real
+    /// exit-path capture (detachSummary — what closePlayer calls on Home navigation).
+    func _testSeedEvent(bulletinId: Int, profileId: Int, storyHash: String, storyId: String?, action: String) {
+        _bulletinId = bulletinId
+        _profileId = profileId
+        accumulatedEvents.append(StoryEvent(storyHash: storyHash, storyId: storyId, action: action, positionPct: 0))
+    }
+
+    /// Test seam: the JSON the flush would POST, via the real detachSummary() path (or nil if empty).
+    func _testDetachedSummaryJSON() -> Data? {
+        guard let payload = detachSummary() else { return nil }
+        return try? JSONEncoder().encode(payload.request)
+    }
+    #endif
 
     /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a
     /// request, clearing the buffer. Returns nil if there's nothing to send. Callers re-queue on
@@ -850,9 +881,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private func drainSummary() -> (bid: Int, pid: Int, events: [StoryEvent])? {
         guard let pid = _profileId, let bid = _bulletinId else { return nil }
         if let seg = currentSegment, seg.isStory,
-           let hash = storyUnit(forSegment: seg)?.storyHash,
+           let unit = storyUnit(forSegment: seg), let hash = unit.storyHash,
            playerState == .playing || playerState == .paused || playerState == .stalled {
-            accumulatedEvents.append(StoryEvent(storyHash: hash, action: "abandoned", positionPct: currentPositionPct))
+            accumulatedEvents.append(StoryEvent(storyHash: hash, storyId: unit.storyId,
+                                                action: "abandoned", positionPct: currentPositionPct))
         }
         guard !accumulatedEvents.isEmpty else { return nil }
         let events = accumulatedEvents
@@ -863,7 +895,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private func summaryRequest(pid: Int, events: [StoryEvent]) -> SummaryRequest {
         SummaryRequest(
             profileId: pid,
-            events: events.map { .init(storyHash: $0.storyHash, action: $0.action, positionPct: $0.positionPct) }
+            events: events.map { .init(storyHash: $0.storyHash, storyId: $0.storyId,
+                                       action: $0.action, positionPct: $0.positionPct) }
         )
     }
 
@@ -1240,7 +1273,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         if let prev = prevSeg, prev.isStory, outcome == .natural,
            let unit = storyUnit(forSegment: prev), prev.index == unit.lastStorySegmentIndex,
            let hash = unit.storyHash {
-            let ev = StoryEvent(storyHash: hash, action: "completed", positionPct: 1.0)
+            let ev = StoryEvent(storyHash: hash, storyId: unit.storyId, action: "completed", positionPct: 1.0)
             fireEvent(ev)
             accumulatedEvents.append(ev)
             consumedStoryHashes.insert(hash)
@@ -1440,8 +1473,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // Fire skipped event for the current story when seeking forward — keyed to the UNIT's
         // (seeded) hash so it lands even when skipping from mid-remainder of a split lead.
         if clamped > storyIndex, let seg = currentSegment, seg.isStory,
-           let hash = storyUnit(forSegment: seg)?.storyHash {
-            let ev = StoryEvent(storyHash: hash, action: "skipped", positionPct: currentPositionPct)
+           let unit = storyUnit(forSegment: seg), let hash = unit.storyHash {
+            let ev = StoryEvent(storyHash: hash, storyId: unit.storyId, action: "skipped", positionPct: currentPositionPct)
             fireEvent(ev)
             accumulatedEvents.append(ev)
         }
