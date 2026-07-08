@@ -603,10 +603,28 @@ final class BulletinPlayer: NSObject, ObservableObject {
                 guard let self else { return }
                 guard let r: BulletinReadiness = try? await self.client.get("data/bulletins/\(bid)/readiness")
                 else { continue }
-                let done = await MainActor.run { self.applyReadiness(r) }
+                let done = await MainActor.run { () -> Bool in
+                    let finished = self.applyReadiness(r)
+                    // Re-assert the story the user is waiting on each poll: the one-shot prioritise
+                    // POSTs are fire-and-forget, so rapid skips could arrive out of order — re-sending
+                    // the CURRENT pending target makes the latest tap win cleanly (and keeps the hint
+                    // fresh if the backend hasn't reached its reprioritisable phase yet).
+                    self.reassertPendingPriority()
+                    return finished
+                }
                 if done { return }
             }
         }
+    }
+
+    /// Re-send the priority for the story the user is currently waiting on (if any) — called once
+    /// per readiness poll so the LATEST skip/tap wins cleanly even if the one-shot prioritise POSTs
+    /// raced out of order. No-op when nothing is pending or its audio has already arrived.
+    private func reassertPendingPriority() {
+        guard let idx = pendingTapUnitIndex, idx >= 0, idx < _storyUnits.count,
+              !isUnitReady(_storyUnits[idx]),
+              let sid = _storyUnits[idx].storySegment.storyId else { return }
+        prioritise(storyId: sid)
     }
 
     /// Tap/skip to a not-yet-ready story: bump it to the FRONT of the background synthesis queue
@@ -646,12 +664,28 @@ final class BulletinPlayer: NSObject, ObservableObject {
         return seg.url != nil || segmentReady[seg.index] == true
     }
 
-    /// The story unit currently being SYNTHESISED — the first not-yet-ready unit (synthesis is
-    /// forward-sequential, so ready units are contiguous from the front). Drives the running-order
-    /// spinner: only this row spins; ready rows are clean, later rows are plain. nil when every
-    /// unit is ready.
+    /// The story unit the backend is currently SYNTHESISING — drives the ONE running-order spinner.
+    ///
+    /// It is NOT simply the first not-ready unit: after a skip/tap the backend reprioritises to
+    /// FORWARD-THEN-BACKFILL from the user's position (the bumped story next, then N+1, N+2 …, then
+    /// the earlier skipped gap). Modelling that here keeps the spinner on the row actually being
+    /// worked on — otherwise it sat on the first grey row (an earlier story the backend had
+    /// deprioritised) while the skipped-to story showed a second spinner, which read as "my story
+    /// isn't being prioritised". Order of preference:
+    ///   1. a pending skip/tap target — the story we asked the backend to prioritise (bufferingUnitIndex
+    ///      is this same row, so the two coincide → a single spinner, not two);
+    ///   2. else the first not-ready unit at or after the current story (the forward frontier);
+    ///   3. else the first not-ready unit anywhere (the backfilled earlier gap).
+    /// nil when every unit is ready.
     var synthesisingUnitIndex: Int? {
-        _storyUnits.firstIndex { !isUnitReady($0) }
+        if let p = pendingTapUnitIndex, p >= 0, p < _storyUnits.count, !isUnitReady(_storyUnits[p]) {
+            return p
+        }
+        let cur = min(max(0, currentUnitIndex), max(0, _storyUnits.count - 1))
+        if let forward = (cur..<_storyUnits.count).first(where: { !isUnitReady(_storyUnits[$0]) }) {
+            return forward
+        }
+        return _storyUnits.firstIndex { !isUnitReady($0) }
     }
 
     /// Seek to a story unit's start and begin playing it. Used by the tracklist so
