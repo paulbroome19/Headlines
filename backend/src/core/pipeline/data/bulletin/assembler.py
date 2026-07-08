@@ -180,14 +180,17 @@ def assemble(
     # ~100s lead. iOS groups the two segments into one story unit. No-op for a short lead.
     segments = apply_lead_opener(segments)
 
-    # ── Assemble script + pronunciation normalisation ──────────────────────────
+    # ── Assemble script + content normalisation ────────────────────────────────
     # Normalise each segment's text for TTS, then derive the script from the
     # normalised segments. The per-segment audio path (segment_synth) hashes and
-    # synthesises seg["text"], so normalising here is what actually reaches
-    # ElevenLabs. Joining already-normalised segments is equivalent to normalising
-    # the joined string (no normalise pattern spans the "\n\n" boundary) and avoids
-    # double-normalisation — and keeps script, segments, hashes, and the
-    # _story_timings offset math all consistent (len(script) == Σ(len(seg)+2)).
+    # synthesises seg["text"], so normalising here is what actually reaches the
+    # hash. Only stable content rewrites (numbers/acronyms) run here — the
+    # pronunciation lexicon is applied later, at synthesis time, so lexicon edits
+    # don't invalidate the audio cache (see tts_client.synthesize). Joining
+    # already-normalised segments is equivalent to normalising the joined string
+    # (no normalise pattern spans the "\n\n" boundary) and avoids double-
+    # normalisation — and keeps script, segments, hashes, and the _story_timings
+    # offset math all consistent (len(script) == Σ(len(seg)+2)).
     for seg in segments:
         seg["text"] = normalise_for_tts(seg["text"])
     script = "\n\n".join(seg["text"] for seg in segments if seg["text"])
