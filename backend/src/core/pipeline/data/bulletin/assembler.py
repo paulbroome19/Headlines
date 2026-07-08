@@ -34,6 +34,27 @@ class BulletinResult:
     segments: list[dict]
 
 
+def template_bridges(stories: list[dict], *, seed: int | None = None) -> dict[str, str]:
+    """Template (non-LLM) transition text for every NON-lead story, keyed by story_id — the exact
+    pick_transition path assemble()'s template branch uses. The streaming play path uses this as the
+    fallback when the LLM bridge pass (generate_bridges_and_outro) fails, so a briefing is NEVER left
+    with SILENT bridges (the failure that stripped connective tissue from full-size briefings). The
+    lead (index 0) takes no bridge — the greeting leads straight into it — so it is omitted."""
+    rng = random.Random(seed)
+    used: set[str] = set()
+    out: dict[str, str] = {}
+    for i, story in enumerate(stories):
+        if i == 0:
+            continue
+        text = pick_transition(
+            rng, previous_story=stories[i - 1], next_story=story,
+            position=i - 1, total_stories=len(stories), used_in_bulletin=used,
+        )
+        used.add(text)
+        out[str(story["story_id"])] = text
+    return out
+
+
 def assemble(
     stories: list[dict],
     *,

@@ -32,7 +32,7 @@ from core.pipeline.data.bulletin.repos.user_story_state_repo import (
     UserStoryStateRepo,
     compute_new_state,
 )
-from core.pipeline.data.bulletin.assembler import assemble
+from core.pipeline.data.bulletin.assembler import assemble, template_bridges
 from core.pipeline.data.bulletin.connective import ConnectiveResult
 from core.pipeline.data.bulletin.connective import (
     generate_connective, generate_greeting, generate_bridges_and_outro, uk_now,
@@ -1324,7 +1324,11 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
             if bridges is not None:
                 transitions, outro = {sid: bridges[0].get(sid, "") for sid in order_ids}, bridges[1]
             else:
-                transitions = {sid: "" for sid in order_ids}
+                # LLM bridge pass failed (e.g. truncation on a full-size briefing). Fall back to
+                # TEMPLATE bridges — NOT silent ones — so the briefing keeps its connective tissue.
+                # The greeting is kept verbatim (its intro audio is already synthesised), so we only
+                # replace the non-lead transitions + the outro.
+                transitions = template_bridges(all_stories, seed=seed)
                 outro = build_outro(random.Random(seed), name=name, now=now_uk, story_count=len(all_stories))
             if order_ids:
                 transitions[order_ids[0]] = ""  # the lead leads straight from the greeting
