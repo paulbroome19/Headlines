@@ -37,6 +37,32 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(player.isPlaying, player.intendedPlaying)
     }
 
+    // MARK: - Play-event flush exit-path (the recurring regression hole)
+
+    /// The exit-path capture (detachSummary — what closePlayer calls on Home/back navigation) must
+    /// grab accumulated events AND the wire must carry story_id (consumption is keyed on story_id,
+    /// not story_hash, which drifts across bulletins). Draining is one-shot.
+    @MainActor
+    func testDetachSummaryCapturesEventsAndSendsStoryId() throws {
+        let player = BulletinPlayer()
+        XCTAssertNil(player._testDetachedSummaryJSON(), "a fresh player has nothing to flush")
+
+        player._testSeedEvent(bulletinId: 210, profileId: 22,
+                              storyHash: "560756d8909610bb", storyId: "240779", action: "skipped")
+
+        let data = try XCTUnwrap(player._testDetachedSummaryJSON(),
+                                 "detachSummary must capture the seeded event (the Home-nav flush)")
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let events = try XCTUnwrap(obj["events"] as? [[String: Any]])
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events[0]["story_id"] as? String, "240779",
+                       "event must carry story_id — the build-45 fix (hash alone drifts and can't match)")
+        XCTAssertEqual(events[0]["action"] as? String, "skipped")
+        XCTAssertEqual(obj["profile_id"] as? Int, 22)
+
+        XCTAssertNil(player._testDetachedSummaryJSON(), "drain is one-shot — no double-send")
+    }
+
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
 
     /// Paced stages advance one per `stageSeconds` purely from elapsed time — no backend
