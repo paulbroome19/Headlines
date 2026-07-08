@@ -809,28 +809,55 @@ final class BulletinPlayer: NSObject, ObservableObject {
         stopInternal(sendEvents: true)
     }
 
-    func sendSummary() {
-        guard let pid = _profileId, let bid = _bulletinId else { return }
+    /// Stop audio WITHOUT draining events — the caller flushes explicitly (awaited) so Home's
+    /// preview fetch can be sequenced after the /summary POST commits. Used by the Home-navigation
+    /// path so a just-finished/left briefing's consumed stories are gone by the time Home reloads.
+    func stopSilently() {
+        stopInternal(sendEvents: false)
+    }
 
-        // Append abandoned event for the story currently mid-play — keyed to the UNIT's hash
-        // (the seeded one) so it lands even when abandoning mid-remainder of a split lead.
+    /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a
+    /// request, clearing the buffer. Returns nil if there's nothing to send. Callers re-queue on
+    /// failure. MainActor-atomic, so concurrent flushes can't double-send (the second drain is empty).
+    private func drainSummary() -> (bid: Int, pid: Int, events: [StoryEvent])? {
+        guard let pid = _profileId, let bid = _bulletinId else { return nil }
         if let seg = currentSegment, seg.isStory,
            let hash = storyUnit(forSegment: seg)?.storyHash,
            playerState == .playing || playerState == .paused || playerState == .stalled {
-            let ev = StoryEvent(storyHash: hash, action: "abandoned", positionPct: currentPositionPct)
-            accumulatedEvents.append(ev)
+            accumulatedEvents.append(StoryEvent(storyHash: hash, action: "abandoned", positionPct: currentPositionPct))
         }
-
-        guard !accumulatedEvents.isEmpty else { return }
-
+        guard !accumulatedEvents.isEmpty else { return nil }
         let events = accumulatedEvents
         accumulatedEvents = []
+        return (bid, pid, events)
+    }
 
-        let req = SummaryRequest(
+    private func summaryRequest(pid: Int, events: [StoryEvent]) -> SummaryRequest {
+        SummaryRequest(
             profileId: pid,
             events: events.map { .init(storyHash: $0.storyHash, action: $0.action, positionPct: $0.positionPct) }
         )
-        Task { _ = try? await self.client.post("data/bulletins/\(bid)/summary", body: req) as StatusResponse }
+    }
+
+    /// Fire-and-forget flush — for background / terminate (never awaited). Re-queues on failure.
+    func sendSummary() {
+        guard let (bid, pid, events) = drainSummary() else { return }
+        let req = summaryRequest(pid: pid, events: events)
+        Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await self.client.post("data/bulletins/\(bid)/summary", body: req) as StatusResponse }
+            catch { self.accumulatedEvents.insert(contentsOf: events, at: 0) }   // retry next flush
+        }
+    }
+
+    /// AWAITED flush — completes (or re-queues) before the caller proceeds, so an immediately
+    /// following home-preview fetch sees the new consumed states. Never blocks the UI itself: the
+    /// caller dismisses first and awaits this only to sequence the refetch.
+    func flushSummary() async {
+        guard let (bid, pid, events) = drainSummary() else { return }
+        let req = summaryRequest(pid: pid, events: events)
+        do { _ = try await client.post("data/bulletins/\(bid)/summary", body: req) as StatusResponse }
+        catch { accumulatedEvents.insert(contentsOf: events, at: 0) }            // retry next refresh
     }
 
     // MARK: - Audio session

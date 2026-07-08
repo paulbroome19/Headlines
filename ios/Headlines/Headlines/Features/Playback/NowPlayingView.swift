@@ -57,6 +57,10 @@ struct NowPlayingView: View {
                         // audio ends → this, zero dead air). Replay = play() at .ended restarts
                         // from the top (restartFromBeginning); Home = the shared onClose.
                         CompletionView(onHome: onClose, onReplay: { player.play() })
+                            // Flush the completed-story events as soon as the briefing ends, while
+                            // the user reads this screen — so tapping Home (or backgrounding) finds
+                            // the consumed states already committed and Home refreshes clean.
+                            .task { await player.flushSummary() }
                     default:
                         playerBody
                     }
