@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct HeadlinesApp: App {
@@ -15,6 +16,13 @@ struct HeadlinesApp: App {
     @State private var phase: Phase = .loading
 
     init() {
+        // Home's pull-to-refresh sits on the DARK board. SwiftUI's `.refreshable` won't reliably
+        // tint its ProgressView (the `.tint` on the ScrollView doesn't reach it), so colour the
+        // underlying UIRefreshControl directly — light grey (the app's secondary-text grey on dark)
+        // so it's visible against the near-black card instead of black-on-black. Home is the only
+        // refresh control in the app, so the global appearance proxy is safe.
+        UIRefreshControl.appearance().tintColor = UIColor(BoardColors.character.opacity(0.5))
+
         #if DEBUG
         // DEBUG-only: launch with `-resetFirstRun` (e.g. via `xcrun simctl
         // launch <udid> <bid> -resetFirstRun`) to clear onboarding + the hint
