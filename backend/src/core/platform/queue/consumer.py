@@ -7,6 +7,7 @@ from typing import Any
 
 from redis import Redis
 from redis.exceptions import ResponseError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.platform.queue.processed import ProcessedRepo
@@ -78,6 +79,16 @@ class StreamConsumer:
                 # retry/reclaim, while the consumer lives to process the next one.
                 try:
                     self._handle_message(msg_id, fields, db_factory)
+                except IntegrityError as e:
+                    # EXPECTED under concurrency (e.g. two events racing to INSERT the same
+                    # story_key) — the retry succeeds once the row exists. Log ONE concise line, not
+                    # a full traceback per event: that traceback flood was consuming the log
+                    # rate-limit budget and drowning every other diagnostic (e.g. the /summary line).
+                    detail = str(getattr(e, "orig", e)).splitlines()[0][:140]
+                    logger.warning(
+                        "consumer: integrity conflict on message %s (%s) — left pending for retry",
+                        msg_id, detail,
+                    )
                 except Exception:
                     logger.exception(
                         "consumer: error handling message %s — surviving, message left pending",
