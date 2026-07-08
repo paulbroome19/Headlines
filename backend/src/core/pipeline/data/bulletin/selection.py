@@ -407,6 +407,32 @@ def _ordered_from_ids(db: Session, ids: list[str]) -> list[dict]:
     return [{"story_id": sid, "primary_category": cats.get(sid)} for sid in ids]
 
 
+def reconcile_edition_ids(
+    stored_ids: list[str],
+    dropped: set[str],
+    fresh_ranked_ids: list[str],
+    target_count: int,
+) -> tuple[list[str], bool]:
+    """Living-edition reconcile (pure, unit-testable). On a home refresh / re-read of a pinned
+    edition: drop the stories the user is DONE with (consumed/skipped), keep every UNCONSUMED story
+    in its existing position (NO reshuffle), and backfill the freed slots from the current rankings
+    up to the original count. Returns (new_ids, changed).
+
+    - Survivors keep their relative order — the day-edition stability rule (refresh must not
+      reshuffle stories you haven't dealt with yet).
+    - Backfill = the top-ranked stories not already present and not dropped, appended after the
+      survivors; capped so the count never grows past the original.
+    - `changed` is False when nothing was dropped (the caller can skip the write AND the ranking
+      query on the hot path)."""
+    survivors = [s for s in stored_ids if s not in dropped]
+    if len(survivors) == len(stored_ids):
+        return survivors, False
+    present = set(survivors)
+    need = max(0, target_count - len(survivors))
+    backfill = [f for f in fresh_ranked_ids if f not in present and f not in dropped][:need]
+    return survivors + backfill, True
+
+
 def get_materialised_selection(
     db: Session, *, profile_id: int, request_hash: str, day: date | None = None
 ) -> tuple[list[dict], dict, int] | None:
@@ -422,8 +448,14 @@ def get_materialised_selection(
     ).first()
     if row is None:
         return None
-    ids = row[0] if isinstance(row[0], list) else __import__("json").loads(row[0])
-    ids = [str(x) for x in ids]
+    ids = [str(x) for x in (row[0] if isinstance(row[0], list) else __import__("json").loads(row[0]))]
+    # Drop consumed/skipped stories so the cold-play skeleton never opens with a heard story
+    # (cheap filter only — the background assembly re-resolves via resolve_materialised_selection,
+    # which does the full reconcile + stable backfill). No LLM on the first-play path.
+    dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
+    ids = [s for s in ids if s not in dropped]
+    if not ids:
+        return None
     ordered = _ordered_from_ids(db, ids)
     return ordered, _depths_for(ordered), int(row[1])
 
@@ -474,8 +506,30 @@ def resolve_materialised_selection(
             pinned_run = pinned if started else None  # started → keep; else refresh to latest
 
     if pinned_run is not None:
-        ids = row[0] if isinstance(row[0], list) else __import__("json").loads(row[0])
-        ordered = _ordered_from_ids(db, [str(x) for x in ids])
+        ids = [str(x) for x in (row[0] if isinstance(row[0], list) else __import__("json").loads(row[0]))]
+        # LIVE heard/skip filter on the materialised path (audit §8): drop stories consumed/skipped
+        # SINCE the edition was pinned, and stably backfill the gaps from current rankings — so a
+        # heard story never lingers on the home list or in a regenerated briefing until the next
+        # day. Unconsumed stories keep their positions (no reshuffle). Cheap when nothing was
+        # consumed (no ranking query, no write).
+        dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
+        survivors = [s for s in ids if s not in dropped]
+        if len(survivors) == len(ids):
+            ordered = _ordered_from_ids(db, ids)
+            return ordered, _depths_for(ordered), pinned_run
+        # A gap opened → backfill from the CURRENT ranked list (LLM-free: dedup=False keeps the
+        # deterministic guards but skips the paid same-event pass on this hot refresh path).
+        fresh = build_selection(
+            db, profile_id=profile_id, include_top_stories=include_top_stories,
+            include_categories=include_categories, exclude_categories=exclude_categories,
+            preset=preset, dedup=False,
+        )
+        new_ids, _changed = reconcile_edition_ids(
+            ids, dropped, [o["story_id"] for o in fresh], target_count=len(ids),
+        )
+        UserDailyEditionRepo(db).reconcile_story_ids(profile_id, day, request_hash, new_ids)
+        db.commit()
+        ordered = _ordered_from_ids(db, new_ids)
         return ordered, _depths_for(ordered), pinned_run
 
     # First access, or refresh: build (runs the LLM dedup once), pin to latest, store.
