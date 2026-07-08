@@ -41,8 +41,14 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.anthropic.com/v1/messages"
 _API_VERSION = "2023-06-01"
-_MAX_TOKENS = 900
-_TIMEOUT_SECONDS = 20
+# A full-size briefing is MAX_BULLETIN_STORIES (20) → up to 19 bridges + the outro, all emitted
+# as one JSON object. At ~50-70 output tokens per bridge that is ~1.2-1.6k tokens; the old 900
+# cap TRUNCATED the JSON on the largest briefings, json.loads then failed, and the caller fell
+# back to SILENT bridges — a whole Deep briefing played bridge-less (see generate_bridges_and_outro
+# + data.py streaming fallback). 2500 clears 19 bridges + outro with headroom. Bridges/connective
+# run in the BACKGROUND (post-gate), so the extra generation time is off the first-play path.
+_MAX_TOKENS = 2500
+_TIMEOUT_SECONDS = 45
 
 
 def uk_now() -> datetime:
@@ -510,6 +516,12 @@ def generate_bridges_and_outro(
     raw = _post_messages(prompt, max_tokens=_MAX_TOKENS)
     if raw is None:
         return None
+    if raw.get("stop_reason") == "max_tokens":
+        # Truncated → the JSON below will fail to parse → caller falls back. Log LOUD: this is the
+        # failure that silently stripped bridges from full-size briefings. If it recurs, the cap is
+        # too low for len(stories)=%d.
+        logger.warning("bridges: response hit max_tokens (%d) for %d stories — output truncated",
+                       _MAX_TOKENS, len(stories))
     try:
         text_content = raw["content"][0]["text"].strip()
         if text_content.startswith("```"):
