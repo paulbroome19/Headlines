@@ -68,6 +68,7 @@ from core.pipeline.data.bulletin.audio.segment_synth import (
 from core.pipeline.data.summarise.handlers.rank_completed import ensure_story_summaries, _compute_content_hash
 from core.pipeline.data.bulletin.audio.repos.segment_audio_repo import SegmentAudioRepo
 from core.pipeline.data.bulletin.audio.repos.segment_audio_failure_repo import SegmentAudioFailureRepo
+from core.pipeline.data.bulletin.audio.segment_watchdog import is_stalled
 from core.pipeline.data.bulletin.audio.repos.bulletin_audio_repo import BulletinAudioRepo
 from core.platform.storage.audio_storage import get_audio_storage_provider
 from core.platform.config.voices import get_available_voices, get_voice, Voice
@@ -1663,6 +1664,29 @@ def get_bulletin_readiness(bulletin_id: int):
         lead = story_positions[-1] + 1                        # fewer stories than N → all of them
     else:
         lead = total                                          # no story segments → the whole thing
+
+    # STALL WATCHDOG: within the safe-to-start GATE window (the segments the loader waits on, which
+    # synthesise FIRST), a segment still 'pending' long after assembly has a dead/hung/restarted
+    # synth that never recorded a failure — the loader would otherwise never fire safe_to_start AND
+    # never see a failure to surface, so the spinner hangs forever. Flip such gate segments to
+    # FAILED (record it so /segments returns 502 too) so the existing failed path fires and iOS can
+    # skip. Tail (non-gate) segments are left alone — they legitimately stream in the background.
+    _created = bulletin.get("created_at")
+    _age_s = (datetime.now(timezone.utc) - _created).total_seconds() if _created else 0.0
+    _stalled_idx = [i for i in range(min(lead, total)) if is_stalled(out_segments[i]["state"], _age_s)]
+    if _stalled_idx:
+        with SessionLocal() as _db:
+            _frepo = SegmentAudioFailureRepo(_db)
+            for i in _stalled_idx:
+                _frepo.record(script_hash=hash_by_idx[i], voice=voice, model=model,
+                              audio_format=audio_fmt, attempts=0,
+                              last_error="stalled: no synth completion within the watchdog window")
+                out_segments[i]["state"] = "failed"
+            _db.commit()
+        failed_count = sum(1 for x in out_segments if x["state"] == "failed")
+        logger.warning("readiness watchdog: bulletin=%s flipped %d stalled gate segment(s) to failed",
+                       bulletin_id, len(_stalled_idx))
+
     safe_to_start = lead > 0 and all(out_segments[i]["state"] == "ready" for i in range(lead))
 
     # ── Named audio-phase milestones (ordered) the loader advances a bar against ──
@@ -1679,9 +1703,11 @@ def get_bulletin_readiness(bulletin_id: int):
     # A CRITICAL segment (intro or first story) genuinely failed → safe_to_start can
     # never be reached, so the loader would hold forever. Surface it so the client
     # can show an error instead of hanging at ~95%.
-    blocked = (intro_seg is not None and intro_seg["state"] == "failed") or (
-        first_story_seg is not None and first_story_seg["state"] == "failed"
-    )
+    # Any segment in the safe-to-start GATE window failing (a genuine failure OR a watchdog-reaped
+    # stall) means safe_to_start can never fire → surface it so the loader errors/skips instead of
+    # hanging. (Broadened from intro+first-story to the whole gate so a stalled 2nd gate story is
+    # caught too.)
+    blocked = any(out_segments[i]["state"] == "failed" for i in range(min(lead, total)))
 
     # Single ordered stage (furthest milestone reached) — convenient for the client.
     if blocked:
