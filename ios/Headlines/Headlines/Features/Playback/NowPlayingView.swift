@@ -354,23 +354,27 @@ struct NowPlayingView: View {
     private var headlineFlapCells: some View {
         GeometryReader { geo in
             let layout = headlineLayout(currentHeadline.uppercased(), width: geo.size.width, height: geo.size.height)
-            VStack(alignment: .leading, spacing: layout.gap) {
-                ForEach(Array(layout.rows.enumerated()), id: \.offset) { _, row in
-                    HStack(spacing: layout.gap) {
-                        ForEach(Array(row.enumerated()), id: \.offset) { _, ch in
-                            if ch == " " {
-                                Color.clear.frame(width: layout.cell.width * 0.5, height: layout.cell.height)
-                            } else {
-                                FlapCell(glyph: ch, size: layout.cell)
+            // Centre the headline block vertically with equal flexible spacers, so any leftover
+            // space (short/few-row headlines) splits EVENLY above and below rather than pooling at
+            // the bottom. `.frame(alignment:)` did not reliably centre the flap grid here.
+            VStack(alignment: .leading, spacing: 0) {
+                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: layout.gap) {
+                    ForEach(Array(layout.rows.enumerated()), id: \.offset) { _, row in
+                        HStack(spacing: layout.gap) {
+                            ForEach(Array(row.enumerated()), id: \.offset) { _, ch in
+                                if ch == " " {
+                                    Color.clear.frame(width: layout.cell.width * 0.5, height: layout.cell.height)
+                                } else {
+                                    FlapCell(glyph: ch, size: layout.cell)
+                                }
                             }
                         }
                     }
                 }
+                Spacer(minLength: 0)
             }
-            // Centre the (now board-filling) headline vertically so it sits balanced — the cell
-            // size is scaled UP to fill the reserved height, so a short headline no longer leaves
-            // a big dark void; a long headline shrinks to fit and centres the same way.
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
+            .frame(width: geo.size.width, height: geo.size.height)
         }
         .frame(height: headlineHeight)
     }
@@ -422,9 +426,11 @@ struct NowPlayingView: View {
     }
 
     private var headlineHeight: CGFloat {
-        // Reserved headline box; the flap cell scales UP to fill this height for short headlines
-        // and DOWN (wrapping to ≤4 rows) for long ones — see headlineLayout.
-        118
+        // Reserved headline box — FIXED so the board (and everything below it) never jumps height
+        // between consecutive stories of different lengths. Tightened so the fill algorithm drives
+        // 2–4 row headlines to nearly fill it (little leftover), while a 1–2 word headline scales
+        // up and CENTRES within it (leftover split evenly, no dead band pooling at the bottom).
+        104
     }
 
     // MARK: - Scrubber + bulletin timers
