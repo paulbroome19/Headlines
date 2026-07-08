@@ -20,10 +20,11 @@ SAFETY — conservative by design:
   * Only CLEAR same-event cases are merged. A false merge silently deletes real
     news, which is worse than a missed duplicate — so when uncertain we DON'T
     merge.
-  * Any failure (no key, network error, timeout, malformed output) → return the
-    input list UNCHANGED (no dedup). A failed dedup must never break generation;
-    worst case is the pre-existing behaviour (a possible duplicate). All
-    fallbacks are logged.
+  * Any failure (no key, network error, timeout, malformed output) → ONE retry,
+    then return the input list UNCHANGED (no LLM dedup) with a LOUD (ERROR) log —
+    never a silent fail-open. A failed dedup must never break generation, and the
+    deterministic whole-bulletin backstop (selection.dedup_bulletin_events) then
+    removes any same-event duplicate the LLM would have caught.
   * Never drops below one story (each group collapses to its representative).
 
 REMOVE THIS MODULE and its single call site in routes/data.py when issue #36
@@ -80,36 +81,10 @@ def dedup_same_event(stories: list[dict]) -> list[dict]:
     if not any(titles):
         return stories  # nothing to compare on
 
-    body = json.dumps({
-        "model": _model(),
-        "max_tokens": _MAX_TOKENS,
-        "temperature": 0,   # same-event detection is a classification — deterministic
-        "messages": [{"role": "user", "content": _build_prompt(titles)}],
-    }).encode()
-    req = urllib.request.Request(
-        _API_URL,
-        data=body,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": _API_VERSION,
-            "content-type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
-            raw = json.loads(resp.read())
-    except Exception as e:  # network / timeout / HTTP — fall back to no dedup
-        logger.warning("event_dedup(#35): LLM unavailable (%s) — NO dedup (assembling all stories)", e)
-        return stories
-
-    try:
-        groups = _parse_groups(raw, n=len(stories))
-    except Exception as e:  # malformed / out-of-range / overlapping groups
-        logger.warning("event_dedup(#35): malformed dedup output (%s) — NO dedup (assembling all stories)", e)
-        return stories
-
+    # ONE Haiku call with a single retry. On repeated failure (network OR malformed output) this
+    # logs LOUDLY and returns no groups — it NEVER silently fails open. The deterministic
+    # whole-bulletin backstop (selection.dedup_bulletin_events) then catches same-event duplicates.
+    groups = _dedup_groups(api_key, titles, n=len(stories))
     if not groups:
         return stories
 
@@ -132,6 +107,52 @@ def dedup_same_event(stories: list[dict]) -> list[dict]:
     ]
     logger.info("event_dedup(#35): %d → %d stories; merged %s", len(stories), len(deduped), merged)
     return deduped
+
+
+def _post_dedup(api_key: str, titles: list[str]) -> dict | None:
+    """One Anthropic call. Returns the parsed response, or None on network/timeout/HTTP error."""
+    body = json.dumps({
+        "model": _model(),
+        "max_tokens": _MAX_TOKENS,
+        "temperature": 0,   # same-event detection is a classification — deterministic
+        "messages": [{"role": "user", "content": _build_prompt(titles)}],
+    }).encode()
+    req = urllib.request.Request(
+        _API_URL, data=body,
+        headers={"x-api-key": api_key, "anthropic-version": _API_VERSION,
+                 "content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
+            return json.loads(resp.read())
+    except Exception as e:  # network / timeout / HTTP
+        logger.warning("event_dedup(#35): LLM call failed (%s)", e)
+        return None
+
+
+def _dedup_groups(api_key: str, titles: list[str], *, n: int) -> list[list[int]]:
+    """The LLM same-event pass with a SINGLE retry. Returns validated 0-based groups, or [] after
+    a loud error. Retries once on EITHER a failed call OR malformed output; on the second failure
+    it logs at ERROR (never a silent fail-open) and returns [] so the caller assembles all stories
+    and the deterministic backstop removes any same-event duplicate."""
+    last_err = "unknown"
+    for attempt in (1, 2):
+        raw = _post_dedup(api_key, titles)
+        if raw is None:
+            last_err = "LLM unavailable"
+        else:
+            try:
+                return _parse_groups(raw, n=n)
+            except Exception as e:  # malformed / out-of-range / overlapping groups
+                last_err = f"malformed output ({e})"
+        if attempt == 1:
+            logger.warning("event_dedup(#35): %s — retrying once", last_err)
+    logger.error(
+        "event_dedup(#35): dedup FAILED after retry (%s) — no LLM dedup this bulletin; the "
+        "deterministic backstop (dedup_bulletin_events) must catch same-event duplicates", last_err,
+    )
+    return []
 
 
 def _parse_groups(raw: dict, n: int) -> list[list[int]]:
