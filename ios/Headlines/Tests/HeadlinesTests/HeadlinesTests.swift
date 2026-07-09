@@ -150,6 +150,57 @@ final class HeadlinesTests: XCTestCase {
                        "abandoned during a bridge must send position 0 (→ stays queued), not the stale 0.95")
     }
 
+    // MARK: - PR-A: identity across the tap boundary (audit §1.4 seams #1, #2)
+
+    /// Symptom class: "tap a story in the list → a DIFFERENT story plays." A dedup reconcile
+    /// renumbers `_storyUnits` between render and tap; a positional tap (`playStoryUnit(at: idx)`)
+    /// then plays whatever now sits at that offset. The identity tap must play the tapped story.
+    @MainActor
+    func testTapPlaysStoryByIdentityNotStaleOffset() {
+        let p = BulletinPlayer()
+        p._testConfigureStories(ids: ["A", "B", "C"])
+        // reconcile renumbers the order: offset 0 no longer holds "A".
+        p._testReorderStories(ids: ["C", "A", "B"])
+        XCTAssertEqual(p.storyUnits[0].storyId, "C", "precondition: a stale offset-0 tap would play C")
+
+        p.seekToStory(id: "A")   // tap the row showing story A, by identity
+
+        XCTAssertEqual(p.storyUnits[p.currentUnitIndex].storyId, "A",
+                       "tap must play the tapped story (A) by identity, not the story now at the stale offset (C)")
+    }
+
+    /// A tapped-but-pending story's buffering spinner must follow the story across a reconcile
+    /// renumber (the pointer is stored by identity, re-resolved to the live row) — not pin a stale
+    /// offset (audit §1.4 seam #2).
+    @MainActor
+    func testPendingTapPointerFollowsStoryAcrossReorder() {
+        let p = BulletinPlayer()
+        p._testConfigureStories(ids: ["A", "B", "C"], pending: ["C"])   // C still synthesising
+        p._testSetPendingTap(id: "C")
+        XCTAssertEqual(p.bufferingUnitIndex, 2, "spinner starts on C's original row")
+        XCTAssertEqual(p._testPendingStoryId, "C")
+
+        p._testReorderStories(ids: ["C", "A", "B"], pending: ["C"])     // reconcile moves C to the front
+
+        XCTAssertEqual(p.bufferingUnitIndex, 0, "spinner must follow C to its NEW row, not pin offset 2")
+        XCTAssertEqual(p._testPendingStoryId, "C", "pending intent survives the renumber by identity")
+    }
+
+    /// If a reconcile removes the pending-tapped story entirely (deduped away), the pending intent
+    /// must be dropped — the fulfil path must never play a neighbour that inherited the old offset.
+    @MainActor
+    func testPendingTapDroppedWhenStoryRemovedByReconcile() {
+        let p = BulletinPlayer()
+        p._testConfigureStories(ids: ["A", "B", "C"], pending: ["C"])
+        p._testSetPendingTap(id: "C")
+
+        p._testReorderStories(ids: ["A", "B"])   // C dropped by dedup
+        p._testFulfilPendingTapIfReady()
+
+        XCTAssertNil(p._testPendingStoryId, "pending intent must be dropped when its story leaves the order")
+        XCTAssertNil(p.bufferingUnitIndex, "no buffering spinner for a removed story")
+    }
+
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
 
     /// Paced stages advance one per `stageSeconds` purely from elapsed time — no backend

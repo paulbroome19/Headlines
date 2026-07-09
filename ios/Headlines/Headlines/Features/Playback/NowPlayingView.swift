@@ -562,9 +562,11 @@ struct NowPlayingView: View {
         let titleColor: Color = isPlayed ? ink.opacity(0.32) : ((ready || buffering) ? ink : ink.opacity(0.40))
         let numColor = isCurrent ? ink : (ready ? inkMuted : ink.opacity(0.30))
         return Button {
-            // Tapping ANY row seeks to it; if it's still pending, the player bumps it to the
-            // front of the synthesis queue and buffers until its audio arrives.
-            player.playStoryUnit(at: idx)
+            // Tapping ANY row plays THAT story by identity — resolved to its live row inside the
+            // player, so a dedup renumber between render and tap can't play a different story
+            // (audit §1.4 seam #1). If it's still pending, the player bumps it to the front of the
+            // synthesis queue and buffers until its audio arrives.
+            player.playStory(id: unit.storyId)
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Text(String(format: "%02d", idx + 1))

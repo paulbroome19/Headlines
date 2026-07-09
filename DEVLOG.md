@@ -9,6 +9,32 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-10 — Playback migration PR A: identity across the tap boundary)
+
+Full playback-seam migration A→F underway (see the architectural audit). This is **PR A of 6**.
+
+Symptom class killed: "tap a story → a DIFFERENT story plays" and the pending-tap variant, when a
+dedup reconcile renumbers `_storyUnits` between render and tap (audit §1.4 seams #1, #2).
+
+`ios/.../Core/BulletinPlayer.swift`:
+- Durable pending pointer is now **story identity**: `pendingTapUnitIndex: Int?` → `pendingTapStoryId: String?`.
+  Every consumer (`fulfilPendingTapIfReady`, `reassertPendingPriority`, `synthesisingUnitIndex`,
+  the `seekToStoryUnit` pending branch, teardown) resolves it to the CURRENT row live. Fulfil drops
+  the intent if the story left the order (never plays a neighbour).
+- `bufferingUnitIndex` (@Published, UI spinner) is now a derived cache of `pendingTapStoryId`,
+  re-resolved in a new `refreshBufferingIndex()` called on every pending change AND at the end of
+  `rebuildTimeline()` — so the spinner follows the story across a renumber.
+- New identity tap entry points: `playStory(id:)` and `seekToStory(id:)` resolve id→current index
+  at call time.
+
+`ios/.../Features/Playback/NowPlayingView.swift`: the tracklist tap now calls
+`player.playStory(id: unit.storyId)` instead of `playStoryUnit(at: idx)`.
+
+Tests (gesture-style, 14/14): `testTapPlaysStoryByIdentityNotStaleOffset`,
+`testPendingTapPointerFollowsStoryAcrossReorder`, `testPendingTapDroppedWhenStoryRemovedByReconcile`
++ new `_testConfigureStories`/`_testReorderStories` seams. Highlight comparisons in the row are still
+positional — that's PR B (ForEach by storyId + identity highlights). Needs build for on-device verify.
+
 ## Addendum (2026-07-08 — outcome-semantics verification: mapping confirmed, two drift bugs found + fixed)
 
 Verified the action→state mapping end-to-end (not just emission).
