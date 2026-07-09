@@ -9,6 +9,88 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Addendum (2026-07-08 — outcome-semantics verification: mapping confirmed, two drift bugs found + fixed)
+
+Verified the action→state mapping end-to-end (not just emission).
+
+**Mapping (authoritative = `compute_new_state`, user_story_state_repo.py) — matches spec:**
+`completed → consumed`; `skipped → consumed at ANY position`; `abandoned → consumed iff
+position_pct ≥ 0.5 (inclusive) else None (stays queued, replayable after 24h TTL)`.
+
+**Flagged drift #1 (doc):** `record_bulletin_event`'s docstring (data.py) described `skipped <0.5 →
+rejected` and `≥0.5 → consumed` — a `rejected` state the code no longer produces. Stale vs the
+actual `compute_new_state` (skip → consumed at any position). Fixed the docstring to match the
+verified code and noted 'rejected' was retired. (Flagged, not silently aligned — the operative
+mapping already matched spec; only the comment was wrong.)
+
+**Flagged drift #2 (real bug, client) — abandon-during-bridge false-consume:** `currentPositionPct`
+only advances while a STORY segment is live (handlePeriodicTime's isStory guard), so it goes STALE
+during the bridge/intro LEADING INTO the next story, holding the PREVIOUS story's value. My earlier
+Fix 2 (anchor abandoned on currentStoryUnit) would then flush `abandoned` for the upcoming story B
+carrying story A's stale pct (e.g. 0.95) → server maps `abandoned ≥0.5 → consumed` → B falsely
+consumed though it never played. Fixed: the abandoned event reports position 0 unless the story's
+OWN audio is the live item (`currentSegment?.isStory == true`). Skip position is cosmetic (skip
+ignores position), so left as-is.
+
+**Position semantics per gesture (confirmed):** skip → departing story gets currentPositionPct,
+intervening stories 0 (irrelevant — skip ignores position); completed → hardcoded 1.0; abandoned →
+currentPositionPct only when the story's own segment is live, else 0. currentPositionPct is
+fraction through the current STORY SEGMENT (per-segment; for a split lead opener+remainder it
+resets at the remainder boundary — minor under-measure near remainder start, pre-existing, within
+tolerance for a 50% heuristic).
+
+**Tests:** backend `test_outcome_mapping_boundaries` (skip@0→consumed, abandon@0.49→queued,
+abandon@0.5 & 0.51→consumed, complete→consumed, unknown→no-op) — 5/5. iOS
+`testCloseWhileBridgePlayingRecordsAbandoned` now asserts position 0 despite a seeded stale 0.95 —
+11/11.
+
+## Changes Made This Session (2026-07-08 — Next-button skips silently dropped: skip emission was gated on the LIVE segment, not the logical story)
+
+### The bug (build 47 + 48, two fresh profiles, zero events server-side)
+
+Reproductions: skip a story mid-synthesis via the ▶| NEXT button → back → refresh → story still
+present. Server-side reads for both windows showed **zero `/event` POST and zero `/summary` POST**
+from the session, and the story's `user_story_state` row stayed `queued` (untouched). So the skip
+never reached the server on EITHER delivery path.
+
+Root cause — NOT a missing/separate handler. The next button (and lock-screen next) both funnel
+through `skip()` → `seekToStoryUnit`, the same primitive #190 touched. But the skip was recorded
+off the **raw `currentSegment.isStory`** gate. When Next is pressed while a BRIDGE/transition
+segment is the live item — or during a nil buffering gap mid-synthesis — that gate is false, so
+`seekToStoryUnit` recorded nothing. Both delivery paths (`fireEvent` live `/event`, and the
+accumulate → `/summary` batch) carry the SAME event object, so a dropped record kills both at once.
+The drain-time `abandoned` append had the identical `currentSegment.isStory` gate, so closing while
+a bridge played dropped that too. #190 only fixed the pending-early-return ORDERING of that same
+gated block — it never removed the `isStory` requirement, so the mid-synthesis next-button case was
+never covered.
+
+### Fix — anchor event emission on the LOGICAL current story, not the live segment
+
+`ios/.../Core/BulletinPlayer.swift`:
+- `seekToStoryUnit` skip-record block: keyed off `currentUnitIndex` (the story the playhead
+  occupies, which "stays the current story even during its bridge/intro"), not `currentSegment`.
+  Now records `skipped` for EVERY story a forward move clears (multi-story scrubber jumps included),
+  deduped via `_skippedStoryHashes`, suppressed for already-completed stories. Still runs before the
+  pending-tap early return (keeps #190).
+- `drainSummary` abandoned append: anchored on `currentStoryUnit` instead of `currentSegment`, so a
+  close while a bridge plays still records the in-progress story; suppressed if already skipped/completed.
+
+### Tests (`ios/.../Tests/HeadlinesTests.swift`) — one per gesture path, all green
+
+- `testSkipWhileBridgePlayingStillRecordsSkip` — the build-47/48 gap (Next while a bridge is live).
+- `testForwardJumpPastMultipleStoriesRecordsEachSkip` — scrubber clears several stories.
+- `testCloseWhileBridgePlayingRecordsAbandoned` — exit-path counterpart.
+- Existing `testSkipToPendingStoryStillRecordsSkip` (#190) still passes. New `_testConfigureForwardSkip`
+  seam. `** TEST SUCCEEDED **`, 11/11.
+
+### State / next
+
+Needs a **build 49** (iOS client change — rebuild + reinstall). None of the last three days of
+skip-testing could have exercised this path in the mid-synthesis state: the working code path did
+not exist until this fix. (The `consumed` rows that DID appear were natural-completion `completed`
+events, not skips.) Next: build 49, repro the same next-button-mid-synthesis skip, confirm a
+`/event` (or `/summary`) POST lands and Farage's row leaves `queued`.
+
 ## Changes Made This Session (2026-06-30 — Settings filters: top-left back chevron instead of a bottom bar)
 
 ### iOS — Differentiate the two filter contexts' navigation chrome
