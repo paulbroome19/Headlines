@@ -237,7 +237,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private var _editionReconciled = false
     // A tap on a PENDING (nil-url) story records the intent WITHOUT tearing down what's playing;
     // applyReadiness fulfils it (seek + play) the moment that story's start segment synthesises.
-    private var pendingTapUnitIndex: Int?
+    // Stored by STORY IDENTITY, not array position: a dedup reconcile can renumber/remove rows
+    // between the tap and its fulfilment, and a stale Int would fulfil the WRONG story (audit §1.4
+    // seam #2). Every consumer resolves it to the CURRENT index live.
+    private var pendingTapStoryId: String?
 
     // MARK: Private — stall detection
 
@@ -487,6 +490,19 @@ final class BulletinPlayer: NSObject, ObservableObject {
         _totalDurationSeconds = acc
         // Count STORIES (units), not story segments — a split lead is two segments, one story.
         storyCount = _storyUnits.count
+        // The running order may have just been renumbered (reconcile) — re-resolve the pending-tap
+        // spinner's row from its story identity so it follows the story, not a stale offset.
+        refreshBufferingIndex()
+    }
+
+    /// Re-resolve the durable `pendingTapStoryId` to its CURRENT row index for the @Published
+    /// buffering spinner. Called on every pending-intent change and after any running-order rebuild,
+    /// so the spinner follows the story across a dedup renumber instead of pinning a stale offset.
+    /// nil pending → nil index (clears the spinner).
+    private func refreshBufferingIndex() {
+        bufferingUnitIndex = pendingTapStoryId.flatMap { id in
+            _storyUnits.firstIndex(where: { $0.storyId == id })
+        }
     }
 
     /// Merge a readiness snapshot: fill ready segments' url + real duration (matched by FULL
@@ -634,11 +650,18 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// arrived — the real seek + play (which the pending tap deliberately deferred to avoid
     /// tearing down what was playing). No-op while it's still pending or nothing is pending-tapped.
     private func fulfilPendingTapIfReady() {
-        guard let idx = pendingTapUnitIndex, idx < _storyUnits.count else { return }
+        guard let id = pendingTapStoryId else { return }
+        // Resolve the tapped story's CURRENT index every time — a dedup reconcile may have renumbered
+        // or removed it since the tap. If it's gone, drop the intent (never fulfil onto a neighbour).
+        guard let idx = _storyUnits.firstIndex(where: { $0.storyId == id }) else {
+            pendingTapStoryId = nil
+            refreshBufferingIndex()
+            return
+        }
         guard let start = startSegment(for: _storyUnits[idx], offsetSeconds: 0),
               segments[start.arrayIndex].url != nil else { return }   // start segment still pending
-        pendingTapUnitIndex = nil
-        bufferingUnitIndex  = nil
+        pendingTapStoryId = nil
+        refreshBufferingIndex()
         playStoryUnit(at: idx)
     }
 
@@ -671,10 +694,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// per readiness poll so the LATEST skip/tap wins cleanly even if the one-shot prioritise POSTs
     /// raced out of order. No-op when nothing is pending or its audio has already arrived.
     private func reassertPendingPriority() {
-        guard let idx = pendingTapUnitIndex, idx >= 0, idx < _storyUnits.count,
-              !isUnitReady(_storyUnits[idx]),
-              let sid = _storyUnits[idx].storySegment.storyId else { return }
-        prioritise(storyId: sid)
+        // The pending story IS the identity to re-prioritise — no array lookup needed for the id.
+        // Only re-send while it exists in the order and is still not ready.
+        guard let id = pendingTapStoryId,
+              let idx = _storyUnits.firstIndex(where: { $0.storyId == id }),
+              !isUnitReady(_storyUnits[idx]) else { return }
+        prioritise(storyId: id)
     }
 
     /// Tap/skip to a not-yet-ready story: bump it to the FRONT of the background synthesis queue
@@ -728,7 +753,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     ///   3. else the first not-ready unit anywhere (the backfilled earlier gap).
     /// nil when every unit is ready.
     var synthesisingUnitIndex: Int? {
-        if let p = pendingTapUnitIndex, p >= 0, p < _storyUnits.count, !isUnitReady(_storyUnits[p]) {
+        if let id = pendingTapStoryId,
+           let p = _storyUnits.firstIndex(where: { $0.storyId == id }),
+           !isUnitReady(_storyUnits[p]) {
             return p
         }
         let cur = min(max(0, currentUnitIndex), max(0, _storyUnits.count - 1))
@@ -744,6 +771,23 @@ final class BulletinPlayer: NSObject, ObservableObject {
     func playStoryUnit(at index: Int) {
         seekToStoryUnit(at: index)
         play()
+    }
+
+    /// Play the story with this IDENTITY — the tracklist tap boundary. Resolves the id to its
+    /// CURRENT row at call time, so a tap always plays the story the row showed even if a dedup
+    /// reconcile renumbered the running order between render and tap (audit §1.4 seam #1: a stale
+    /// Int offset played a DIFFERENT story, or clamped to the last). No-op if the story is no longer
+    /// in the order — never plays a neighbour.
+    func playStory(id: String?) {
+        guard let id, let idx = _storyUnits.firstIndex(where: { $0.storyId == id }) else { return }
+        playStoryUnit(at: idx)
+    }
+
+    /// Seek to the story with this identity WITHOUT forcing play (resume follows `intendedPlaying`).
+    /// Same identity-resolution as `playStory`; used by scrubber/programmatic navigation.
+    func seekToStory(id: String?) {
+        guard let id, let idx = _storyUnits.firstIndex(where: { $0.storyId == id }) else { return }
+        seekToStoryUnit(at: idx)
     }
 
     func play() {
@@ -944,6 +988,58 @@ final class BulletinPlayer: NSObject, ObservableObject {
         currentPositionPct = liveIsBridge ? 0.95 : 0
         playerState = .playing
     }
+
+    /// Test seam: an N-story briefing in the given id order, playhead on story 0, NOT intending to
+    /// play (so a ready seek doesn't touch audio). `pending` ids are left nil-url (not ready).
+    func _testConfigureStories(ids: [String], pending: Set<String> = []) {
+        _bulletinId = 500
+        _profileId = 99
+        player = AVQueuePlayer()
+        _buildTestUnits(ids: ids, ready: Set(ids).subtracting(pending))
+        currentUnitIndex = 0
+        storyIndex = 0
+        currentSegment = _storyUnits.first?.storySegment
+        intendedPlaying = false
+        playerState = .paused
+    }
+
+    /// Test seam: rebuild the running order into a new id order (and readiness), simulating a dedup
+    /// reconcile that renumbers/removes rows. Re-resolves the pending spinner by identity, as the
+    /// real rebuildTimeline does.
+    func _testReorderStories(ids: [String], pending: Set<String> = []) {
+        _buildTestUnits(ids: ids, ready: Set(ids).subtracting(pending))
+        storyCount = _storyUnits.count
+        refreshBufferingIndex()
+    }
+
+    private func _buildTestUnits(ids: [String], ready: Set<String>) {
+        var segs: [ManifestSegment] = []
+        var units: [StoryUnit] = []
+        var idx = 0
+        for (u, sid) in ids.enumerated() {
+            let r = ready.contains(sid)
+            let trans = ManifestSegment(index: idx, type: "transition", url: r ? "https://e/t\(u).mp3" : nil,
+                                        durationMs: 500, storyHash: nil, storyId: nil, title: nil,
+                                        sources: [], prevStoryId: nil, nextStoryId: nil)
+            idx += 1
+            let story = ManifestSegment(index: idx, type: "story", url: r ? "https://e/s\(u).mp3" : nil,
+                                        durationMs: 1000, storyHash: "h\(sid)", storyId: sid, title: "T\(sid)",
+                                        sources: [], prevStoryId: nil, nextStoryId: nil)
+            idx += 1
+            segs.append(trans); segs.append(story)
+            units.append(StoryUnit(index: u, transitionSegment: trans, storySegments: [story],
+                                   cumulativeStartSeconds: Double(u)))
+        }
+        segments = segs
+        _storySegments = segs.filter { $0.isStory }
+        _storyUnits = units
+        storyCount = units.count
+    }
+
+    /// Test seam: record a pending tap by identity (as the pending branch does) with no queue rebuild.
+    func _testSetPendingTap(id: String) { pendingTapStoryId = id; refreshBufferingIndex() }
+    var _testPendingStoryId: String? { pendingTapStoryId }
+    func _testFulfilPendingTapIfReady() { fulfilPendingTapIfReady() }
     #endif
 
     /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a
@@ -1185,7 +1281,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         _heldEnqueue = false
         _allReady = false
         _editionReconciled = false
-        pendingTapUnitIndex = nil
+        pendingTapStoryId = nil
         bufferingUnitIndex  = nil
         segmentReady = [:]
         teardownQueuePlayer()
@@ -1561,15 +1657,15 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // arrives. Current playback keeps going meanwhile — no removeAllItems, so no empty-queue
         // rebuild and no false end-of-briefing.
         if segments[startArrayIdx].url == nil {
-            pendingTapUnitIndex = clamped
-            bufferingUnitIndex  = clamped
+            pendingTapStoryId = unit.storyId
+            refreshBufferingIndex()
             if let sid = unit.storySegment.storyId { prioritise(storyId: sid) }
             return
         }
 
         // READY — clear any prior pending-tap intent and do the real rebuild.
-        pendingTapUnitIndex = nil
-        bufferingUnitIndex  = nil
+        pendingTapStoryId = nil
+        refreshBufferingIndex()
 
         // Bump the navigation token: any earlier in-flight seek's async completion will
         // now no-op, so rapid taps can't clobber each other (no stale resume / double
