@@ -9,6 +9,31 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-10 — Playback migration PR B: published atomic snapshot + identity highlights)
+
+**PR B of 6** (stacked on A). Symptom class killed: the on-screen list / now-playing highlight /
+buffering + synthesising spinners attaching to the WRONG row during a dedup renumber (audit §1.3
+seam α — a derived order re-rendered non-atomically, highlights compared by offset).
+
+`ios/.../Core/BulletinPlayer.swift`:
+- `storyUnits` is now the **published** store (`@Published private(set)`), replacing the private
+  `_storyUnits` + plain accessor (global rename, 44 refs). Every rebuild re-renders all surfaces
+  atomically from one snapshot.
+- `pendingTapStoryId` is now `@Published` (spinner appears the instant a pending row is tapped);
+  the derived `bufferingUnitIndex` Int cache + `refreshBufferingIndex()` are **removed** (identity
+  is the source now).
+- New identity highlight sources: `currentStoryId`, `synthesisingStoryId` (buffering uses
+  `pendingTapStoryId` directly).
+
+`ios/.../Models/BulletinManifest.swift`: `StoryUnit.identity` — stable diffing key = story id.
+
+`ios/.../Features/Playback/NowPlayingView.swift`: `ForEach(..., id: \.element.identity)`; row
+`isCurrent`/`buffering`/synthesising compared by **story identity**, never the row offset.
+
+Tests (15/15): new `testCurrentHighlightResolvesByIdentityAfterReorder`; the two pending tests
+updated to identity assertions; `_testReorderStories` now re-anchors `currentUnitIndex` by identity
+to mirror the real reconcile. Needs build for on-device verify.
+
 ## Changes Made This Session (2026-07-10 — Playback migration PR A: identity across the tap boundary)
 
 Full playback-seam migration A→F underway (see the architectural audit). This is **PR A of 6**.
