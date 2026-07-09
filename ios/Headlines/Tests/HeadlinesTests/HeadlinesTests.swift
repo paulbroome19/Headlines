@@ -85,6 +85,71 @@ final class HeadlinesTests: XCTestCase {
         )
     }
 
+    /// Regression (build-47/48): the NEXT button and lock-screen next both funnel through
+    /// `skip()` → `seekToStoryUnit`, but the skip was recorded off the raw `currentSegment.isStory`.
+    /// When Next is pressed while a BRIDGE/transition segment is the live item (or during a nil
+    /// buffering gap mid-synthesis), that gate was false and the skip vanished on BOTH the live
+    /// /event and batched /summary paths — the "two clean builds, zero events" symptom. The skip
+    /// must now be recorded off the LOGICAL current story unit regardless of the live segment.
+    @MainActor
+    func testSkipWhileBridgePlayingStillRecordsSkip() throws {
+        let player = BulletinPlayer()
+        player._testConfigureForwardSkip(storyCount: 2, liveIsBridge: true)   // a bridge is the live item
+
+        player.seekToStoryUnit(at: 1)   // Next while the bridge plays; target still synthesising (pending)
+
+        let data = try XCTUnwrap(player._testDetachedSummaryJSON(),
+                                 "Next pressed while a bridge is the live segment must still record the skip")
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let events = try XCTUnwrap(obj["events"] as? [[String: Any]])
+        XCTAssertTrue(
+            events.contains { ($0["story_id"] as? String) == "s0" && ($0["action"] as? String) == "skipped" },
+            "the departing story (s0) must be recorded skipped even though currentSegment was a bridge; got \(events)"
+        )
+    }
+
+    /// A forward jump that clears SEVERAL stories at once (scrubber drag / lock-screen scrub, which
+    /// also route through `seekToStoryUnit`) must record a skip for EACH story passed, not just one —
+    /// otherwise the middle stories stay queued and re-appear.
+    @MainActor
+    func testForwardJumpPastMultipleStoriesRecordsEachSkip() throws {
+        let player = BulletinPlayer()
+        player._testConfigureForwardSkip(storyCount: 3, liveIsBridge: false)  // playing story 0
+
+        player.seekToStoryUnit(at: 2)   // jump forward past stories 0 AND 1 to the (pending) 3rd
+
+        let data = try XCTUnwrap(player._testDetachedSummaryJSON(),
+                                 "a multi-story forward jump must flush a skip for each cleared story")
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let events = try XCTUnwrap(obj["events"] as? [[String: Any]])
+        let skipped = Set(events.compactMap { ($0["action"] as? String) == "skipped" ? $0["story_id"] as? String : nil })
+        XCTAssertTrue(skipped.isSuperset(of: ["s0", "s1"]),
+                      "both cleared stories (s0, s1) must be recorded skipped; got \(events)")
+    }
+
+    /// Closing the player while a BRIDGE is the live item must still record the in-progress story as
+    /// abandoned — the exit-path counterpart to the skip fix (same `currentSegment.isStory` gate).
+    @MainActor
+    func testCloseWhileBridgePlayingRecordsAbandoned() throws {
+        let player = BulletinPlayer()
+        player._testConfigureForwardSkip(storyCount: 2, liveIsBridge: true)   // playing story 0, bridge live
+
+        // No skip — straight to close (detachSummary is what closePlayer calls).
+        let data = try XCTUnwrap(player._testDetachedSummaryJSON(),
+                                 "closing mid-story while a bridge plays must still capture the in-progress story")
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let events = try XCTUnwrap(obj["events"] as? [[String: Any]])
+        let abandoned = try XCTUnwrap(
+            events.first { ($0["story_id"] as? String) == "s0" && ($0["action"] as? String) == "abandoned" },
+            "the in-progress story (s0) must be recorded abandoned even though currentSegment was a bridge; got \(events)"
+        )
+        // The seam seeded a STALE currentPositionPct of 0.95 (carried over from the previous story).
+        // The guard must report 0 for a story whose own audio hasn't started — otherwise abandoned
+        // ≥ 0.5 would false-consume a story the user closed on during its lead-in bridge.
+        XCTAssertEqual(abandoned["position_pct"] as? Double, 0,
+                       "abandoned during a bridge must send position 0 (→ stays queued), not the stale 0.95")
+    }
+
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
 
     /// Paced stages advance one per `stageSeconds` purely from elapsed time — no backend

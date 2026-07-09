@@ -902,6 +902,48 @@ final class BulletinPlayer: NSObject, ObservableObject {
         storyIndex = 0
         currentUnitIndex = 0
     }
+
+    /// Test seam: a `storyCount`-story briefing with the playhead on story 0. Story 0 is READY;
+    /// every later story is PENDING (url == nil) so a forward `seekToStoryUnit` early-returns after
+    /// recording skips (no queue rebuild → hermetic, same shape as `_testConfigurePendingSkip`).
+    /// When `liveIsBridge`, the live segment is story 0's BRIDGE (a non-story transition) — the
+    /// build-47/48 state where `currentSegment.isStory` was false and the skip was silently dropped.
+    /// Story `u` is seeded with hash "h\(u)" / id "s\(u)".
+    func _testConfigureForwardSkip(storyCount: Int, liveIsBridge: Bool) {
+        _bulletinId = 222
+        _profileId = 28
+        player = AVQueuePlayer()
+        var segs: [ManifestSegment] = []
+        var units: [StoryUnit] = []
+        var idx = 0
+        for u in 0..<storyCount {
+            let ready = (u == 0)
+            let trans = ManifestSegment(index: idx, type: "transition",
+                                        url: ready ? "https://example.com/t\(u).mp3" : nil,
+                                        durationMs: 500, storyHash: nil, storyId: nil,
+                                        title: nil, sources: [], prevStoryId: nil, nextStoryId: nil)
+            idx += 1
+            let story = ManifestSegment(index: idx, type: "story",
+                                        url: ready ? "https://example.com/s\(u).mp3" : nil,
+                                        durationMs: 1000, storyHash: "h\(u)", storyId: "s\(u)",
+                                        title: "T\(u)", sources: [], prevStoryId: nil, nextStoryId: nil)
+            idx += 1
+            segs.append(trans); segs.append(story)
+            units.append(StoryUnit(index: u, transitionSegment: trans, storySegments: [story],
+                                   cumulativeStartSeconds: Double(u)))
+        }
+        segments = segs
+        _storyUnits = units
+        currentUnitIndex = 0
+        // storyIndex LAGS during a bridge — reproduces the real state where the old
+        // `clamped > storyIndex` still held but `currentSegment.isStory` did not.
+        storyIndex = 0
+        currentSegment = liveIsBridge ? units[0].transitionSegment : units[0].storySegment
+        // During a bridge, currentPositionPct is STALE (handlePeriodicTime only advances it while a
+        // story segment is live) — seed a high value to prove the abandoned-position guard zeroes it.
+        currentPositionPct = liveIsBridge ? 0.95 : 0
+        playerState = .playing
+    }
     #endif
 
     /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a
@@ -909,11 +951,22 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// failure. MainActor-atomic, so concurrent flushes can't double-send (the second drain is empty).
     private func drainSummary() -> (bid: Int, pid: Int, events: [StoryEvent])? {
         guard let pid = _profileId, let bid = _bulletinId else { return nil }
-        if let seg = currentSegment, seg.isStory,
-           let unit = storyUnit(forSegment: seg), let hash = unit.storyHash,
+        // Anchor the in-progress "abandoned" event on the LOGICAL current story unit (currentStoryUnit),
+        // NOT the raw currentSegment, so closing while a bridge/transition is the live item still
+        // records the story in progress (the currentSegment gate dropped it in the same states that
+        // dropped skips). Suppressed once the story is already recorded skipped or completed this session.
+        if let unit = currentStoryUnit, let hash = unit.storyHash,
+           !_skippedStoryHashes.contains(hash), !consumedStoryHashes.contains(hash),
            playerState == .playing || playerState == .paused || playerState == .stalled {
+            // Position within the CURRENT story. currentPositionPct only advances while a STORY
+            // segment is live (handlePeriodicTime's isStory guard), so it goes STALE during the
+            // bridge/intro LEADING INTO this story — holding the PREVIOUS story's value. Sending
+            // that stale pct here would false-consume a story the user closed on before it even
+            // started (abandoned ≥0.5 → consumed server-side). So report 0 unless this story's own
+            // audio is actually the live item.
+            let pct = (currentSegment?.isStory == true) ? currentPositionPct : 0
             accumulatedEvents.append(StoryEvent(storyHash: hash, storyId: unit.storyId,
-                                                action: "abandoned", positionPct: currentPositionPct))
+                                                action: "abandoned", positionPct: pct))
         }
         guard !accumulatedEvents.isEmpty else { return nil }
         let events = accumulatedEvents
@@ -1477,19 +1530,29 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // not just the opener.
         guard let (startArrayIdx, seekSeconds) = startSegment(for: unit, offsetSeconds: offsetSeconds) else { return }
 
-        // Record the skip of the CURRENT story on ANY forward seek — BEFORE the pending-tap early
-        // return below. This block used to live AFTER that return, so skipping to a story still
-        // synthesising (url == nil — the common "skip mid-stream" case) hit the return and DROPPED
-        // the skip event entirely: the user's skips silently never registered. Keyed to the current
-        // unit's seeded hash (survives a split-lead remainder); deduped via _skippedStoryHashes so
-        // repeated taps while the target is pending don't double-fire.
-        if clamped > storyIndex, let seg = currentSegment, seg.isStory,
-           let cur = storyUnit(forSegment: seg), let hash = cur.storyHash,
-           !_skippedStoryHashes.contains(hash) {
-            _skippedStoryHashes.insert(hash)
-            let ev = StoryEvent(storyHash: hash, storyId: cur.storyId, action: "skipped", positionPct: currentPositionPct)
-            fireEvent(ev)
-            accumulatedEvents.append(ev)
+        // Record a "skipped" event for EVERY story the playhead moves forward PAST — anchored to the
+        // LOGICAL current story unit(s) (currentUnitIndex), NOT the raw currentSegment. The live item
+        // at skip time is frequently a bridge/transition — or a nil buffering gap while the briefing is
+        // still synthesising — and the old `currentSegment.isStory` gate silently DROPPED the skip in
+        // exactly those states, on BOTH the live /event and the batched /summary paths (the build-47/48
+        // "next-button skips never registered" bug). currentUnitIndex "stays the current story even
+        // during its bridge/intro", so the departing story is always identifiable. Runs BEFORE the
+        // pending-tap early return so a skip onto a still-synthesising target still counts (#190). A
+        // forward jump over several stories (scrubber) records each story it clears. Deduped via
+        // _skippedStoryHashes (repeat taps onto a pending target can't double-fire) and never re-fires
+        // for a story already completed.
+        if clamped > currentUnitIndex {
+            for i in max(0, currentUnitIndex)..<clamped where i < _storyUnits.count {
+                let leaving = _storyUnits[i]
+                guard let hash = leaving.storyHash,
+                      !_skippedStoryHashes.contains(hash),
+                      !consumedStoryHashes.contains(hash) else { continue }
+                _skippedStoryHashes.insert(hash)
+                let ev = StoryEvent(storyHash: hash, storyId: leaving.storyId, action: "skipped",
+                                    positionPct: i == currentUnitIndex ? currentPositionPct : 0)
+                fireEvent(ev)
+                accumulatedEvents.append(ev)
+            }
         }
 
         // PENDING TAP — the start segment isn't synthesised yet. Do NOT tear down what's playing:

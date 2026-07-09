@@ -1841,15 +1841,16 @@ def record_bulletin_event(bulletin_id: int, req: BulletinEventRequest):
     """
     Record a single story segment event from iOS playback.
 
-    State transitions (CONSUMPTION_THRESHOLD = 0.5):
+    State transitions (CONSUMPTION_THRESHOLD = 0.5) — authoritative source is
+    compute_new_state(); keep this in sync with it:
       completed                → consumed
-      skipped  pos >= 0.5      → consumed
-      skipped  pos <  0.5      → rejected
+      skipped  (any position)  → consumed   # an active "not interested"; position is ignored
       abandoned pos >= 0.5     → consumed
-      abandoned pos <  0.5     → no change (stays queued)
+      abandoned pos <  0.5     → no change (stays queued, replayable after TTL)
 
-    consumed and rejected are terminal — the WHERE state='queued' guard in
-    transition_state() prevents any overwrite.
+    consumed is terminal — the WHERE state='queued' guard in transition_state()
+    prevents any overwrite. (There is no 'rejected' state: skip → consumed at any
+    position now; the old early-skip → 'rejected' split was retired.)
     """
     if req.action not in ("started", "completed", "skipped", "abandoned"):
         raise HTTPException(status_code=422, detail=f"Unknown action {req.action!r}")

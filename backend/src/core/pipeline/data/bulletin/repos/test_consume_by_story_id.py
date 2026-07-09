@@ -68,3 +68,31 @@ def test_skip_maps_to_consumed_which_is_dropped():
     # Regression guard: skip → consumed (dropped by the read filter, which drops consumed ∪ rejected).
     assert compute_new_state("skipped", 0.0) == "consumed"
     assert compute_new_state("completed", 1.0) == "consumed"
+
+
+def test_outcome_mapping_boundaries():
+    """Full end-to-end outcome semantics at the boundaries (CONSUMPTION_THRESHOLD = 0.5).
+
+      completed  → consumed (any position)
+      skipped    → consumed at ANY position (0% included: the mid-synthesis next-button case)
+      abandoned  → consumed iff position_pct >= 0.5, else None (stays queued, replayable)
+    """
+    # completed → consumed regardless of position.
+    assert compute_new_state("completed", 0.0) == "consumed"
+    assert compute_new_state("completed", 1.0) == "consumed"
+
+    # skipped → consumed at ANY position. 0% is the load-bearing case: a skip mid-synthesis of a
+    # story that never actually played must STILL consume it (position is ignored for skips).
+    assert compute_new_state("skipped", 0.0) == "consumed"
+    assert compute_new_state("skipped", 0.49) == "consumed"
+    assert compute_new_state("skipped", 1.0) == "consumed"
+
+    # abandoned → threshold-gated at 0.5 (inclusive).
+    assert compute_new_state("abandoned", 0.0) == None          # never really started → queued
+    assert compute_new_state("abandoned", 0.49) == None         # below threshold → queued
+    assert compute_new_state("abandoned", 0.5) == "consumed"    # exactly at threshold (>=) → consumed
+    assert compute_new_state("abandoned", 0.51) == "consumed"   # above threshold → consumed
+    assert compute_new_state("abandoned", 1.0) == "consumed"
+
+    # An unknown action is a no-op (no state write), not a crash.
+    assert compute_new_state("started", 1.0) == None
