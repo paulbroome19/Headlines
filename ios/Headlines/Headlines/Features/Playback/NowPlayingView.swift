@@ -536,7 +536,7 @@ struct NowPlayingView: View {
             Spacer().frame(height: 12)   // was the "RUNNING ORDER" label; keep breathing room
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 0) {
-                    ForEach(Array(player.storyUnits.enumerated()), id: \.offset) { idx, unit in
+                    ForEach(Array(player.storyUnits.enumerated()), id: \.element.identity) { idx, unit in
                         trackRow(idx: idx, unit: unit)
                         if idx < player.storyUnits.count - 1 {
                             Rectangle().fill(ink.opacity(0.06)).frame(height: 1)
@@ -551,14 +551,16 @@ struct NowPlayingView: View {
     }
 
     private func trackRow(idx: Int, unit: StoryUnit) -> some View {
-        let isCurrent = idx == currentUnitIndexClamped
+        // Highlights compare by STORY IDENTITY, never the row offset — so a dedup renumber can't
+        // strand the now-playing/ buffering/synthesising marker on the wrong row (audit §1.3 seam α).
+        let isCurrent = unit.storyId != nil && unit.storyId == player.currentStoryId
         let isPlayed = !isCurrent && (unit.storyHash.map { player.consumedStoryHashes.contains($0) } ?? false)
         // STREAMING: a story whose audio hasn't synthesised yet reads GREY; it goes BLACK the
         // moment its audio is ready. (segmentReady is observed → the row re-renders on readiness.)
         let ready = player.isUnitReady(unit)
         // The user tapped this pending row: it shows a buffering spinner and plays itself the
         // moment its audio arrives — current playback keeps going in the meantime.
-        let buffering = player.bufferingUnitIndex == idx
+        let buffering = unit.storyId != nil && unit.storyId == player.pendingTapStoryId
         let titleColor: Color = isPlayed ? ink.opacity(0.32) : ((ready || buffering) ? ink : ink.opacity(0.40))
         let numColor = isCurrent ? ink : (ready ? inkMuted : ink.opacity(0.30))
         return Button {
@@ -589,7 +591,7 @@ struct NowPlayingView: View {
                 Group {
                     if isCurrent {
                         EqualizerIndicator(color: ink, animating: player.isPlaying).frame(width: 15, height: 13)
-                    } else if buffering || player.synthesisingUnitIndex == idx {
+                    } else if buffering || (unit.storyId != nil && unit.storyId == player.synthesisingStoryId) {
                         DownloadSpinner(color: ink)
                     }
                     // ready or not-yet-started → no icon
