@@ -128,9 +128,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
     @Published private(set) var playbackElapsedSeconds: Double = 0
     /// Story units that have been consumed (furthest position ≥ threshold) this session.
     @Published private(set) var consumedStoryHashes: Set<String> = []
-    /// The story unit the user tapped while it was still PENDING — its row shows a buffering
-    /// state until its audio arrives (then it plays). nil when nothing is pending-tapped.
-    @Published private(set) var bufferingUnitIndex: Int?
     /// Index of the story unit the playhead is currently in (updated on transition entry too).
     @Published private(set) var currentUnitIndex: Int = 0
     /// Loader fill (0–1) shown while `playerState == .preparing`. Smooth + asymptotic;
@@ -157,7 +154,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     private(set) var manifest: BulletinManifest?
     var storySegments: [ManifestSegment] { _storySegments }
-    var storyUnits: [StoryUnit] { _storyUnits }
     var totalStoryDurationSeconds: Double { _totalStoryDurationSeconds }
     /// Every segment in play order (intro, transitions, stories, outro) — the full audio
     /// timeline the scrubber renders so progress moves from the very first second.
@@ -177,7 +173,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
     private var _bulletinId: Int?
     private var segments: [ManifestSegment] = []
     private var _storySegments: [ManifestSegment] = []
-    private var _storyUnits: [StoryUnit] = []
+    /// The running order the UI binds to — PUBLISHED so every rebuild (reconcile/readiness) re-renders
+    /// the tracklist, board, and lock screen ATOMICALLY from one snapshot. No surface keeps its own
+    /// copy; SwiftUI diffs by `StoryUnit.identity` (story id), so a renumber can't strand a stale row.
+    @Published private(set) var storyUnits: [StoryUnit] = []
     private var _totalStoryDurationSeconds: Double = 0
     // Full audio timeline (all segments, in play order): total duration + each segment's
     // cumulative start, keyed by segment.index. Used for the podcast-style elapsed/bar.
@@ -239,8 +238,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     // applyReadiness fulfils it (seek + play) the moment that story's start segment synthesises.
     // Stored by STORY IDENTITY, not array position: a dedup reconcile can renumber/remove rows
     // between the tap and its fulfilment, and a stale Int would fulfil the WRONG story (audit §1.4
-    // seam #2). Every consumer resolves it to the CURRENT index live.
-    private var pendingTapStoryId: String?
+    // seam #2). Every consumer resolves it to the CURRENT index live. PUBLISHED so the row's
+    // buffering spinner (compared by identity) appears the instant a pending row is tapped.
+    @Published private(set) var pendingTapStoryId: String?
 
     // MARK: Private — stall detection
 
@@ -479,8 +479,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// segments — on load and whenever /readiness overwrites an estimated duration with the real.
     private func rebuildTimeline() {
         _storySegments = segments.filter { $0.isStory }
-        _storyUnits = Self.buildStoryUnits(from: segments)
-        _totalStoryDurationSeconds = _storyUnits.reduce(0) { $0 + $1.totalDurationSeconds }
+        storyUnits = Self.buildStoryUnits(from: segments)
+        _totalStoryDurationSeconds = storyUnits.reduce(0) { $0 + $1.totalDurationSeconds }
         _fullStartByIndex = [:]
         var acc = 0.0
         for seg in segments {
@@ -489,20 +489,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
         _totalDurationSeconds = acc
         // Count STORIES (units), not story segments — a split lead is two segments, one story.
-        storyCount = _storyUnits.count
-        // The running order may have just been renumbered (reconcile) — re-resolve the pending-tap
-        // spinner's row from its story identity so it follows the story, not a stale offset.
-        refreshBufferingIndex()
-    }
-
-    /// Re-resolve the durable `pendingTapStoryId` to its CURRENT row index for the @Published
-    /// buffering spinner. Called on every pending-intent change and after any running-order rebuild,
-    /// so the spinner follows the story across a dedup renumber instead of pinning a stale offset.
-    /// nil pending → nil index (clears the spinner).
-    private func refreshBufferingIndex() {
-        bufferingUnitIndex = pendingTapStoryId.flatMap { id in
-            _storyUnits.firstIndex(where: { $0.storyId == id })
-        }
+        storyCount = storyUnits.count
     }
 
     /// Merge a readiness snapshot: fill ready segments' url + real duration (matched by FULL
@@ -634,10 +621,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
             nextEnqueueIdx = 0
         }
         // Keep the current-unit highlight on the segment actually playing now.
-        if let cur = currentSegment, let u = _storyUnits.first(where: { $0.owns(segmentIndex: cur.index) }) {
+        if let cur = currentSegment, let u = storyUnits.first(where: { $0.owns(segmentIndex: cur.index) }) {
             currentUnitIndex = u.index
         } else {
-            currentUnitIndex = min(currentUnitIndex, max(0, _storyUnits.count - 1))
+            currentUnitIndex = min(currentUnitIndex, max(0, storyUnits.count - 1))
         }
         _heldEnqueue = false
         enqueueNext()                 // no-op if no player yet, or re-holds on the next nil-url segment
@@ -653,15 +640,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
         guard let id = pendingTapStoryId else { return }
         // Resolve the tapped story's CURRENT index every time — a dedup reconcile may have renumbered
         // or removed it since the tap. If it's gone, drop the intent (never fulfil onto a neighbour).
-        guard let idx = _storyUnits.firstIndex(where: { $0.storyId == id }) else {
+        guard let idx = storyUnits.firstIndex(where: { $0.storyId == id }) else {
             pendingTapStoryId = nil
-            refreshBufferingIndex()
             return
         }
-        guard let start = startSegment(for: _storyUnits[idx], offsetSeconds: 0),
+        guard let start = startSegment(for: storyUnits[idx], offsetSeconds: 0),
               segments[start.arrayIndex].url != nil else { return }   // start segment still pending
         pendingTapStoryId = nil
-        refreshBufferingIndex()
         playStoryUnit(at: idx)
     }
 
@@ -697,8 +682,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // The pending story IS the identity to re-prioritise — no array lookup needed for the id.
         // Only re-send while it exists in the order and is still not ready.
         guard let id = pendingTapStoryId,
-              let idx = _storyUnits.firstIndex(where: { $0.storyId == id }),
-              !isUnitReady(_storyUnits[idx]) else { return }
+              let idx = storyUnits.firstIndex(where: { $0.storyId == id }),
+              !isUnitReady(storyUnits[idx]) else { return }
         prioritise(storyId: id)
     }
 
@@ -747,22 +732,39 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// worked on — otherwise it sat on the first grey row (an earlier story the backend had
     /// deprioritised) while the skipped-to story showed a second spinner, which read as "my story
     /// isn't being prioritised". Order of preference:
-    ///   1. a pending skip/tap target — the story we asked the backend to prioritise (bufferingUnitIndex
+    ///   1. a pending skip/tap target — the story we asked the backend to prioritise (`pendingTapStoryId`
     ///      is this same row, so the two coincide → a single spinner, not two);
     ///   2. else the first not-ready unit at or after the current story (the forward frontier);
     ///   3. else the first not-ready unit anywhere (the backfilled earlier gap).
     /// nil when every unit is ready.
     var synthesisingUnitIndex: Int? {
         if let id = pendingTapStoryId,
-           let p = _storyUnits.firstIndex(where: { $0.storyId == id }),
-           !isUnitReady(_storyUnits[p]) {
+           let p = storyUnits.firstIndex(where: { $0.storyId == id }),
+           !isUnitReady(storyUnits[p]) {
             return p
         }
-        let cur = min(max(0, currentUnitIndex), max(0, _storyUnits.count - 1))
-        if let forward = (cur..<_storyUnits.count).first(where: { !isUnitReady(_storyUnits[$0]) }) {
+        let cur = min(max(0, currentUnitIndex), max(0, storyUnits.count - 1))
+        if let forward = (cur..<storyUnits.count).first(where: { !isUnitReady(storyUnits[$0]) }) {
             return forward
         }
-        return _storyUnits.firstIndex { !isUnitReady($0) }
+        return storyUnits.firstIndex { !isUnitReady($0) }
+    }
+
+    // MARK: - Identity-keyed highlight sources (the UI compares by story id, never by row offset)
+
+    /// The story id of the row that is CURRENTLY playing (clamped current unit). The tracklist,
+    /// board, and lock screen highlight the row whose `storyId` equals this — so a renumber can't
+    /// leave the highlight on a stale offset.
+    var currentStoryId: String? {
+        guard !storyUnits.isEmpty else { return nil }
+        return storyUnits[min(max(0, currentUnitIndex), storyUnits.count - 1)].storyId
+    }
+
+    /// The story id currently being synthesised (drives the single running-order spinner), resolved
+    /// from `synthesisingUnitIndex` to identity so the view never compares a row offset.
+    var synthesisingStoryId: String? {
+        guard let i = synthesisingUnitIndex, storyUnits.indices.contains(i) else { return nil }
+        return storyUnits[i].storyId
     }
 
     /// Seek to a story unit's start and begin playing it. Used by the tracklist so
@@ -779,14 +781,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// Int offset played a DIFFERENT story, or clamped to the last). No-op if the story is no longer
     /// in the order — never plays a neighbour.
     func playStory(id: String?) {
-        guard let id, let idx = _storyUnits.firstIndex(where: { $0.storyId == id }) else { return }
+        guard let id, let idx = storyUnits.firstIndex(where: { $0.storyId == id }) else { return }
         playStoryUnit(at: idx)
     }
 
     /// Seek to the story with this identity WITHOUT forcing play (resume follows `intendedPlaying`).
     /// Same identity-resolution as `playStory`; used by scrubber/programmatic navigation.
     func seekToStory(id: String?) {
-        guard let id, let idx = _storyUnits.firstIndex(where: { $0.storyId == id }) else { return }
+        guard let id, let idx = storyUnits.firstIndex(where: { $0.storyId == id }) else { return }
         seekToStoryUnit(at: idx)
     }
 
@@ -858,10 +860,10 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// as the old queue-based skip landed. seekToStoryUnit fires the "skipped" event for
     /// the current story and sets prevOutcome = .userSkip.
     func skip() {
-        guard !_storyUnits.isEmpty else { return }
+        guard !storyUnits.isEmpty else { return }
         let next = currentUnitIndex + 1
-        guard next < _storyUnits.count else { return }   // already on the last story
-        seekToStoryUnit(at: next, offsetSeconds: _storyUnits[next].transitionDurationSeconds)
+        guard next < storyUnits.count else { return }   // already on the last story
+        seekToStoryUnit(at: next, offsetSeconds: storyUnits[next].transitionDurationSeconds)
     }
 
     func stop() {
@@ -938,7 +940,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         let s0 = seg(1, currentHash, currentStoryId, url: "https://example.com/0.mp3")  // current, READY
         let s1 = seg(2, "hNext", "sNext", url: nil)                                     // target, PENDING
         segments = [s0, s1]
-        _storyUnits = [
+        storyUnits = [
             StoryUnit(index: 0, transitionSegment: nil, storySegments: [s0], cumulativeStartSeconds: 0),
             StoryUnit(index: 1, transitionSegment: nil, storySegments: [s1], cumulativeStartSeconds: 1),
         ]
@@ -977,7 +979,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
                                    cumulativeStartSeconds: Double(u)))
         }
         segments = segs
-        _storyUnits = units
+        storyUnits = units
         currentUnitIndex = 0
         // storyIndex LAGS during a bridge — reproduces the real state where the old
         // `clamped > storyIndex` still held but `currentSegment.isStory` did not.
@@ -998,7 +1000,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
         _buildTestUnits(ids: ids, ready: Set(ids).subtracting(pending))
         currentUnitIndex = 0
         storyIndex = 0
-        currentSegment = _storyUnits.first?.storySegment
+        currentSegment = storyUnits.first?.storySegment
         intendedPlaying = false
         playerState = .paused
     }
@@ -1007,9 +1009,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// reconcile that renumbers/removes rows. Re-resolves the pending spinner by identity, as the
     /// real rebuildTimeline does.
     func _testReorderStories(ids: [String], pending: Set<String> = []) {
+        let playingId = currentStoryId   // re-anchor the current index by identity, as reconcile does
         _buildTestUnits(ids: ids, ready: Set(ids).subtracting(pending))
-        storyCount = _storyUnits.count
-        refreshBufferingIndex()
+        storyCount = storyUnits.count
+        if let pid = playingId, let i = storyUnits.firstIndex(where: { $0.storyId == pid }) {
+            currentUnitIndex = i
+        }
     }
 
     private func _buildTestUnits(ids: [String], ready: Set<String>) {
@@ -1032,12 +1037,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
         segments = segs
         _storySegments = segs.filter { $0.isStory }
-        _storyUnits = units
+        storyUnits = units
         storyCount = units.count
     }
 
     /// Test seam: record a pending tap by identity (as the pending branch does) with no queue rebuild.
-    func _testSetPendingTap(id: String) { pendingTapStoryId = id; refreshBufferingIndex() }
+    func _testSetPendingTap(id: String) { pendingTapStoryId = id }
     var _testPendingStoryId: String? { pendingTapStoryId }
     func _testFulfilPendingTapIfReady() { fulfilPendingTapIfReady() }
     #endif
@@ -1282,13 +1287,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
         _allReady = false
         _editionReconciled = false
         pendingTapStoryId = nil
-        bufferingUnitIndex  = nil
         segmentReady = [:]
         teardownQueuePlayer()
         manifest       = nil
         segments       = []
         _storySegments = []
-        _storyUnits    = []
+        storyUnits    = []
         _totalStoryDurationSeconds = 0
         _totalDurationSeconds = 0
         _fullStartByIndex = [:]
@@ -1617,9 +1621,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// Jump to story unit `index`, optionally at `offsetSeconds` within that unit
     /// (0 = start of its transition, or story if no transition).
     func seekToStoryUnit(at index: Int, offsetSeconds: Double = 0) {
-        let clamped = max(0, min(index, _storyUnits.count - 1))
-        guard clamped < _storyUnits.count, let p = player else { return }
-        let unit = _storyUnits[clamped]
+        let clamped = max(0, min(index, storyUnits.count - 1))
+        guard clamped < storyUnits.count, let p = player else { return }
+        let unit = storyUnits[clamped]
 
         // Resolve the segment this tap will START on (transition if we begin within it, else the
         // story/opener) BEFORE touching the queue — the pending check must key off THAT segment,
@@ -1638,8 +1642,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // _skippedStoryHashes (repeat taps onto a pending target can't double-fire) and never re-fires
         // for a story already completed.
         if clamped > currentUnitIndex {
-            for i in max(0, currentUnitIndex)..<clamped where i < _storyUnits.count {
-                let leaving = _storyUnits[i]
+            for i in max(0, currentUnitIndex)..<clamped where i < storyUnits.count {
+                let leaving = storyUnits[i]
                 guard let hash = leaving.storyHash,
                       !_skippedStoryHashes.contains(hash),
                       !consumedStoryHashes.contains(hash) else { continue }
@@ -1658,14 +1662,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // rebuild and no false end-of-briefing.
         if segments[startArrayIdx].url == nil {
             pendingTapStoryId = unit.storyId
-            refreshBufferingIndex()
             if let sid = unit.storySegment.storyId { prioritise(storyId: sid) }
             return
         }
 
         // READY — clear any prior pending-tap intent and do the real rebuild.
         pendingTapStoryId = nil
-        refreshBufferingIndex()
 
         // Bump the navigation token: any earlier in-flight seek's async completion will
         // now no-op, so rapid taps can't clobber each other (no stale resume / double
@@ -1734,7 +1736,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
     }
 
     func seekToFullFraction(_ fraction: Double) {
-        guard _totalDurationSeconds > 0, !segments.isEmpty, !_storyUnits.isEmpty else { return }
+        guard _totalDurationSeconds > 0, !segments.isEmpty, !storyUnits.isEmpty else { return }
         let target = max(0, min(1, fraction)) * _totalDurationSeconds
 
         // Find the segment containing `target`.
@@ -1759,19 +1761,19 @@ final class BulletinPlayer: NSObject, ObservableObject {
             seekToStoryUnit(at: unit.index, offsetSeconds: offsetInUnit)
         } else {
             // Wrapper (intro/sting/outro): jump to the nearest story unit.
-            let firstStoryStart = _storyUnits.first.map { _fullStartByIndex[$0.storySegment.index] ?? 0 } ?? 0
-            seekToStoryUnit(at: target < firstStoryStart ? 0 : _storyUnits.count - 1)
+            let firstStoryStart = storyUnits.first.map { _fullStartByIndex[$0.storySegment.index] ?? 0 } ?? 0
+            seekToStoryUnit(at: target < firstStoryStart ? 0 : storyUnits.count - 1)
         }
     }
 
     func seekToGlobalFraction(_ fraction: Double) {
-        guard !_storyUnits.isEmpty, _totalStoryDurationSeconds > 0 else { return }
+        guard !storyUnits.isEmpty, _totalStoryDurationSeconds > 0 else { return }
         let targetSecs = max(0, min(1, fraction)) * _totalStoryDurationSeconds
 
-        var unitIndex    = _storyUnits.count - 1
-        var offsetInUnit = _storyUnits.last!.totalDurationSeconds
+        var unitIndex    = storyUnits.count - 1
+        var offsetInUnit = storyUnits.last!.totalDurationSeconds
 
-        for unit in _storyUnits {
+        for unit in storyUnits {
             let unitEnd = unit.cumulativeStartSeconds + unit.totalDurationSeconds
             if targetSecs <= unitEnd {
                 unitIndex    = unit.index
@@ -1837,7 +1839,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     /// Returns the StoryUnit that contains the given segment (transition or story).
     private func storyUnit(forSegment seg: ManifestSegment) -> StoryUnit? {
-        _storyUnits.first { $0.owns(segmentIndex: seg.index) }
+        storyUnits.first { $0.owns(segmentIndex: seg.index) }
     }
 
     /// Builds the ordered story-unit list with pre-computed cumulative start times.
@@ -1903,9 +1905,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// The story unit the playhead is in (clamped) — stays the current story even during
     /// its bridge/intro, mirroring NowPlayingView's board. nil when there are no stories.
     private var currentStoryUnit: StoryUnit? {
-        guard !_storyUnits.isEmpty else { return nil }
-        let idx = min(max(0, currentUnitIndex), _storyUnits.count - 1)
-        return _storyUnits[idx]
+        guard !storyUnits.isEmpty else { return nil }
+        let idx = min(max(0, currentUnitIndex), storyUnits.count - 1)
+        return storyUnits[idx]
     }
 
     private func updateNowPlaying() {

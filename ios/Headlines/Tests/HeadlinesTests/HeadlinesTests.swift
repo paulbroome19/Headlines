@@ -153,7 +153,7 @@ final class HeadlinesTests: XCTestCase {
     // MARK: - PR-A: identity across the tap boundary (audit §1.4 seams #1, #2)
 
     /// Symptom class: "tap a story in the list → a DIFFERENT story plays." A dedup reconcile
-    /// renumbers `_storyUnits` between render and tap; a positional tap (`playStoryUnit(at: idx)`)
+    /// renumbers `storyUnits` between render and tap; a positional tap (`playStoryUnit(at: idx)`)
     /// then plays whatever now sits at that offset. The identity tap must play the tapped story.
     @MainActor
     func testTapPlaysStoryByIdentityNotStaleOffset() {
@@ -170,20 +170,20 @@ final class HeadlinesTests: XCTestCase {
     }
 
     /// A tapped-but-pending story's buffering spinner must follow the story across a reconcile
-    /// renumber (the pointer is stored by identity, re-resolved to the live row) — not pin a stale
-    /// offset (audit §1.4 seam #2).
+    /// renumber (the pointer is story identity; the view compares it by identity) — not pin a stale
+    /// offset (audit §1.4 seam #2). The spinner's row = the live index of `pendingTapStoryId`.
     @MainActor
     func testPendingTapPointerFollowsStoryAcrossReorder() {
         let p = BulletinPlayer()
         p._testConfigureStories(ids: ["A", "B", "C"], pending: ["C"])   // C still synthesising
         p._testSetPendingTap(id: "C")
-        XCTAssertEqual(p.bufferingUnitIndex, 2, "spinner starts on C's original row")
-        XCTAssertEqual(p._testPendingStoryId, "C")
+        XCTAssertEqual(p.pendingTapStoryId, "C")
+        XCTAssertEqual(p.storyUnits.firstIndex { $0.storyId == "C" }, 2, "spinner starts on C's original row")
 
         p._testReorderStories(ids: ["C", "A", "B"], pending: ["C"])     // reconcile moves C to the front
 
-        XCTAssertEqual(p.bufferingUnitIndex, 0, "spinner must follow C to its NEW row, not pin offset 2")
-        XCTAssertEqual(p._testPendingStoryId, "C", "pending intent survives the renumber by identity")
+        XCTAssertEqual(p.pendingTapStoryId, "C", "pending intent survives the renumber by identity")
+        XCTAssertEqual(p.storyUnits.firstIndex { $0.storyId == "C" }, 0, "spinner follows C to its NEW row, not offset 2")
     }
 
     /// If a reconcile removes the pending-tapped story entirely (deduped away), the pending intent
@@ -197,8 +197,28 @@ final class HeadlinesTests: XCTestCase {
         p._testReorderStories(ids: ["A", "B"])   // C dropped by dedup
         p._testFulfilPendingTapIfReady()
 
-        XCTAssertNil(p._testPendingStoryId, "pending intent must be dropped when its story leaves the order")
-        XCTAssertNil(p.bufferingUnitIndex, "no buffering spinner for a removed story")
+        XCTAssertNil(p.pendingTapStoryId, "pending intent must be dropped when its story leaves the order")
+        XCTAssertFalse(p.storyUnits.contains { $0.storyId == "C" }, "C is gone from the order")
+    }
+
+    // MARK: - PR-B: published atomic snapshot + identity highlights (audit §1.3 seam α)
+
+    /// The now-playing highlight (`currentStoryId`) must track the playing story across a reconcile
+    /// renumber — so the highlight bar never strands on the wrong row. Positional `currentUnitIndex`
+    /// alone would point at whatever story slid into that offset.
+    @MainActor
+    func testCurrentHighlightResolvesByIdentityAfterReorder() {
+        let p = BulletinPlayer()
+        p._testConfigureStories(ids: ["A", "B", "C"])
+        p.seekToStory(id: "B")                         // now playing B (offset 1)
+        XCTAssertEqual(p.currentStoryId, "B")
+
+        p._testReorderStories(ids: ["B", "C", "A"])    // reconcile moves B to offset 0
+
+        XCTAssertEqual(p.currentUnitIndex, 0, "current index re-anchored to B's new row by identity")
+        XCTAssertEqual(p.currentStoryId, "B", "highlight follows the playing story across the renumber, not the old offset")
+        XCTAssertEqual(p.storyUnits.first { $0.storyId == "B" }?.identity, "B",
+                       "the row's stable diffing identity is its story id, not its offset")
     }
 
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
