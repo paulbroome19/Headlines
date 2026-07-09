@@ -137,6 +137,10 @@ struct StoryUnit: Identifiable {
     var totalDurationSeconds: Double  { transitionDurationSeconds + storyDurationSeconds }
     var storyHash: String? { storySegment.storyHash }
     var storyId: String?  { storySegment.storyId }
+    /// Stable diffing key for the UI: story identity (never the row offset), so SwiftUI reuses the
+    /// right row across a dedup renumber. Falls back to a positional token only if a unit somehow
+    /// has no story_id (shouldn't happen for a real story unit).
+    var identity: String  { storyId ?? "unit-\(index)" }
     var title: String?    { storySegment.title }
     /// True if `segmentIndex` is any of this unit's segments (transition or a story part).
     func owns(segmentIndex: Int) -> Bool {
