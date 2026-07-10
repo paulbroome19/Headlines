@@ -59,13 +59,19 @@ struct ReadinessSegment: Decodable {
     let url: String?
     let durationMs: Int?
     let storyId: String?
+    // E: the bridge binding for a transition (nil on non-transitions / older backends). Lets the
+    // client re-bind bridges by story IDENTITY across a reconcile instead of by segment index.
+    let prevStoryId: String?
+    let nextStoryId: String?
 
     var isReady: Bool { state == "ready" }
 
     enum CodingKeys: String, CodingKey {
         case index, type, state, url
-        case durationMs = "duration_ms"
-        case storyId    = "story_id"
+        case durationMs  = "duration_ms"
+        case storyId     = "story_id"
+        case prevStoryId = "prev_story_id"
+        case nextStoryId = "next_story_id"
     }
 }
 
@@ -87,6 +93,11 @@ struct BulletinReadiness: Decodable {
     let progress: Int?       // 0–100 hint; never the dismissal trigger (safeToStart is)
     let blocked: Bool?       // a critical segment failed → safeToStart unreachable
     let allReady: Bool?
+    // E: the authoritative deduped running order (distinct story_ids in play order) the client
+    // reconciles TO — and whether the pre-dedup skeleton is still in place. Optional so an older
+    // backend still decodes (the client falls back to the shrink heuristic when absent).
+    let storyOrder: [String]?
+    let provisional: Bool?
 
     var introReady: Bool {
         segments.first(where: { $0.type == "intro" })?.isReady ?? false
@@ -110,6 +121,8 @@ struct BulletinReadiness: Decodable {
         case progress
         case blocked
         case allReady       = "all_ready"
+        case storyOrder     = "story_order"
+        case provisional
     }
 }
 

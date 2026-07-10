@@ -9,6 +9,31 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-10 — Playback migration PR E: versioned/authoritative readiness + payload bridge bindings)
+
+**PR E of 6** — the two-sided, deploy-gated step (backend deploys on merge; client ships in a build).
+Retires the last reconcile-internal index dependency (D's flag) and makes reconcile authoritative, not inferred.
+
+**Backend (`data.py`, additive → old client still decodes):**
+- `/readiness` transition segments now carry `prev_story_id`/`next_story_id` (the bridge pair).
+- `/readiness` response carries `story_order` (authoritative deduped ordered story_ids — new
+  `authoritative_story_order()` pure helper, unit-tested) and `provisional` (True while the pre-dedup
+  skeleton is still in place). Backend tests: 111 pass incl. new `test_readiness_order.py` (3).
+
+**Client (`BulletinManifest.swift`, `BulletinPlayer.swift`, optional fields → deploy-order safe):**
+- `ReadinessSegment` gains `prevStoryId`/`nextStoryId`; `BulletinReadiness` gains `storyOrder`/`provisional`.
+- `reconcileEditionIfShrunk` is now driven by the authoritative `story_order` (an explicit identity
+  diff — reconcile whenever it differs from the current order, self-limiting), falling back to the
+  legacy shrink heuristic only when `story_order` is absent (older backend).
+- Rebuilt transitions take the bridge pair from the PAYLOAD (`rs.prevStoryId/nextStoryId`); the
+  bindBy-keyed-by-segment-index path is now a fallback only — retires the D-flagged index dependency.
+- Tests (21/21): `testReconcileUsesAuthoritativeOrderAndPayloadBridgeBinding`,
+  `testReconcileFallsBackToShrinkHeuristicWhenNoAuthoritativeOrder` + `_testSegmentBinding` seam.
+
+**Deploy/verify:** backend must deploy (Railway, on merge) BEFORE a client build benefits; both
+sides are backward-compatible so either order is safe. Live-verify the readiness payload (new fields)
+against prod after deploy.
+
 ## Changes Made This Session (2026-07-10 — Playback migration PR D: reconcile identity-diff + serialization guard)
 
 **PR D of 6** — the substantive one. Closes the last two exit-criteria items on the readiness path.

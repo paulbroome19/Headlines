@@ -1585,6 +1585,21 @@ async def serve_segment(segment_hash: str, ext: str):
     )
 
 
+def authoritative_story_order(out_segments: list[dict]) -> list[str]:
+    """The deduped, ordered list of distinct story_ids in a readiness segment list — the
+    authoritative running order the client reconciles TO. A split lead is two consecutive story
+    segments sharing one story_id; each story_id appears exactly once, in play order."""
+    order: list[str] = []
+    seen: set[str] = set()
+    for x in out_segments:
+        if x.get("type") == "story":
+            sid = x.get("story_id")
+            if sid and sid not in seen:
+                seen.add(sid)
+                order.append(sid)
+    return order
+
+
 @router.get("/bulletins/{bulletin_id}/readiness")
 def get_bulletin_readiness(bulletin_id: int):
     """
@@ -1677,6 +1692,13 @@ def get_bulletin_readiness(bulletin_id: int):
                 seg["state"] = "pending"
         if typ == "story" and s.get("story_id"):
             seg["story_id"] = str(s["story_id"])
+        elif typ == "transition":
+            # E: surface the bridge binding so the client re-binds transitions by story IDENTITY
+            # across a reconcile — retires the client's fragile bindBy-keyed-by-segment-index path.
+            if s.get("prev_story_id"):
+                seg["prev_story_id"] = str(s["prev_story_id"])
+            if s.get("next_story_id"):
+                seg["next_story_id"] = str(s["next_story_id"])
         out_segments.append(seg)
 
     total = len(out_segments)
@@ -1779,6 +1801,12 @@ def get_bulletin_readiness(bulletin_id: int):
         "failed_segments": failed_count,
         "safe_to_start": safe_to_start,       # THE dismiss-loader + start-audio signal
         "segments": out_segments,
+        # ── E: the authoritative running order + provisional flag ──
+        # story_order is the deduped ordered story_id list the client reconciles TO (by identity,
+        # not by inferring a shrink). provisional=True while the pre-dedup skeleton is still in place;
+        # it flips false once the assembled-final (deduped) segments have overwritten it.
+        "story_order": authoritative_story_order(out_segments),
+        "provisional": not assembled_final,
         # ── added: ordered milestones the loader advances against ──
         "stage": stage,                       # assembled → audio_generating → buffered → ready (| failed)
         "intro_ready": intro_ready,

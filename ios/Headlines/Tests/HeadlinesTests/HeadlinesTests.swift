@@ -241,15 +241,21 @@ final class HeadlinesTests: XCTestCase {
 
     // MARK: - PR-D: reconcile as identity diff + serialization guard (audit seam β + reconcile race)
 
-    private func readiness(_ segs: [(index: Int, storyId: String, ready: Bool)], allReady: Bool = false) -> BulletinReadiness {
+    private func readiness(_ segs: [(index: Int, storyId: String, ready: Bool)],
+                           allReady: Bool = false,
+                           storyOrder: [String]? = nil,
+                           omitStoryOrder: Bool = false) -> BulletinReadiness {
         let rsegs = segs.map {
             ReadinessSegment(index: $0.index, type: "story", state: $0.ready ? "ready" : "pending",
                              url: $0.ready ? "https://e/\($0.storyId).mp3" : nil,
-                             durationMs: $0.ready ? 1000 : nil, storyId: $0.storyId)
+                             durationMs: $0.ready ? 1000 : nil, storyId: $0.storyId,
+                             prevStoryId: nil, nextStoryId: nil)
         }
+        let order: [String]? = omitStoryOrder ? nil : (storyOrder ?? rsegs.compactMap { $0.storyId })
         return BulletinReadiness(bulletinId: 700, assembled: true, totalSegments: rsegs.count,
                                  readySegments: rsegs.filter { $0.isReady }.count, failedSegments: 0,
-                                 safeToStart: true, segments: rsegs, stage: nil, progress: nil, blocked: nil, allReady: allReady)
+                                 safeToStart: true, segments: rsegs, stage: nil, progress: nil, blocked: nil,
+                                 allReady: allReady, storyOrder: order, provisional: false)
     }
 
     /// Seam β: the readiness merge must match segments by their stable backend `.index`, not array
@@ -309,13 +315,56 @@ final class HeadlinesTests: XCTestCase {
         let failedForB = BulletinReadiness(
             bulletinId: 700, assembled: true, totalSegments: 2, readySegments: 1, failedSegments: 1,
             safeToStart: true,
-            segments: [ReadinessSegment(index: 0, type: "story", state: "ready", url: "https://e/A.mp3", durationMs: 1000, storyId: "A"),
-                       ReadinessSegment(index: 1, type: "story", state: "failed", url: nil, durationMs: nil, storyId: "B")],
-            stage: nil, progress: nil, blocked: nil, allReady: false)
+            segments: [ReadinessSegment(index: 0, type: "story", state: "ready", url: "https://e/A.mp3", durationMs: 1000, storyId: "A", prevStoryId: nil, nextStoryId: nil),
+                       ReadinessSegment(index: 1, type: "story", state: "failed", url: nil, durationMs: nil, storyId: "B", prevStoryId: nil, nextStoryId: nil)],
+            stage: nil, progress: nil, blocked: nil, allReady: false, storyOrder: ["A", "B"], provisional: false)
         p._testApplyReadiness(failedForB)
 
         XCTAssertTrue(p._testFailedSegmentIndices.contains(1),
                       "a failed (watchdog-reaped) segment must be recorded by backend index so enqueue skips it")
+    }
+
+    // MARK: - PR-E: authoritative order + payload bridge bindings (retire inferred shrink + index bind)
+
+    /// E: the reconcile is driven by the backend's authoritative `story_order` (an identity diff),
+    /// and rebuilt transitions carry the bridge pair from the PAYLOAD — retiring both the inferred
+    /// shrink heuristic and the bindBy-keyed-by-segment-index path (audit D flag).
+    @MainActor
+    func testReconcileUsesAuthoritativeOrderAndPayloadBridgeBinding() {
+        let p = BulletinPlayer()
+        p._testConfigureExplicitIndices([(0, "A", true), (1, "B", true), (2, "C", false)])   // order A,B,C
+        XCTAssertEqual(p.storyUnits.compactMap { $0.storyId }, ["A", "B", "C"])
+
+        // Authoritative order drops B (deduped) and binds the transition A→C by identity.
+        let r = BulletinReadiness(
+            bulletinId: 700, assembled: true, totalSegments: 3, readySegments: 1, failedSegments: 0,
+            safeToStart: true,
+            segments: [
+                ReadinessSegment(index: 0, type: "story", state: "ready", url: "https://e/A.mp3", durationMs: 1000, storyId: "A", prevStoryId: nil, nextStoryId: nil),
+                ReadinessSegment(index: 1, type: "transition", state: "pending", url: nil, durationMs: nil, storyId: nil, prevStoryId: "A", nextStoryId: "C"),
+                ReadinessSegment(index: 2, type: "story", state: "pending", url: nil, durationMs: nil, storyId: "C", prevStoryId: nil, nextStoryId: nil),
+            ],
+            stage: nil, progress: nil, blocked: nil, allReady: false, storyOrder: ["A", "C"], provisional: false)
+
+        p._testApplyReadiness(r)
+
+        XCTAssertEqual(p.storyUnits.compactMap { $0.storyId }, ["A", "C"],
+                       "reconciled to the authoritative order — B (deduped) dropped, by identity not inference")
+        let bind = p._testSegmentBinding(atIndex: 1)
+        XCTAssertEqual(bind?.prev, "A", "transition prev bound from the payload, not a stale by-index pair")
+        XCTAssertEqual(bind?.next, "C", "transition next bound from the payload")
+    }
+
+    /// E backward-compat: with NO `story_order` (older backend), the reconcile still fires via the
+    /// legacy story-id-set shrink heuristic — the client falls back cleanly, deploy-order-independent.
+    @MainActor
+    func testReconcileFallsBackToShrinkHeuristicWhenNoAuthoritativeOrder() {
+        let p = BulletinPlayer()
+        p._testConfigureExplicitIndices([(0, "A", true), (1, "B", true)])   // order A,B
+        // Old-backend readiness: only A survives, and story_order omitted entirely.
+        p._testApplyReadiness(readiness([(index: 0, storyId: "A", ready: true)], omitStoryOrder: true))
+        XCTAssertEqual(p.storyUnits.compactMap { $0.storyId }, ["A"],
+                       "shrink heuristic still reconciles to the surviving set when story_order is absent")
     }
 
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
