@@ -367,6 +367,39 @@ final class HeadlinesTests: XCTestCase {
                        "shrink heuristic still reconciles to the surviving set when story_order is absent")
     }
 
+    // MARK: - PR-F: the single canonical PlaybackQueue the UI consumes (audit Part 2)
+
+    /// The player's `queue` is the ONE object the tracklist renders: ordered, identity-keyed, with
+    /// each row's state (playing/consumed/ready) resolved on the item — exactly one playing row.
+    @MainActor
+    func testQueueProjectsOrderAndExactlyOnePlayingRow() {
+        let p = BulletinPlayer()
+        p._testConfigureStories(ids: ["A", "B", "C"])
+        p.seekToStory(id: "B")
+
+        let q = p.queue
+        XCTAssertEqual(q.items.map { $0.storyId }, ["A", "B", "C"], "queue preserves the running order")
+        XCTAssertEqual(q.items.filter { $0.isPlaying }.map { $0.storyId }, ["B"], "exactly the playing story is marked")
+        XCTAssertTrue(q.items.allSatisfy { $0.isReady }, "all ready stories report ready")
+    }
+
+    /// The queue's per-row state and ORDER follow the story across a reconcile renumber — the
+    /// buffering marker rides the tapped story, and the row sequence matches the reconciled order.
+    @MainActor
+    func testQueueBufferingAndOrderFollowIdentityAcrossReorder() {
+        let p = BulletinPlayer()
+        p._testConfigureStories(ids: ["A", "B", "C"], pending: ["C"])
+        p._testSetPendingTap(id: "C")
+
+        XCTAssertEqual(p.queue.items.first { $0.storyId == "C" }?.isBuffering, true, "tapped pending story buffers")
+        XCTAssertEqual(p.queue.items.first { $0.storyId == "C" }?.isReady, false, "still-synthesising story is not ready")
+
+        p._testReorderStories(ids: ["C", "A", "B"], pending: ["C"])
+
+        XCTAssertEqual(p.queue.items.map { $0.storyId }, ["C", "A", "B"], "queue order follows the reconciled order")
+        XCTAssertEqual(p.queue.items.first { $0.storyId == "C" }?.isBuffering, true, "buffering marker follows C by identity")
+    }
+
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
 
     /// Paced stages advance one per `stageSeconds` purely from elapsed time — no backend

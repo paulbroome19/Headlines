@@ -791,6 +791,31 @@ final class BulletinPlayer: NSObject, ObservableObject {
         return storyUnits[i].storyId
     }
 
+    /// The single canonical running order the UI renders — the player OWNS it, the view CONSUMES it.
+    /// Projects the published order (`storyUnits`) + the resolved current/consumed/ready/pending/
+    /// synthesising state into one identity-keyed list, so no surface re-derives row state from
+    /// scattered properties. Recomputed from @Published inputs, so it's always fresh on re-render.
+    var queue: PlaybackQueue {
+        let playing = currentStoryId
+        let pending = pendingTapStoryId
+        let synth   = synthesisingStoryId
+        let items = storyUnits.compactMap { unit -> QueueItem? in
+            guard let sid = unit.storyId else { return nil }
+            let isPlaying = sid == playing
+            let consumed  = unit.storyHash.map { consumedStoryHashes.contains($0) } ?? false
+            return QueueItem(
+                storyId:        sid,
+                title:          unit.title ?? "",
+                isPlaying:      isPlaying,
+                isConsumed:     !isPlaying && consumed,
+                isReady:        isUnitReady(unit),
+                isBuffering:    sid == pending,
+                isSynthesising: sid == synth
+            )
+        }
+        return PlaybackQueue(items: items)
+    }
+
     /// Seek to a story unit's start and begin playing it. Used by the tracklist so
     /// any row — including already-played ones — is replayable on tap, even when the
     /// player is paused (plain `seekToStoryUnit` only resumes if it was already playing).
@@ -1964,6 +1989,16 @@ final class BulletinPlayer: NSObject, ObservableObject {
         guard !storyUnits.isEmpty else { return nil }
         let idx = min(max(0, currentUnitIndex), storyUnits.count - 1)
         return storyUnits[idx]
+    }
+
+    // Now-playing BOARD — the current story's display fields, resolved via the single live cursor so
+    // the view holds no index into the running order (the last view-side index-addressed path).
+    var currentStoryTitle: String? { currentStoryUnit?.title }
+    var currentStorySources: [String] { currentStoryUnit?.storySegment.sources ?? [] }
+    /// 1-based position of the playing story for the "N / total" header (0 when empty).
+    var currentStoryNumber: Int {
+        guard !storyUnits.isEmpty else { return 0 }
+        return min(max(0, currentUnitIndex), storyUnits.count - 1) + 1
     }
 
     private func updateNowPlaying() {

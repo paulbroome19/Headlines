@@ -163,6 +163,29 @@ struct StoryUnit: Identifiable {
     var lastStorySegmentIndex: Int { storySegments.last?.index ?? storySegment.index }
 }
 
+// MARK: - PlaybackQueue — the single canonical running order the UI renders (audit Part 2)
+
+/// One row of the running order as the UI consumes it: story IDENTITY plus every bit of display
+/// state already resolved by the player. The view renders these directly and never re-derives row
+/// state from scattered player properties — one object, one source of truth.
+struct QueueItem: Identifiable {
+    let storyId: String        // identity — the diffing key AND the tap target
+    let title: String
+    let isPlaying: Bool        // the now-playing row
+    let isConsumed: Bool       // already heard (dimmed)
+    let isReady: Bool          // audio synthesised (black vs grey)
+    let isBuffering: Bool      // this pending row was tapped — buffering until its audio arrives
+    let isSynthesising: Bool   // the ONE row currently being synthesised (single spinner)
+
+    var id: String { storyId }
+}
+
+/// The canonical, ordered running order — owned by BulletinPlayer, rendered by NowPlayingView.
+/// No surface keeps its own copy of the order; all addressing is by `QueueItem.storyId`.
+struct PlaybackQueue {
+    let items: [QueueItem]
+}
+
 // MARK: - Home front-page preview (GET /data/profiles/{id}/home-preview)
 
 /// A single top-ranked story for the Home front page — real selection, no audio generated.
