@@ -115,7 +115,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         }
     }
     @Published private(set) var currentSegment: ManifestSegment?
-    @Published private(set) var storyIndex: Int = 0
     @Published private(set) var storyCount: Int = 0
     @Published private(set) var positionSeconds: Double = 0
     @Published private(set) var currentPositionPct: Double = 0
@@ -312,7 +311,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
             _allReady = false
             rebuildTimeline()
             playbackElapsedSeconds = 0
-            storyIndex = 0
             currentUnitIndex = 0
             globalPositionPct = 0
 
@@ -816,7 +814,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         guard !segments.isEmpty else { return }
         navGeneration &+= 1                 // invalidate any in-flight seek completion
         intendedPlaying = true
-        storyIndex = 0
         currentUnitIndex = 0
         globalPositionPct = 0
         playbackElapsedSeconds = 0
@@ -945,7 +942,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
             StoryUnit(index: 1, transitionSegment: nil, storySegments: [s1], cumulativeStartSeconds: 1),
         ]
         currentSegment = s0
-        storyIndex = 0
         currentUnitIndex = 0
     }
 
@@ -981,9 +977,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         segments = segs
         storyUnits = units
         currentUnitIndex = 0
-        // storyIndex LAGS during a bridge — reproduces the real state where the old
-        // `clamped > storyIndex` still held but `currentSegment.isStory` did not.
-        storyIndex = 0
         currentSegment = liveIsBridge ? units[0].transitionSegment : units[0].storySegment
         // During a bridge, currentPositionPct is STALE (handlePeriodicTime only advances it while a
         // story segment is live) — seed a high value to prove the abandoned-position guard zeroes it.
@@ -999,7 +992,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         player = AVQueuePlayer()
         _buildTestUnits(ids: ids, ready: Set(ids).subtracting(pending))
         currentUnitIndex = 0
-        storyIndex = 0
         currentSegment = storyUnits.first?.storySegment
         intendedPlaying = false
         playerState = .paused
@@ -1299,7 +1291,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         playbackElapsedSeconds = 0
         loaderComplete = false
         storyCount     = 0
-        storyIndex     = 0
         currentUnitIndex     = 0
         currentSegment       = nil
         positionSeconds      = 0
@@ -1524,7 +1515,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         if let seg {
             if let unit = storyUnit(forSegment: seg) {
                 currentUnitIndex = unit.index
-                if seg.isStory { storyIndex = unit.index }
             }
         }
 
@@ -1679,7 +1669,6 @@ final class BulletinPlayer: NSObject, ObservableObject {
         prevOutcome = .userSkip
 
         // Update tracking immediately for responsive UI.
-        storyIndex       = clamped
         currentUnitIndex = clamped
 
         // Set .buffering BEFORE removeAllItems(). The currentItemChanged(nil) KVO is deferred

@@ -221,6 +221,24 @@ final class HeadlinesTests: XCTestCase {
                        "the row's stable diffing identity is its story id, not its offset")
     }
 
+    // MARK: - PR-C: one cursor (audit §1.1/§1.3 — the storyIndex/currentUnitIndex dual cursor)
+
+    /// There is now exactly ONE story cursor: `currentUnitIndex`. Every current-story surface (board
+    /// title, lock-screen title, highlight) derives from it via `currentStoryId` — so the old
+    /// `storyIndex` (which lagged during a bridge and fed a second, dead player) can't reintroduce a
+    /// board-title ≠ audio divergence. This pins that the single cursor drives the current story.
+    @MainActor
+    func testSingleCursorDrivesCurrentStory() {
+        let p = BulletinPlayer()
+        p._testConfigureStories(ids: ["A", "B", "C"])
+        XCTAssertEqual(p.currentStoryId, p.storyUnits[p.currentUnitIndex].storyId, "current story derives solely from currentUnitIndex")
+
+        p.seekToStory(id: "C")
+        XCTAssertEqual(p.currentStoryId, "C")
+        XCTAssertEqual(p.currentStoryId, p.storyUnits[p.currentUnitIndex].storyId,
+                       "after navigation the single cursor still drives the current story — no second index to diverge")
+    }
+
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
 
     /// Paced stages advance one per `stageSeconds` purely from elapsed time — no backend
