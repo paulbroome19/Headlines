@@ -9,6 +9,33 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-10 — LOAD-PATH audit + structural fix PR L-A: materialise-once)
+
+Load-path audit (home render → first audio), analogous to the playback A–F audit. **Convicted the
+08:25–08:32 BST (07:25–07:32 UTC) board≠audio incident from prod:** crossing D — a *within-run*
+reorder. Run 7418, one request_hash; the start-pack synthesised the opener AUDIO for lead 240779
+(Farage) from the pre-final skeleton order, then a second, independent dedup during background
+assembly reordered the lead to 415760 (UK heat). The old code only logged `LEAD SHIFTED … should be
+impossible` and served anyway — guarded, not structural. Root: the running order was (re)deduped at
+multiple stages that disagreed (preview's LLM dedup FAILED → deterministic backstop; final succeeded).
+
+**PR L-A of the load series (L-A→L-D). Backend, deploy-gated.**
+- `run_background_assembly` (`data.py`): resolve the ONE authoritative (deduped, materialised) order
+  UP FRONT; derive BOTH the start-pack opener AND the final assembly from it. Removed the second
+  `resolve_materialised_selection`/`dedup_same_event` pass. Opener == final by construction.
+- New pure `assert_opener_is_final_lead(...)`: the opener MUST be the final lead — a LOUD raise
+  (fails the assembly), replacing the warning-that-served. `test_load_invariant.py` (4).
+- `prepare_bulletin_for_manifest` (`data.py`): the streaming manifest now stamps the bulletin with
+  the EDITION's PINNED run (resolved before the cache probe), not `get_latest()` — so bulletin,
+  edition and preview share one run (closes crossing A on the incident path).
+- Backend suite: 115 pass (+ the 4 invariant tests).
+
+**Flagged (your call — not done here):** `_get_or_assemble_bulletin:775` still uses `get_latest()`;
+it's entangled with the full run object and mainly serves the create-time warmer (no edition yet →
+`latest` is correct), so it's higher-risk/lower-value. Next: L-B (selection_id threaded + asserted),
+L-C (gate: first audible == queue.items[0]), L-D (client pins the tapped selection). Verify L-A via a
+live re-trace of the cold-play/dedup-disagreement scenario after deploy — opener must equal final lead.
+
 ## Changes Made This Session (2026-07-10 — Playback migration PR F: single canonical PlaybackQueue)
 
 **PR F of 6 — the capstone.** Extracts the single canonical running order the UI consumes as ONE object.

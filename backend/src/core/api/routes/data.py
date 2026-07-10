@@ -1035,10 +1035,29 @@ def prepare_bulletin_for_manifest(
     request_hash = compute_request_hash(filters, day=uk_now().date())
 
     with SessionLocal() as db:
-        run = RankingRunRepo(db).get_latest()
-        if run is None:
+        latest = RankingRunRepo(db).get_latest()
+        if latest is None:
             raise HTTPException(status_code=404, detail="No ranking runs found")
-        ranking_run_id = run["id"]
+
+        # SKELETON selection. The materialised (deduped) selection is the source of truth for both
+        # the home preview and the FINAL briefing. In the common flow the user loaded the preview
+        # first, so it already exists → the skeleton READS it and is identical to the final, with no
+        # LLM on the first-play path. Only on a COLD play-first (warmer / deep-link, no preview yet)
+        # do we fall back to the fast PRE-DEDUP order (build_selection(dedup=False)); the background
+        # then materialises the deduped final.
+        #
+        # L-A (run pin): the bulletin belongs to the EDITION's PINNED run (what the preview committed
+        # to), NOT get_latest() — resolve it BEFORE the cache probe so the bulletin, edition and
+        # preview share ONE run. A ranking run landing between preview and manifest can no longer make
+        # the served bulletin a different run than the board. Cold play-first (no edition) → latest.
+        mat = (get_materialised_selection(db, profile_id=profile_id, request_hash=request_hash)
+               if profile_id is not None else None)
+        if mat is not None:
+            ordered, depths, pinned = mat
+            ranking_run_id = pinned or latest["id"]
+        else:
+            ranking_run_id = latest["id"]
+            ordered, depths = None, None
 
         existing = BulletinRepo(db).get_by_run_and_hash(ranking_run_id, request_hash)
         if existing is not None and (existing.get("script") or "").strip():
@@ -1058,18 +1077,7 @@ def prepare_bulletin_for_manifest(
             ).scalar()
             is_first = (prior == 0)
 
-        # SKELETON selection. The materialised (deduped) selection is the source of truth for both
-        # the home preview and the FINAL briefing. In the common flow the user loaded the preview
-        # first, so it already exists → the skeleton READS it and is identical to the final, with no
-        # LLM on the first-play path. Only on a COLD play-first (warmer / deep-link, no preview yet)
-        # do we fall back to the fast PRE-DEDUP order (build_selection(dedup=False)); the background
-        # then materialises the deduped final. The LEAD is identical either way — dedup keeps the
-        # best-ranked member of each group, so it can never drop index 0 (opener-gate safe).
-        mat = (get_materialised_selection(db, profile_id=profile_id, request_hash=request_hash)
-               if profile_id is not None else None)
-        if mat is not None:
-            ordered, depths, _run = mat
-        else:
+        if ordered is None:   # cold play-first: no materialised edition → fast pre-dedup order
             ordered = build_selection(
                 db, profile_id=profile_id, include_top_stories=include_top_stories,
                 include_categories=include_categories, exclude_categories=exclude_categories,
@@ -1249,6 +1257,19 @@ def _synth_remaining(bulletin_id: int, segments: list[dict],
                                voice=voice, model=model, audio_format=audio_fmt)
 
 
+def assert_opener_is_final_lead(*, opener_story_id: str | None, final_order: list[dict],
+                                bulletin_id: int, ranking_run_id: int) -> None:
+    """L-A invariant: the first audible story (the synthesised opener) MUST be the final lead. One
+    authoritative order makes this true by construction; a violation means a stage re-derived the
+    order — RAISE rather than serve a board≠audio bulletin (the old code only logged a warning and
+    served anyway — the exact incident). No-op when either side is empty (nothing to assert yet)."""
+    if final_order and opener_story_id and str(final_order[0]["story_id"]) != str(opener_story_id):
+        raise RuntimeError(
+            f"load invariant violated: opener lead {opener_story_id} != final lead "
+            f"{final_order[0]['story_id']} (bulletin={bulletin_id}, run={ranking_run_id})"
+        )
+
+
 def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_hash: str,
                             name: str | None, is_first_bulletin: bool,
                             ordered: list[dict], depths: dict, candidate_ids: list[str],
@@ -1262,10 +1283,34 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
     the skeleton so /readiness streams; then finalises and synthesises the rest."""
     try:
         voice, model, audio_fmt = tts_voice(), tts_model(), tts_audio_format()
-        cat_by_id = {str(o["story_id"]): o.get("primary_category") for o in ordered}
         seed = int(request_hash, 16)
         now_uk = uk_now()
-        first_two = [str(s) for s in candidate_ids[:_SAFE_START_STORIES]]
+
+        # L-A (materialise-once): resolve the ONE authoritative (deduped, materialised) order UP FRONT
+        # and derive BOTH the start-pack opener AND the final assembly from it. Previously the opener
+        # came from the pre-dedup skeleton order (candidate_ids) while the final was re-resolved /
+        # re-deduped later — a second, independent dedup could reorder the lead (the board≠audio
+        # incident: start-pack opener 240779 vs final lead 415760, same run). ONE order → opener ==
+        # final by construction, so a mismatch is structurally impossible, not warned-about.
+        if profile_id is not None:
+            with SessionLocal() as db:
+                auth_ordered, auth_depths, _pin = resolve_materialised_selection(
+                    db, profile_id=profile_id, request_hash=request_hash,
+                    include_top_stories=include_top_stories, include_categories=include_categories,
+                    exclude_categories=exclude_categories, preset=preset,
+                )
+            ordered = auth_ordered
+            depths = auth_depths or depths
+        else:
+            # Profileless (no edition to materialise): dedup the candidate set ONCE here — it was
+            # previously re-deduped only at the end, so the opener could still diverge from it.
+            _pre_cat = {str(o["story_id"]): o.get("primary_category") for o in ordered}
+            ordered = dedup_same_event(
+                _bg_load_story_dicts(ranking_run_id, [str(s) for s in candidate_ids], _pre_cat)
+            )
+        cat_by_id = {str(o["story_id"]): o.get("primary_category") for o in ordered}
+        candidate_ids = [str(o["story_id"]) for o in ordered[:_SUMMARISE_BUDGET]]
+        first_two = candidate_ids[:_SAFE_START_STORIES]
 
         # 1. GREETING (Haiku) + start-pack summaries, IN PARALLEL. The greeting needs only the lead
         #    headline (read cheaply, no summary), so it fires at T0 and overlaps summarisation —
@@ -1304,29 +1349,16 @@ def run_background_assembly(*, bulletin_id: int, ranking_run_id: int, request_ha
         #      the outro in one Sonnet call, continuing the greeting's voice. Never gates first-play.
         ensure_story_summaries(ranking_run_id, candidate_ids, depths)
 
-        # FINAL selection = the ONE materialised (deduped) selection, identical to the home preview.
-        # Read it if the preview already materialised it; else build+store it now (cold play-first) —
-        # in the BACKGROUND, off the first-play path. dedup runs BEFORE cap, so this can differ from
-        # deduping the pre-dedup skeleton, which is exactly why we rebuild rather than dedup candidate_ids.
-        if profile_id is not None:
-            with SessionLocal() as db:
-                final_ordered, _fd, _fr = resolve_materialised_selection(
-                    db, profile_id=profile_id, request_hash=request_hash,
-                    include_top_stories=include_top_stories, include_categories=include_categories,
-                    exclude_categories=exclude_categories, preset=preset,
-                )
-            cat_by_id.update({str(o["story_id"]): o.get("primary_category") for o in final_ordered})
-            all_stories = _bg_load_story_dicts(ranking_run_id, [str(o["story_id"]) for o in final_ordered], cat_by_id)
-        else:
-            all_stories = dedup_same_event(_bg_load_story_dicts(ranking_run_id, [str(s) for s in candidate_ids], cat_by_id))
+        # FINAL selection = the SAME authoritative order resolved at the top. The opener the start-pack
+        # already synthesised is ordered[0]; the final assembly is this same order — so they cannot
+        # diverge. (No second resolve / second dedup here: that was the reorder source.)
+        all_stories = _bg_load_story_dicts(ranking_run_id, [str(o["story_id"]) for o in ordered], cat_by_id)
 
-        # Defensive: dedup keeps the best-ranked member of each group, so the LEAD can never change
-        # (deduped[0] == pre_dedup[0]). If it ever does, the start-pack synthesised the wrong opener.
-        if all_stories and first_two and str(all_stories[0]["story_id"]) != first_two[0]:
-            logger.warning(
-                "run_background_assembly: LEAD SHIFTED after dedup (start-pack lead=%s, final lead=%s) "
-                "— opener audio may mismatch (should be impossible)", first_two[0], all_stories[0]["story_id"],
-            )
+        # L-A INVARIANT (loud, never silent): the opener the start-pack synthesised IS the final lead.
+        assert_opener_is_final_lead(
+            opener_story_id=(first_two[0] if first_two else None),
+            final_order=all_stories, bulletin_id=bulletin_id, ranking_run_id=ranking_run_id,
+        )
 
         # 6. Full connective → authoritative segments. If the greeting exists, keep it verbatim
         #    (its intro audio is already synthesised) and only fill bridges + outro; on bridge
