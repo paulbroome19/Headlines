@@ -9,6 +9,23 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-10 — Playback migration PR C: one cursor, one player instance)
+
+**PR C of 6.** Removes the structural dual-cursor and the dead second `BulletinPlayer` (audit §1.1/§1.3).
+
+- **One cursor:** `storyIndex` DELETED from `BulletinPlayer` — it had zero internal reads (write-only)
+  and its only external reader was the dead `BriefingViewModel`. `currentUnitIndex` is now the single
+  story cursor; every current-story surface derives from it via `currentStoryId`. Removes the latent
+  "board title ≠ audio during a bridge" divergence (`storyIndex` used to lag on transitions).
+- **One instance:** deleted `BriefingViewModel.swift` (owned a second, never-instantiated
+  `BulletinPlayer()`) and `PlayerView.swift` (the dead positional `seekToStory(at: Int)` tap path I'd
+  flagged to defer). Both were never constructed anywhere. pbxproj references stripped (8 lines).
+- Tests (16/16): new `testSingleCursorDrivesCurrentStory`; all prior green.
+
+**Flagged (out of C's named scope — your call):** `Core/AudioPlayer.swift` is now fully orphaned
+(never constructed; its doc-comment "Owned by BriefingViewModel" is stale). Left in place; say the
+word and I'll remove it (it's a clean dead-code deletion).
+
 ## Changes Made This Session (2026-07-10 — Playback migration PR B: published atomic snapshot + identity highlights)
 
 **PR B of 6** (stacked on A). Symptom class killed: the on-screen list / now-playing highlight /
