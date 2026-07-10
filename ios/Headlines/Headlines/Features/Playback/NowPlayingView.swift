@@ -536,9 +536,12 @@ struct NowPlayingView: View {
             Spacer().frame(height: 12)   // was the "RUNNING ORDER" label; keep breathing room
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 0) {
-                    ForEach(Array(player.storyUnits.enumerated()), id: \.element.identity) { idx, unit in
-                        trackRow(idx: idx, unit: unit)
-                        if idx < player.storyUnits.count - 1 {
+                    // The tracklist consumes the player's single canonical queue — one object,
+                    // identity-keyed. No row state is re-derived here from scattered player properties.
+                    let items = player.queue.items
+                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                        trackRow(number: idx + 1, item: item)
+                        if idx < items.count - 1 {
                             Rectangle().fill(ink.opacity(0.06)).frame(height: 1)
                                 .padding(.horizontal, 10)
                         }
@@ -550,33 +553,26 @@ struct NowPlayingView: View {
         .frame(maxHeight: .infinity)
     }
 
-    private func trackRow(idx: Int, unit: StoryUnit) -> some View {
-        // Highlights compare by STORY IDENTITY, never the row offset — so a dedup renumber can't
-        // strand the now-playing/ buffering/synthesising marker on the wrong row (audit §1.3 seam α).
-        let isCurrent = unit.storyId != nil && unit.storyId == player.currentStoryId
-        let isPlayed = !isCurrent && (unit.storyHash.map { player.consumedStoryHashes.contains($0) } ?? false)
-        // STREAMING: a story whose audio hasn't synthesised yet reads GREY; it goes BLACK the
-        // moment its audio is ready. (segmentReady is observed → the row re-renders on readiness.)
-        let ready = player.isUnitReady(unit)
-        // The user tapped this pending row: it shows a buffering spinner and plays itself the
-        // moment its audio arrives — current playback keeps going in the meantime.
-        let buffering = unit.storyId != nil && unit.storyId == player.pendingTapStoryId
-        let titleColor: Color = isPlayed ? ink.opacity(0.32) : ((ready || buffering) ? ink : ink.opacity(0.40))
-        let numColor = isCurrent ? ink : (ready ? inkMuted : ink.opacity(0.30))
+    private func trackRow(number: Int, item: QueueItem) -> some View {
+        // Every bit of row state is already resolved on the QueueItem (by story identity) — the view
+        // just renders it. `number` is the display position only, never an addressing index.
+        let titleColor: Color = item.isConsumed ? ink.opacity(0.32)
+            : ((item.isReady || item.isBuffering) ? ink : ink.opacity(0.40))
+        let numColor = item.isPlaying ? ink : (item.isReady ? inkMuted : ink.opacity(0.30))
         return Button {
             // Tapping ANY row plays THAT story by identity — resolved to its live row inside the
             // player, so a dedup renumber between render and tap can't play a different story
             // (audit §1.4 seam #1). If it's still pending, the player bumps it to the front of the
             // synthesis queue and buffers until its audio arrives.
-            player.playStory(id: unit.storyId)
+            player.playStory(id: item.storyId)
         } label: {
             HStack(alignment: .top, spacing: 12) {
-                Text(String(format: "%02d", idx + 1))
+                Text(String(format: "%02d", number))
                     .font(.label(12)).tracking(1)
                     .foregroundColor(numColor)
                     .frame(width: 22, alignment: .leading)
                     .padding(.top, 3)
-                Text(unit.title ?? "")
+                Text(item.title)
                     .font(.editorial(18))
                     .foregroundColor(titleColor)
                     .lineLimit(2)
@@ -589,9 +585,9 @@ struct NowPlayingView: View {
                 //   • a ready story        → no icon (it's simply no longer greyed);
                 //   • a not-yet-started    → plain/greyed, no icon.
                 Group {
-                    if isCurrent {
+                    if item.isPlaying {
                         EqualizerIndicator(color: ink, animating: player.isPlaying).frame(width: 15, height: 13)
-                    } else if buffering || (unit.storyId != nil && unit.storyId == player.synthesisingStoryId) {
+                    } else if item.isBuffering || item.isSynthesising {
                         DownloadSpinner(color: ink)
                     }
                     // ready or not-yet-started → no icon
@@ -602,7 +598,7 @@ struct NowPlayingView: View {
             .padding(.horizontal, 10)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isCurrent ? ink.opacity(0.05) : Color.clear)  // subtle now-playing highlight
+                    .fill(item.isPlaying ? ink.opacity(0.05) : Color.clear)  // subtle now-playing highlight
             )
             .contentShape(Rectangle())
         }
@@ -612,33 +608,22 @@ struct NowPlayingView: View {
     // MARK: - Derived now-playing state (from BulletinPlayer)
 
     private var boardHeader: String {
-        let n = currentStoryNumber
-        let total = player.storyUnits.count
+        // Board fields come from the player by the single live cursor (identity) — the view holds
+        // no index into the running order.
+        let n = player.currentStoryNumber
+        let total = player.storyCount
         let base = "NOW PLAYING — \(String(format: "%02d", n)) / \(String(format: "%02d", total))"
         // category degraded (Phase B) — appended automatically once exposed:
         return category.map { "\(base) · \($0.uppercased())" } ?? base
     }
 
-    private var currentUnitIndexClamped: Int {
-        guard !player.storyUnits.isEmpty else { return 0 }
-        return min(max(0, player.currentUnitIndex), player.storyUnits.count - 1)
-    }
-
-    private var currentStoryNumber: Int { player.storyUnits.isEmpty ? 0 : currentUnitIndexClamped + 1 }
-
-    private var currentHeadline: String {
-        guard !player.storyUnits.isEmpty else { return "HEADLINES" }
-        return player.storyUnits[currentUnitIndexClamped].title ?? "HEADLINES"
-    }
+    private var currentHeadline: String { player.currentStoryTitle ?? "HEADLINES" }
 
     /// Phase-B degradation: not in the manifest yet.
     private var category: String? { nil }
 
     /// The current story's ranked outlets (credibility-ordered by the backend).
-    private var sources: [String] {
-        guard !player.storyUnits.isEmpty else { return [] }
-        return player.storyUnits[currentUnitIndexClamped].storySegment.sources ?? []
-    }
+    private var sources: [String] { player.currentStorySources }
 
     // Full audio timeline (intro → stories → outro), so the timer counts from the very
     // first second of the greeting — not 0:00 until the first story.

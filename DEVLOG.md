@@ -9,6 +9,25 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-10 — Playback migration PR F: single canonical PlaybackQueue)
+
+**PR F of 6 — the capstone.** Extracts the single canonical running order the UI consumes as ONE object.
+
+- New `PlaybackQueue` / `QueueItem` (in `BulletinManifest.swift` — no pbxproj change). Each `QueueItem`
+  carries story IDENTITY + fully-resolved row state (isPlaying/isConsumed/isReady/isBuffering/isSynthesising).
+- `BulletinPlayer.queue` projects the published order + resolved state into that one identity-keyed
+  list — the player OWNS it. Recomputed from @Published inputs, always fresh.
+- `NowPlayingView` tracklist now renders `player.queue.items` and reads NOTHING else — `trackRow`
+  consumes only the item (was: re-deriving each row from ~6 scattered player properties —
+  currentStoryId/pendingTapStoryId/synthesisingStoryId/consumedStoryHashes/isUnitReady/storyUnits).
+- Tests (23/23): `testQueueProjectsOrderAndExactlyOnePlayingRow`,
+  `testQueueBufferingAndOrderFollowIdentityAcrossReorder`.
+
+**Exit criterion met** — the audit's Part-1 seam re-run shows ZERO index-addressed cross-boundary
+paths and ZERO unguarded reconcile races (A tap-identity, B published-order+identity-highlights,
+C one-cursor/one-instance, D identity-merge+guard, E authoritative-order+payload-bridges, F single
+queue). Full migration A→F complete.
+
 ## Changes Made This Session (2026-07-10 — Playback migration PR E: versioned/authoritative readiness + payload bridge bindings)
 
 **PR E of 6** — the two-sided, deploy-gated step (backend deploys on merge; client ships in a build).
