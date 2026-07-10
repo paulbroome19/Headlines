@@ -239,6 +239,85 @@ final class HeadlinesTests: XCTestCase {
                        "after navigation the single cursor still drives the current story — no second index to diverge")
     }
 
+    // MARK: - PR-D: reconcile as identity diff + serialization guard (audit seam β + reconcile race)
+
+    private func readiness(_ segs: [(index: Int, storyId: String, ready: Bool)], allReady: Bool = false) -> BulletinReadiness {
+        let rsegs = segs.map {
+            ReadinessSegment(index: $0.index, type: "story", state: $0.ready ? "ready" : "pending",
+                             url: $0.ready ? "https://e/\($0.storyId).mp3" : nil,
+                             durationMs: $0.ready ? 1000 : nil, storyId: $0.storyId)
+        }
+        return BulletinReadiness(bulletinId: 700, assembled: true, totalSegments: rsegs.count,
+                                 readySegments: rsegs.filter { $0.isReady }.count, failedSegments: 0,
+                                 safeToStart: true, segments: rsegs, stage: nil, progress: nil, blocked: nil, allReady: allReady)
+    }
+
+    /// Seam β: the readiness merge must match segments by their stable backend `.index`, not array
+    /// position. With a NON-contiguous index set (B at backend index 2 but array position 1, as
+    /// after a dedup reconcile removed a middle story), the old `segments[rs.index]` subscript went
+    /// out of bounds and B's url was silently never filled → B stays grey forever / never plays.
+    @MainActor
+    func testReadinessMergeMatchesBySegmentIndexNotArrayPosition() {
+        let p = BulletinPlayer()
+        p._testConfigureExplicitIndices([(0, "A", true), (2, "B", false)])   // B: backend index 2, array pos 1
+        XCTAssertNil(p._testStorySegmentURL(storyId: "B"), "B starts pending")
+
+        // Both stories present (no shrink → merge path, not reconcile); B is now ready at index 2.
+        p._testApplyReadiness(readiness([(index: 0, storyId: "A", ready: true), (index: 2, storyId: "B", ready: true)]))
+
+        XCTAssertNotNil(p._testStorySegmentURL(storyId: "B"),
+                        "B's url must merge by backend .index (2), not the array position the old subscript used")
+        XCTAssertNotNil(p._testStorySegmentURL(storyId: "A"), "A stays filled")
+    }
+
+    /// Serialization guard: a readiness snapshot whose fetch was superseded by a queue-rebuilding
+    /// gesture (navGeneration bumped mid-fetch) must be DROPPED — never applied over the new state.
+    /// This is the "unguarded reconcile race" the audit flagged.
+    @MainActor
+    func testStaleReadinessDroppedWhenGestureRaces() {
+        let p = BulletinPlayer()
+        p._testConfigureExplicitIndices([(0, "A", true), (1, "B", false)])   // B pending
+        let genAtFetch = p._testNavGeneration
+        p._testBumpNav()   // a seek/skip lands while the readiness request is in flight
+
+        let applied = p._testApplyReadinessIfCurrent(
+            readiness([(index: 0, storyId: "A", ready: true), (index: 1, storyId: "B", ready: true)]),
+            fetchGen: genAtFetch)
+
+        XCTAssertFalse(applied, "a superseded snapshot must be dropped")
+        XCTAssertNil(p._testStorySegmentURL(storyId: "B"), "the stale snapshot must NOT have filled B over the new state")
+
+        // A snapshot whose generation is current DOES apply.
+        let applied2 = p._testApplyReadinessIfCurrent(
+            readiness([(index: 0, storyId: "A", ready: true), (index: 1, storyId: "B", ready: true)]),
+            fetchGen: p._testNavGeneration)
+        XCTAssertTrue(applied2 || p._testStorySegmentURL(storyId: "B") != nil, "a current snapshot applies")
+        XCTAssertNotNil(p._testStorySegmentURL(storyId: "B"), "current snapshot filled B")
+    }
+
+    /// Watchdog re-verify: a backend stall-watchdog REAP (a segment reported `state == "failed"`)
+    /// must still be recorded in `failedSegmentIdx` — keyed by the segment's backend index — so
+    /// enqueue skips it rather than holding forever. Confirms the reap-surfacing path survives D's
+    /// identity-merge + guard changes. (The 45s client HOLD ceiling is time-based and checked on each
+    /// applied poll; the guard only defers a check by ≤1s and never resets holdStartedAt — intact.)
+    @MainActor
+    func testFailedReadinessSegmentIsRecordedForSkip() {
+        let p = BulletinPlayer()
+        p._testConfigureExplicitIndices([(0, "A", true), (1, "B", false)])
+        XCTAssertEqual(p._testHoldCeilingSeconds, 45, "client hold ceiling unchanged")
+
+        let failedForB = BulletinReadiness(
+            bulletinId: 700, assembled: true, totalSegments: 2, readySegments: 1, failedSegments: 1,
+            safeToStart: true,
+            segments: [ReadinessSegment(index: 0, type: "story", state: "ready", url: "https://e/A.mp3", durationMs: 1000, storyId: "A"),
+                       ReadinessSegment(index: 1, type: "story", state: "failed", url: nil, durationMs: nil, storyId: "B")],
+            stage: nil, progress: nil, blocked: nil, allReady: false)
+        p._testApplyReadiness(failedForB)
+
+        XCTAssertTrue(p._testFailedSegmentIndices.contains(1),
+                      "a failed (watchdog-reaped) segment must be recorded by backend index so enqueue skips it")
+    }
+
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
 
     /// Paced stages advance one per `stageSeconds` purely from elapsed time — no backend

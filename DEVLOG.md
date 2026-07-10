@@ -9,6 +9,36 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-10 — Playback migration PR D: reconcile identity-diff + serialization guard)
+
+**PR D of 6** — the substantive one. Closes the last two exit-criteria items on the readiness path.
+
+- **Seam β (identity merge):** `applyReadiness` now matches segments by their stable backend
+  `.index` via `firstIndex(where:)`, not the `segments[rs.index]` array subscript. After a dedup
+  reconcile leaves a NON-contiguous index set, the old subscript misaligned (wrong slot / bounds-
+  dropped) so a story's url was silently never filled. Position-independent now.
+- **Serialization guard:** the playback poll captures `navGeneration` BEFORE the network fetch and
+  applies via new `applyReadinessIfCurrent(_:fetchGen:)`; if a queue-rebuilding gesture
+  (seek/skip/restart/stop — each bumps navGeneration) landed mid-fetch, the stale snapshot is
+  DROPPED (next poll re-fetches ~1s later). No poll-driven reconcile/merge can clobber a
+  just-happened navigation. Pending taps don't bump navGeneration and are identity-resolved → unaffected.
+- **Watchdog / 45s ceiling re-verified:** the client HOLD ceiling (`holdCeilingSeconds = 45`) is
+  time-based, checked on each applied poll — the guard defers a check by ≤1s and never resets
+  `holdStartedAt`, so it's intact. The backend stall-watchdog REAP (`state == "failed"`) still
+  records into `failedSegmentIdx` by backend index so enqueue skips it (pinned by test).
+- **Folded in:** deleted the orphaned `Core/AudioPlayer.swift` (+ pbxproj refs).
+
+Tests (19/19): `testReadinessMergeMatchesBySegmentIndexNotArrayPosition`,
+`testStaleReadinessDroppedWhenGestureRaces`, `testFailedReadinessSegmentIsRecordedForSkip` + new
+readiness-builder/explicit-index seams.
+
+**Flagged (needs E, not deferred silently):** `reconcileEditionIfShrunk` still preserves transition
+bridge bindings keyed by segment `.index` (`bindBy`, the code's own UNVERIFIED note) because
+`ReadinessSegment` doesn't carry `prev_story_id`/`next_story_id`. Correct while readiness keeps
+indices stable (the common case); a true renumber needs the readiness payload to carry the bridge
+pair — that's exactly E (readiness carries the authoritative ordered storyId list + bindings). D
+guards the race and kills the index-addressed MERGE; the bridge-binding identity move lands in E.
+
 ## Changes Made This Session (2026-07-10 — Playback migration PR C: one cursor, one player instance)
 
 **PR C of 6.** Removes the structural dual-cursor and the dead second `BulletinPlayer` (audit §1.1/§1.3).

@@ -503,13 +503,18 @@ final class BulletinPlayer: NSObject, ObservableObject {
         if reconcileEditionIfShrunk(r) { return _allReady }
 
         var changed = false
-        for rs in r.segments where rs.index >= 0 && rs.index < segments.count && rs.isReady {
-            if segments[rs.index].url == nil, let u = rs.url, !u.isEmpty {
-                segments[rs.index].url = u
+        for rs in r.segments where rs.isReady {
+            // Seam β: match by the segment's stable backend .index IDENTITY, not the array position.
+            // `segments[rs.index]` assumed array-position == .index; after a dedup reconcile leaves a
+            // non-contiguous index set, that subscript misaligns (fills the wrong slot or is dropped
+            // by the old bounds guard). firstIndex-by-.index is position-independent.
+            guard let i = segments.firstIndex(where: { $0.index == rs.index }) else { continue }
+            if segments[i].url == nil, let u = rs.url, !u.isEmpty {
+                segments[i].url = u
                 changed = true
             }
-            if let d = rs.durationMs, d > 0, segments[rs.index].durationMs != d {
-                segments[rs.index].durationMs = d
+            if let d = rs.durationMs, d > 0, segments[i].durationMs != d {
+                segments[i].durationMs = d
                 changed = true
             }
             if segmentReady[rs.index] != true { segmentReady[rs.index] = true }
@@ -657,20 +662,35 @@ final class BulletinPlayer: NSObject, ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)   // ~1s
                 guard let self else { return }
+                // Capture the navigation generation BEFORE the network fetch. If a user gesture that
+                // rebuilds the queue (seek/skip/restart/stop — each bumps navGeneration) lands while
+                // this readiness request is in flight, the snapshot we get back predates the new
+                // state and must not drive a reconcile/merge over it (audit: unguarded reconcile race).
+                let gen = await MainActor.run { self.navGeneration }
                 guard let r: BulletinReadiness = try? await self.client.get("data/bulletins/\(bid)/readiness")
                 else { continue }
-                let done = await MainActor.run { () -> Bool in
-                    let finished = self.applyReadiness(r)
-                    // Re-assert the story the user is waiting on each poll: the one-shot prioritise
-                    // POSTs are fire-and-forget, so rapid skips could arrive out of order — re-sending
-                    // the CURRENT pending target makes the latest tap win cleanly (and keeps the hint
-                    // fresh if the backend hasn't reached its reprioritisable phase yet).
-                    self.reassertPendingPriority()
-                    return finished
-                }
+                let done = await MainActor.run { self.applyReadinessIfCurrent(r, fetchGen: gen) }
                 if done { return }
             }
         }
+    }
+
+    /// Apply a readiness snapshot ONLY if no queue-rebuilding gesture superseded the fetch that
+    /// produced it. `fetchGen` is navGeneration captured before the network fetch; if it no longer
+    /// matches, a seek/skip/restart/stop raced this poll — DROP the stale snapshot (the next poll
+    /// re-fetches against the new state ~1s later). This is the serialization guard that stops a
+    /// poll-driven reconcile or by-index merge from clobbering a just-happened navigation. Pending
+    /// taps do NOT bump navGeneration and are identity-resolved, so they are unaffected (and correct).
+    @MainActor
+    @discardableResult
+    private func applyReadinessIfCurrent(_ r: BulletinReadiness, fetchGen: Int) -> Bool {
+        guard fetchGen == navGeneration else { return false }
+        let finished = applyReadiness(r)
+        // Re-assert the story the user is waiting on: the one-shot prioritise POSTs are fire-and-forget,
+        // so rapid skips could arrive out of order — re-sending the CURRENT pending target makes the
+        // latest tap win cleanly (and keeps the hint fresh if the backend isn't reprioritisable yet).
+        reassertPendingPriority()
+        return finished
     }
 
     /// Re-send the priority for the story the user is currently waiting on (if any) — called once
@@ -1037,6 +1057,44 @@ final class BulletinPlayer: NSObject, ObservableObject {
     func _testSetPendingTap(id: String) { pendingTapStoryId = id }
     var _testPendingStoryId: String? { pendingTapStoryId }
     func _testFulfilPendingTapIfReady() { fulfilPendingTapIfReady() }
+
+    /// Test seam: build story segments with EXPLICIT backend indices (possibly NON-contiguous, as
+    /// after a dedup reconcile removes a middle story) so a by-array-position subscript would
+    /// misalign. Each spec: (backendIndex, storyId, ready). Transition-free, for the merge/guard tests.
+    func _testConfigureExplicitIndices(_ specs: [(Int, String, Bool)]) {
+        _bulletinId = 700
+        _profileId = 99
+        player = AVQueuePlayer()
+        var segs: [ManifestSegment] = []
+        var units: [StoryUnit] = []
+        for (u, spec) in specs.enumerated() {
+            let s = ManifestSegment(index: spec.0, type: "story", url: spec.2 ? "https://e/\(spec.1).mp3" : nil,
+                                    durationMs: 1000, storyHash: "h\(spec.1)", storyId: spec.1, title: "T\(spec.1)",
+                                    sources: [], prevStoryId: nil, nextStoryId: nil)
+            segs.append(s)
+            units.append(StoryUnit(index: u, transitionSegment: nil, storySegments: [s], cumulativeStartSeconds: Double(u)))
+        }
+        segments = segs
+        _storySegments = segs
+        storyUnits = units
+        storyCount = units.count
+        segmentReady = [:]
+        for s in segs where s.url != nil { segmentReady[s.index] = true }
+        currentUnitIndex = 0
+        currentSegment = segs.first
+        intendedPlaying = false
+        playerState = .paused
+    }
+
+    var _testNavGeneration: Int { navGeneration }
+    func _testBumpNav() { navGeneration &+= 1 }
+    @discardableResult func _testApplyReadiness(_ r: BulletinReadiness) -> Bool { applyReadiness(r) }
+    @discardableResult func _testApplyReadinessIfCurrent(_ r: BulletinReadiness, fetchGen: Int) -> Bool {
+        applyReadinessIfCurrent(r, fetchGen: fetchGen)
+    }
+    func _testStorySegmentURL(storyId: String) -> String? { segments.first { $0.storyId == storyId }?.url }
+    var _testFailedSegmentIndices: Set<Int> { failedSegmentIdx }
+    var _testHoldCeilingSeconds: TimeInterval { holdCeilingSeconds }
     #endif
 
     /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a
