@@ -563,7 +563,15 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// the corrected array picks up the right next story. Returns true if it reconciled this call.
     @discardableResult
     private func reconcileEditionIfShrunk(_ r: BulletinReadiness) -> Bool {
-        guard !_editionReconciled, editionShrank(r) else { return false }
+        // E: prefer the authoritative deduped order the backend now carries. Reconcile whenever it
+        // differs from our current order (membership OR sequence) — an explicit identity diff, not a
+        // one-shot inferred shrink, and self-limiting (after we match it, the next poll is a no-op).
+        // Older backend (no story_order) → fall back to the story-id-set shrink heuristic (one-shot).
+        if let authoritative = r.storyOrder, !authoritative.isEmpty {
+            guard authoritative != storyUnits.compactMap({ $0.storyId }) else { return false }
+        } else {
+            guard !_editionReconciled, editionShrank(r) else { return false }
+        }
         _editionReconciled = true
 
         // Backfill maps from the current (pre-dedup) held segments, keyed by story_id.
@@ -574,13 +582,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
             if let h = s.storyHash, hashBy[sid] == nil { hashBy[sid] = h }
             if let src = s.sources, srcBy[sid] == nil { srcBy[sid] = src }
         }
-        // // UNVERIFIED — the readiness snapshot (ReadinessSegment) does NOT carry the bridge
-        // binding, so preserve each transition's bound (prev,next) story pair across the rebuild
-        // keyed by segment index — else the reconcile that this guard exists for would wipe the
-        // binding (nil pair → treated as unbound → a stale bridge would play). This is correct
-        // whenever readiness keeps indices stable (the url-merge common case). If readiness ever
-        // RENUMBERS indices on a reorder, backfill from the payload instead: add
-        // prev_story_id/next_story_id to ReadinessSegment and read rs.prevStoryId here.
+        // Bridge bindings come from the PAYLOAD (rs.prevStoryId/nextStoryId — E) so a transition is
+        // re-bound by story IDENTITY, robust to any renumber. `bindBy` (keyed by segment index) is
+        // now only a FALLBACK for an older backend whose readiness doesn't carry the pair.
         var bindBy = [Int: (String?, String?)]()
         for s in segments where s.type == "transition" {
             if s.prevStoryId != nil || s.nextStoryId != nil {
@@ -592,7 +596,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
         segments = r.segments.sorted { $0.index < $1.index }.map { rs -> ManifestSegment in
             let sid = rs.storyId
             let realDur = (rs.durationMs ?? 0) > 0 ? rs.durationMs : nil
-            let bind = bindBy[rs.index]
+            let payloadBind: (String?, String?)? =
+                (rs.prevStoryId != nil || rs.nextStoryId != nil) ? (rs.prevStoryId, rs.nextStoryId) : nil
+            let bind = payloadBind ?? bindBy[rs.index]
             var ms = ManifestSegment(
                 index:      rs.index,
                 type:       rs.type,
@@ -1095,6 +1101,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     func _testStorySegmentURL(storyId: String) -> String? { segments.first { $0.storyId == storyId }?.url }
     var _testFailedSegmentIndices: Set<Int> { failedSegmentIdx }
     var _testHoldCeilingSeconds: TimeInterval { holdCeilingSeconds }
+    func _testSegmentBinding(atIndex idx: Int) -> (prev: String?, next: String?)? {
+        segments.first { $0.index == idx }.map { ($0.prevStoryId, $0.nextStoryId) }
+    }
     #endif
 
     /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a
