@@ -394,14 +394,12 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
         var t = 0
         var reachedSafe = false                  // saw server safe_to_start → audio is gate-ready
-        var readinessSeen = false                // backend speaks readiness (not an older one)
         while t < maxTicks {
             // Poll readiness immediately on the first tick, then ~every 0.5s.
             if t % pollEveryTicks == 0 {
                 // L-C: pass profile_id so the SERVER gate can refuse safe_to_start if the opener
                 // isn't the edition's committed lead (never green-lights wrong audio server-side).
                 if let r: BulletinReadiness = try? await client.get("data/bulletins/\(bid)/readiness\(_readinessQuery)") {
-                    readinessSeen = true
                     // A critical segment failed → safe_to_start can never fire. Stop
                     // and surface an error instead of holding the loader at ~95%.
                     if r.isBlocked {
@@ -412,10 +410,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
                     applyReadinessMilestones(&model, r)
                     loadProgress = model.progress
                     if r.safeToStart { reachedSafe = true; break }
-                } else if t == 0 {
-                    // Readiness unavailable (e.g. older backend) — don't gate; best effort.
-                    break
                 }
+                // GATE VISIBILITY: a nil (failed) readiness poll is a TRANSIENT miss, NOT a green
+                // light. Never break to a silent best-effort start — the old `else if t == 0 { break }`
+                // fell through to play() on URL-less gate segments (the silent 0:00 / all-grey
+                // dead-play, bulletin 256: the first poll threw, so the guard was skipped). Keep
+                // polling instead; the post-loop guard surfaces an honest retry if safe_to_start is
+                // never reached. A cached briefing whose first poll blips still flips safe on the
+                // next 0.5s poll, so nothing is lost on the fast path.
             }
             // Slow continuous creep toward the ceiling — spreads motion across the
             // whole blocking phase (~0.15→~0.57 over 8s, crossing several word bands)
@@ -426,12 +428,14 @@ final class BulletinPlayer: NSObject, ObservableObject {
             t += 1
         }
 
-        // HOLD, NEVER DEAD-PLAY: if the backend speaks readiness (modern) but we exhausted the
-        // ceiling WITHOUT safe_to_start, the gate segments' audio is not ready — starting now would
-        // play into silence (the 0:00 / all-grey regression). Surface a retry rather than a silent
-        // dead end. With the ceiling above the 90s watchdog a real stall has already tripped
-        // isBlocked above, so this only fires if the server never resolved the gate at all.
-        if readinessSeen && !reachedSafe {
+        // HOLD, NEVER DEAD-PLAY (the play()-guard): playback is reachable ONLY when the SERVER
+        // green-lit it (reachedSafe). If the 100s ceiling expired without safe_to_start — the gate
+        // audio never became ready, OR readiness never answered at all — surface an honest retry
+        // rather than starting into silence. This is #203's hold-not-play guard, now UNCONDITIONAL:
+        // the old `readinessSeen &&` qualifier let a first-poll failure (readinessSeen never set)
+        // slip through to a silent dead-play — the bulletin-256 regression. 100s > the 90s watchdog,
+        // so a genuine stall has already tripped isBlocked above.
+        if !reachedSafe {
             playerState = .failed("This briefing is taking longer than usual. Pull to refresh.")
             return
         }
