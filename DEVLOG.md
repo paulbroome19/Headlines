@@ -9,6 +9,28 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-11 — LOAD-PATH PR L-B: selection_id threaded + asserted)
+
+**PR L-B of the load series. Backend, deploy-gated.** One selection identity threaded through the
+load artifacts + a LOUD serve-time guard, covering the warmer path per Paul's rider.
+
+- `selector.py`: `selection_token(run, hash)` = the selection identity `"{run}:{hash}"` — WHICH
+  materialised selection an artifact belongs to. Stable across a heard/skip reconcile (changes
+  story_ids, not run/hash), so it flags genuine run drift / cross-selection, not normal churn.
+- `edition.py`: `get_ranking_run(...)` — the edition's PINNED run (None when no edition yet).
+- `data.py`: `assert_same_selection(served_run, pinned_run, ...)` — a served bulletin MUST belong to
+  the edition's pinned selection; a run mismatch RAISES loudly. Wired into `_get_or_assemble_bulletin`'s
+  cached/warm serve branch (**the rider** — a warm bulletin whose run drifted from the pinned edition
+  fails loudly, never a silent grandfather clause; no-op at create time when no edition exists).
+- `selection_id` now carried on every load artifact: readiness response, both manifest returns
+  (streaming skeleton + cached full), via the prep/plan/assemble dicts.
+- Tests: `test_selection_id.py` (4) — token format, matching pass, no-edition no-op, cross-selection
+  loud raise. Backend suite 119 pass.
+
+Client carry + echo of `selection_id` on events (so a stale-selection event fails loudly too) is
+**L-D** (client pins the tapped selection). Next: L-C (gate: first audible == queue.items[0], both
+sides), then L-D. Verify L-B live post-deploy: a cross-run warm serve must 500, not serve.
+
 ## Changes Made This Session (2026-07-10 — LOAD-PATH audit + structural fix PR L-A: materialise-once)
 
 Load-path audit (home render → first audio), analogous to the playback A–F audit. **Convicted the

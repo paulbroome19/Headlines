@@ -72,6 +72,16 @@ def compute_request_hash(
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
+def selection_token(ranking_run_id: int, request_hash: str) -> str:
+    """The SELECTION identity: WHICH materialised selection an artifact belongs to = the pinned
+    ranking run + the request_hash. Threaded through edition → bulletin → manifest → readiness →
+    (eventually) events. Two artifacts with different tokens came from DIFFERENT selections, so
+    serving one against the other is a cross-selection serve (board≠audio) — that must fail LOUDLY,
+    never be silently served. Stable across a heard/skip reconcile (which changes story_ids but not
+    the run/hash), so it flags only genuine run drift / cross-selection, not normal edition churn."""
+    return f"{ranking_run_id}:{request_hash}"
+
+
 def validate_filter_categories(cats: list[str]) -> list[str]:
     """
     Return error messages for categories that are neither a valid leaf slug
