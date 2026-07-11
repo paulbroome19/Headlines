@@ -1556,3 +1556,32 @@ OUTRO:  "That's everything for now. Back later if anything breaks."  ← 2-part 
 - Install boto3 and test S3 upload against a real bucket (R2 recommended — free tier)
 - Wire summaries/bulletins into feeds/scripts/audio pipeline stages (TTS stage)
 - `GET /data/bulletins/latest` returns most recently *created* bulletin — may want `GET /data/bulletins/assemble?cached_only=true` variant
+
+## 2026-07-11 — Cold-path zero-playback regression (Meta bulletin, profile 28, 16:48 UTC)
+
+**Symptom:** from-scratch briefings loaded with the lead greyed, 0:00, gate never opened; cached
+briefings played fine. First on-device test of the L-C/L-D series.
+
+**Convicted — NOT the L-series.** Traced prod bulletin 255 (lead 489191 "Meta pulls new AI image
+feature"). Server side was fully healthy: run divergence False (bulletin run 9712 == edition pinned
+9712), `gate_opener_ok` True, no synth failures, full assembly finalised, both gate segments have
+audio. So no assertion crash / no L-C block / no L-D rejection.
+
+**Root cause = a timeout dead-zone.** Timeline: bulletin created 16:48:16; intro audio ready
+16:49:27 (+71s); opener audio ready 16:49:29 (+73s). The iOS readiness gate capped at **60s**
+(`BulletinPlayer.swift:386`) while the server stall watchdog is **90s** (`SEGMENT_STALL_SECONDS`).
+Ordering `60s < 71s < 90s`: the client quit after giving up but before the audio was ready and
+before the watchdog would flag a stall, then fell through and called `player.play()` on URL-less
+gate segments with no retry → permanent grey. Cold-only because cached gate audio makes
+safe_to_start fire on poll #1.
+
+**Fix (files changed):** `ios/.../Core/BulletinPlayer.swift` — raised the readiness ceiling
+60s→100s (above the 90s watchdog) and added a `readinessSeen && !reachedSafe` guard that surfaces
+a "taking longer than usual, pull to refresh" retry instead of dead-playing. Never starts playback
+without server `safe_to_start`. Build: `xcodebuild ... BUILD SUCCEEDED`. PR #203.
+
+**State:** client fix applied + compiles. Not yet device-retested against a live cold briefing.
+
+**Next step:** on-device retest of a from-scratch briefing (cold cache) to confirm the ~71s cold
+synth now plays through; consider a follow-up to trim the ~71s cold first-audio critical path
+(greeting Haiku + first-two summarise + intro/opener TTS are all serialised before the gate).
