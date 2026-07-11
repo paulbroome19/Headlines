@@ -9,6 +9,9 @@ import UIKit
 /// `subsystem:com.headlines.flush` to see every flush (event count, bulletin) and its outcome, so
 /// a broken flush is never invisible again.
 private let flushLog = Logger(subsystem: "com.headlines.flush", category: "summary")
+/// L-C load-gate logging — same `com.headlines.flush` subsystem, category "gate". Filter to see
+/// every time the client refused to start audio because the opener didn't match the board lead.
+private let gateLog = Logger(subsystem: "com.headlines.flush", category: "gate")
 
 // MARK: - Request / response types
 
@@ -373,7 +376,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
         while t < maxTicks {
             // Poll readiness immediately on the first tick, then ~every 0.5s.
             if t % pollEveryTicks == 0 {
-                if let r: BulletinReadiness = try? await client.get("data/bulletins/\(bid)/readiness") {
+                // L-C: pass profile_id so the SERVER gate can refuse safe_to_start if the opener
+                // isn't the edition's committed lead (never green-lights wrong audio server-side).
+                if let r: BulletinReadiness = try? await client.get("data/bulletins/\(bid)/readiness\(_readinessQuery)") {
                     // A critical segment failed → safe_to_start can never fire. Stop
                     // and surface an error instead of holding the loader at ~95%.
                     if r.isBlocked {
@@ -416,6 +421,16 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // destination before the state flips (seamless flip-board → now-playing-card morph).
         loaderComplete = true
         try? await Task.sleep(nanoseconds: 500_000_000)   // ~0.5s — board crossfades to the headline
+
+        // L-C CLIENT GATE (never start wrong audio): the first audible story the player will open on
+        // MUST be the board's lead — queue.items[0]. Both derive from the running order, so post
+        // L-A/B/E they match by construction; this is the last-resort hard stop. On a mismatch, HOLD
+        // (don't play) and log loudly on the flush subsystem, then surface rather than hang.
+        if !openerMatchesQueueLead() {
+            gateLog.error("L-C gate HELD: first audible story \(self.firstAudibleStoryId ?? "nil", privacy: .public) != board lead \(self.queue.items.first?.storyId ?? "nil", privacy: .public) (bulletin=\(self._bulletinId ?? -1, privacy: .public)) — refusing to start wrong audio")
+            playerState = .failed("This briefing couldn't start cleanly. Pull to refresh.")
+            return
+        }
 
         // Ready (or gave up): enqueue and start. Hold near-complete but < 1.0 — audio
         // actually starting is what snaps loadProgress to 1.0 (handleTimeControlStatus).
@@ -673,7 +688,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
                 // this readiness request is in flight, the snapshot we get back predates the new
                 // state and must not drive a reconcile/merge over it (audit: unguarded reconcile race).
                 let gen = await MainActor.run { self.navGeneration }
-                guard let r: BulletinReadiness = try? await self.client.get("data/bulletins/\(bid)/readiness")
+                let q = await MainActor.run { self._readinessQuery }
+                guard let r: BulletinReadiness = try? await self.client.get("data/bulletins/\(bid)/readiness\(q)")
                 else { continue }
                 let done = await MainActor.run { self.applyReadinessIfCurrent(r, fetchGen: gen) }
                 if done { return }
@@ -790,6 +806,21 @@ final class BulletinPlayer: NSObject, ObservableObject {
         guard let i = synthesisingUnitIndex, storyUnits.indices.contains(i) else { return nil }
         return storyUnits[i].storyId
     }
+
+    /// The first AUDIBLE story's id — the story the player will open on (first story segment in play
+    /// order). L-C compares this to the board lead (queue.items[0]) before starting audio.
+    var firstAudibleStoryId: String? { segments.first(where: { $0.isStory })?.storyId }
+
+    /// L-C gate: is the first audible story the board's lead (queue.items[0])? True when either side
+    /// is unknown (nothing to enforce). A false result HOLDS the gate — never start wrong audio.
+    func openerMatchesQueueLead() -> Bool {
+        guard let opener = firstAudibleStoryId, let lead = queue.items.first?.storyId else { return true }
+        return opener == lead
+    }
+
+    /// Query suffix carrying the profile id to /readiness so the SERVER L-C gate can enforce
+    /// opener == committed lead. Empty when no profile (older path) → server behaves as today.
+    private var _readinessQuery: String { _profileId.map { "?profile_id=\($0)" } ?? "" }
 
     /// The single canonical running order the UI renders — the player OWNS it, the view CONSUMES it.
     /// Projects the published order (`storyUnits`) + the resolved current/consumed/ready/pending/
@@ -1129,6 +1160,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     func _testSegmentBinding(atIndex idx: Int) -> (prev: String?, next: String?)? {
         segments.first { $0.index == idx }.map { ($0.prevStoryId, $0.nextStoryId) }
     }
+    /// Test seam: force the board lead (queue.items[0]) to diverge from the first audible segment,
+    /// by reversing storyUnits WITHOUT touching segments — the exact state the L-C gate must catch.
+    func _testForceQueueLeadMismatch() { storyUnits = Array(storyUnits.reversed()) }
     #endif
 
     /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a

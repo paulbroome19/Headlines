@@ -1270,6 +1270,17 @@ def _synth_remaining(bulletin_id: int, segments: list[dict],
                                voice=voice, model=model, audio_format=audio_fmt)
 
 
+def gate_opener_ok(opener_story_id: str | None, committed_lead: str | None) -> bool:
+    """L-C gate: the first AUDIBLE story (the opener) must be the edition's COMMITTED lead. Returns
+    False — meaning BLOCK safe_to_start — only when we have a committed lead AND the opener differs
+    (never green-light audio that opens on a story other than the one the board committed to; the
+    240779≠415760 incident). Unknown committed lead (no edition / no profile_id) → True: nothing to
+    enforce, today's behaviour (backward compatible)."""
+    if committed_lead is None or opener_story_id is None:
+        return True
+    return str(opener_story_id) == str(committed_lead)
+
+
 def assert_same_selection(*, served_run: int, pinned_run: int | None, request_hash: str,
                           where: str) -> None:
     """L-B: an artifact SERVED to a user must belong to the edition's PINNED selection. `pinned_run`
@@ -1660,7 +1671,7 @@ def authoritative_story_order(out_segments: list[dict]) -> list[str]:
 
 
 @router.get("/bulletins/{bulletin_id}/readiness")
-def get_bulletin_readiness(bulletin_id: int):
+def get_bulletin_readiness(bulletin_id: int, profile_id: int | None = None):
     """
     Honest readiness/progress signal for the iOS loader gate.
 
@@ -1798,6 +1809,24 @@ def get_bulletin_readiness(bulletin_id: int):
                        bulletin_id, len(_stalled_idx))
 
     safe_to_start = lead > 0 and all(out_segments[i]["state"] == "ready" for i in range(lead))
+
+    # L-C GATE (never green-light wrong audio): the opener the client will play MUST be the edition's
+    # COMMITTED lead. Post-L-A the bulletin lead == edition lead by construction, so this is
+    # defence-in-depth — but if anything ever served a bulletin whose opener drifted from the pinned
+    # edition, block safe_to_start (hold the loader) rather than start audio on the wrong story.
+    # Requires profile_id (the client passes it); omitted → today's behaviour (backward compatible).
+    if safe_to_start and profile_id is not None:
+        with SessionLocal() as _db:
+            _eids = UserDailyEditionRepo(_db).get_story_ids(profile_id, uk_now().date(), bulletin["request_hash"])
+        committed_lead = _eids[0] if _eids else None
+        opener = next((x["story_id"] for x in out_segments if x["type"] == "story" and x.get("story_id")), None)
+        if not gate_opener_ok(opener, committed_lead):
+            safe_to_start = False
+            logger.warning(
+                "L-C gate BLOCKED: bulletin=%s opener=%s != edition committed lead=%s (profile=%s) "
+                "— refusing to green-light audio that opens on the wrong story", bulletin_id, opener,
+                committed_lead, profile_id,
+            )
 
     # ── Named audio-phase milestones (ordered) the loader advances a bar against ──
     def _first(pred):
