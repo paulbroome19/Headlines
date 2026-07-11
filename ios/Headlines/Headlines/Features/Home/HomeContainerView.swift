@@ -87,7 +87,9 @@ struct HomeContainerView: View {
             }
             // An invalid/zero pid hits the backend and returns 404, which the
             // player surfaces as its failed state — no fake data, no crash.
-            await player.load(profileId: pid)
+            // L-D: pin the tapped selection — the server serves EXACTLY what the board showed, so a
+            // ranking run landing between this render and the tap can't swap the briefing.
+            await player.load(profileId: pid, selectionId: preview?.selectionId)
         }
     }
 

@@ -273,6 +273,8 @@ def get_profile_bulletin(profile_id: int, force: bool = False):
 
 class ManifestRequest(BaseModel):
     include_top_stories: bool = True
+    selection_id: str | None = None   # L-D: the selection the board committed to (run:hash). Optional
+                                      # → older clients omit it and the server behaves as today.
 
 
 def _build_full_manifest(
@@ -432,6 +434,7 @@ def get_manifest(
         max_duration_minutes=profile.get("max_duration_minutes", 5),
         name=profile["name"],
         include_top_stories=include_top_stories,
+        selection_id=req.selection_id,   # L-D: pin to the tapped selection's run
     )
 
     if prep["mode"] == "cached":

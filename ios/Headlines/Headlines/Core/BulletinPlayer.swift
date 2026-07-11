@@ -16,9 +16,11 @@ private let gateLog = Logger(subsystem: "com.headlines.flush", category: "gate")
 // MARK: - Request / response types
 
 private struct ManifestRequest: Encodable {
-    let includeTopStories: Bool = true
+    var includeTopStories: Bool = true
+    var selectionId: String? = nil        // L-D: pin the tapped selection through to the served bulletin
     enum CodingKeys: String, CodingKey {
         case includeTopStories = "include_top_stories"
+        case selectionId = "selection_id"
     }
 }
 
@@ -27,17 +29,20 @@ private struct EventRequest: Encodable {
     let storyHash: String
     let action: String
     let positionPct: Double
+    var selectionId: String? = nil        // L-D: echo the selection; server rejects a stale one (409)
     enum CodingKeys: String, CodingKey {
         case profileId   = "profile_id"
         case storyHash   = "story_hash"
         case action
         case positionPct = "position_pct"
+        case selectionId = "selection_id"
     }
 }
 
 private struct SummaryRequest: Encodable {
     let profileId: Int
     let events: [EventItem]
+    var selectionId: String? = nil        // L-D: echo the selection on the batch flush
     struct EventItem: Encodable {
         let storyHash: String
         let storyId: String?
@@ -55,6 +60,7 @@ private struct SummaryRequest: Encodable {
     enum CodingKeys: String, CodingKey {
         case profileId = "profile_id"
         case events
+        case selectionId = "selection_id"
     }
 }
 
@@ -172,6 +178,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
     // MARK: Private — context
 
     private var _profileId: Int?
+    /// L-D: the selection this play session belongs to (run:hash from the manifest). Echoed on every
+    /// event so the server rejects a stale-selection flush loudly (409). nil on an older backend.
+    private var _selectionId: String?
     private var _bulletinId: Int?
     private var segments: [ManifestSegment] = []
     private var _storySegments: [ManifestSegment] = []
@@ -284,7 +293,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     // MARK: - Public API
 
-    func load(profileId: Int) async {
+    func load(profileId: Int, selectionId: String? = nil) async {
         // Stop any current playback (sends summary if mid-session).
         stopInternal(sendEvents: true)
 
@@ -295,12 +304,16 @@ final class BulletinPlayer: NSObject, ObservableObject {
         playerState = .loadingManifest
 
         do {
+            // L-D: carry the selection the board committed to (from the preview) so the server serves
+            // EXACTLY that selection — a newer ranking run landing between render and tap can't swap it.
             let m: BulletinManifest = try await client.post(
                 "data/profiles/\(profileId)/manifest",
-                body: ManifestRequest()
+                body: ManifestRequest(selectionId: selectionId)
             )
             manifest = m
             _bulletinId = m.bulletinId
+            // The selection actually served — echoed on every event so a stale flush is rejected (409).
+            _selectionId = m.selectionId ?? selectionId
             // STREAMING skeleton: fill nil durations with per-type ESTIMATES so the scrubber +
             // timeline read sensibly from the first frame; real durations overwrite them as
             // /readiness reports each synthesised segment. `url` stays nil (isReady is url-based)
@@ -1163,6 +1176,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
     /// Test seam: force the board lead (queue.items[0]) to diverge from the first audible segment,
     /// by reversing storyUnits WITHOUT touching segments — the exact state the L-C gate must catch.
     func _testForceQueueLeadMismatch() { storyUnits = Array(storyUnits.reversed()) }
+    func _testSetSelectionId(_ id: String?) { _selectionId = id }
     #endif
 
     /// Drain the accumulated play events (appending an abandoned event for a story mid-play) into a
@@ -1197,7 +1211,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
         SummaryRequest(
             profileId: pid,
             events: events.map { .init(storyHash: $0.storyHash, storyId: $0.storyId, profileId: pid,
-                                       action: $0.action, positionPct: $0.positionPct) }
+                                       action: $0.action, positionPct: $0.positionPct) },
+            selectionId: _selectionId   // L-D: echo the selection so a stale batch is rejected
         )
     }
 
@@ -2010,7 +2025,8 @@ final class BulletinPlayer: NSObject, ObservableObject {
             profileId:   pid,
             storyHash:   ev.storyHash,
             action:      ev.action,
-            positionPct: ev.positionPct
+            positionPct: ev.positionPct,
+            selectionId: _selectionId       // L-D: echo the selection; server 409s a stale one
         )
         Task { _ = try? await self.client.post("data/bulletins/\(bid)/event", body: req) as StatusResponse }
     }

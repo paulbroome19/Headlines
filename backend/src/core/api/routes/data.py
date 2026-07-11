@@ -48,6 +48,7 @@ from core.pipeline.data.bulletin.edition import UserDailyEditionRepo
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
+    parse_selection_run,
     selection_filters,
     selection_token,
     validate_filter_categories,
@@ -319,6 +320,11 @@ def get_home_preview(profile_id: int):
             include_top_stories=include_top_stories, include_categories=include_categories,
             exclude_categories=exclude_categories, preset=preset,
         )
+    # L-D: the SELECTION identity + lead the board is committing to. The client carries selection_id
+    # on the manifest POST so the server serves EXACTLY this selection (a newer run landing between
+    # render and tap cannot swap it), and echoes it on events.
+    preview_selection_id = selection_token(_run, request_hash) if _run is not None else None
+    preview_lead = str(ordered[0]["story_id"]) if ordered else None
     cat_by_id = {o["story_id"]: o.get("primary_category") for o in ordered}
 
     story_count = len(ordered)
@@ -398,6 +404,8 @@ def get_home_preview(profile_id: int):
         "story_count": story_count,
         "total_minutes": total_minutes,
         "stories": stories,
+        "selection_id": preview_selection_id,   # L-D: pin the tapped selection through play
+        "lead_story_id": preview_lead,
     }
 
 
@@ -1030,6 +1038,7 @@ def prepare_bulletin_for_manifest(
     max_duration_minutes: int,
     name: str | None,
     include_top_stories: bool,
+    selection_id: str | None = None,
 ) -> dict:
     """Selection + cache check for the streaming manifest. Returns one of:
       {'mode': 'cached'}     — a fully-assembled bulletin exists; caller uses the normal
@@ -1061,13 +1070,17 @@ def prepare_bulletin_for_manifest(
         # to), NOT get_latest() — resolve it BEFORE the cache probe so the bulletin, edition and
         # preview share ONE run. A ranking run landing between preview and manifest can no longer make
         # the served bulletin a different run than the board. Cold play-first (no edition) → latest.
+        # L-D: if the client sent the tapped selection_id, its run WINS the cache probe — serve
+        # exactly the selection the board committed to, even if a newer run landed (and the edition
+        # would otherwise refresh) between render and tap. None → L-A behaviour (edition pin / latest).
+        client_run = parse_selection_run(selection_id)
         mat = (get_materialised_selection(db, profile_id=profile_id, request_hash=request_hash)
                if profile_id is not None else None)
         if mat is not None:
             ordered, depths, pinned = mat
-            ranking_run_id = pinned or latest["id"]
+            ranking_run_id = client_run or pinned or latest["id"]
         else:
-            ranking_run_id = latest["id"]
+            ranking_run_id = client_run or latest["id"]
             ordered, depths = None, None
 
         existing = BulletinRepo(db).get_by_run_and_hash(ranking_run_id, request_hash)
@@ -1268,6 +1281,18 @@ def _synth_remaining(bulletin_id: int, segments: list[dict],
         if (seg.get("text") or "").strip():
             synthesize_segment(seg["text"], segment_type=seg.get("type", "story"),
                                voice=voice, model=model, audio_format=audio_fmt)
+
+
+def assert_event_selection(event_selection_id: str | None, bulletin_selection_id: str) -> None:
+    """L-D: an event the client reports must belong to the SAME selection the bulletin was served as.
+    A stale-selection event (client still on an older selection) is rejected LOUDLY (409) — never
+    applied to a different selection's queued rows. None → older client that doesn't send it: no
+    assertion (backward compatible). Completes L-B's thread through events."""
+    if event_selection_id is not None and event_selection_id != bulletin_selection_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"stale selection: event {event_selection_id!r} != bulletin {bulletin_selection_id!r}",
+        )
 
 
 def gate_opener_ok(opener_story_id: str | None, committed_lead: str | None) -> bool:
@@ -1934,6 +1959,7 @@ class BulletinEventRequest(BaseModel):
     story_id: str | None = None   # preferred consumption key; falls back to hash→id resolution
     action: str        # started | completed | skipped | abandoned
     position_pct: float = 0.0
+    selection_id: str | None = None   # L-D: the selection the client is playing; must match the bulletin's
 
 
 class SummaryEventItem(BaseModel):
@@ -1953,6 +1979,7 @@ class SummaryEventItem(BaseModel):
 class BulletinSummaryRequest(BaseModel):
     profile_id: int
     events: list[SummaryEventItem]
+    selection_id: str | None = None   # L-D: the selection the batch belongs to; must match the bulletin's
 
 
 @router.post("/bulletins/{bulletin_id}/event")
@@ -1979,6 +2006,10 @@ def record_bulletin_event(bulletin_id: int, req: BulletinEventRequest):
         return {"status": "no_change"}
 
     with SessionLocal() as db:
+        # L-D: reject a stale-selection event loudly (never apply it to a different selection's rows).
+        b = BulletinRepo(db).get_by_id(bulletin_id)
+        if b is not None:
+            assert_event_selection(req.selection_id, selection_token(b["ranking_run_id"], b["request_hash"]))
         story_id = req.story_id or _story_id_by_hash(db, bulletin_id).get(req.story_hash or "")
         if not story_id:
             logger.info("event: bulletin=%s could not resolve story_id for hash=%s", bulletin_id, req.story_hash)
@@ -2023,6 +2054,10 @@ def record_bulletin_summary(bulletin_id: int, req: BulletinSummaryRequest):
     """
     events = [e.model_dump() for e in req.events]
     with SessionLocal() as db:
+        # L-D: reject a stale-selection batch loudly (never apply it to a different selection's rows).
+        b = BulletinRepo(db).get_by_id(bulletin_id)
+        if b is not None:
+            assert_event_selection(req.selection_id, selection_token(b["ranking_run_id"], b["request_hash"]))
         hash_to_id = _story_id_by_hash(db, bulletin_id)
         for ev in events:
             if not ev.get("story_id"):

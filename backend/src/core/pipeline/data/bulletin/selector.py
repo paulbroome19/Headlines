@@ -82,6 +82,20 @@ def selection_token(ranking_run_id: int, request_hash: str) -> str:
     return f"{ranking_run_id}:{request_hash}"
 
 
+def parse_selection_run(selection_id: str | None) -> int | None:
+    """The run component of a `selection_id` token (`"{run}:{hash}"`), or None if absent/malformed.
+    L-D: the client sends the tapped selection_id on the manifest POST; the server probes the cache
+    with THIS run so it serves exactly the selection the board committed to — a newer run landing
+    between render and tap can't swap it. None → server behaves as today (backward compatible)."""
+    if not selection_id or ":" not in selection_id:
+        return None
+    run_part = selection_id.split(":", 1)[0]
+    try:
+        return int(run_part)
+    except ValueError:
+        return None
+
+
 def validate_filter_categories(cats: list[str]) -> list[str]:
     """
     Return error messages for categories that are neither a valid leaf slug

@@ -9,6 +9,23 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-11 — LOAD-PATH PR L-D: the tap pins the selection)
+
+**PR L-D of the load series. Backend + iOS. Stacked on L-C — ONE archive covers both.**
+
+- Server (`data.py`/`profiles.py`/`selector.py`): home-preview returns `selection_id` + `lead_story_id`;
+  `ManifestRequest.selection_id` (optional) → `prepare_bulletin_for_manifest` probes the cache with
+  the tapped run (`parse_selection_run`) so a newer run landing between render and tap CAN'T swap the
+  briefing; `/event` + `/summary` accept `selection_id` and `assert_event_selection` 409s a stale one
+  (completes L-B's thread through events). All optional → older clients behave as today.
+- Client (`BulletinManifest.swift`/`BulletinPlayer.swift`/`HomeContainerView.swift`): decode
+  `selection_id`/`lead_story_id` on preview/manifest/readiness; `load(profileId:selectionId:)` carries
+  the preview's selection_id on the manifest POST; `_selectionId` (from the served manifest) is echoed
+  on every `/event` + `/summary` flush.
+- Tests: backend 126 (+parse_selection_run, +stale-event 409), iOS 25 (+testFlushedSummaryCarriesSelectionId).
+
+L-series complete pending the combined device archive (L-C + L-D) and deploy-verify.
+
 ## Changes Made This Session (2026-07-11 — LOAD-PATH PR L-C: the gate invariant, both sides)
 
 **PR L-C of the load series. Backend + iOS.** Never green-light audio whose opener isn't the committed lead.

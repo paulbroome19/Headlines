@@ -430,7 +430,8 @@ private let samplePreview = HomePreview(
                   category: "culture.celebrity", standfirst: nil, sources: ["The New York Times", "BBC"]),
         HomeStory(storyId: "4", headline: "Mallory McMorrow suspends her Michigan Senate campaign",
                   category: "politics.us", standfirst: nil, sources: ["CBS News", "The Guardian"]),
-    ]
+    ],
+    selectionId: nil, leadStoryId: nil
 )
 
 #Preview("Morning · loaded") {

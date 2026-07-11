@@ -255,7 +255,7 @@ final class HeadlinesTests: XCTestCase {
         return BulletinReadiness(bulletinId: 700, assembled: true, totalSegments: rsegs.count,
                                  readySegments: rsegs.filter { $0.isReady }.count, failedSegments: 0,
                                  safeToStart: true, segments: rsegs, stage: nil, progress: nil, blocked: nil,
-                                 allReady: allReady, storyOrder: order, provisional: false)
+                                 allReady: allReady, storyOrder: order, provisional: false, selectionId: nil)
     }
 
     /// Seam β: the readiness merge must match segments by their stable backend `.index`, not array
@@ -317,7 +317,7 @@ final class HeadlinesTests: XCTestCase {
             safeToStart: true,
             segments: [ReadinessSegment(index: 0, type: "story", state: "ready", url: "https://e/A.mp3", durationMs: 1000, storyId: "A", prevStoryId: nil, nextStoryId: nil),
                        ReadinessSegment(index: 1, type: "story", state: "failed", url: nil, durationMs: nil, storyId: "B", prevStoryId: nil, nextStoryId: nil)],
-            stage: nil, progress: nil, blocked: nil, allReady: false, storyOrder: ["A", "B"], provisional: false)
+            stage: nil, progress: nil, blocked: nil, allReady: false, storyOrder: ["A", "B"], provisional: false, selectionId: nil)
         p._testApplyReadiness(failedForB)
 
         XCTAssertTrue(p._testFailedSegmentIndices.contains(1),
@@ -344,7 +344,7 @@ final class HeadlinesTests: XCTestCase {
                 ReadinessSegment(index: 1, type: "transition", state: "pending", url: nil, durationMs: nil, storyId: nil, prevStoryId: "A", nextStoryId: "C"),
                 ReadinessSegment(index: 2, type: "story", state: "pending", url: nil, durationMs: nil, storyId: "C", prevStoryId: nil, nextStoryId: nil),
             ],
-            stage: nil, progress: nil, blocked: nil, allReady: false, storyOrder: ["A", "C"], provisional: false)
+            stage: nil, progress: nil, blocked: nil, allReady: false, storyOrder: ["A", "C"], provisional: false, selectionId: nil)
 
         p._testApplyReadiness(r)
 
@@ -398,6 +398,22 @@ final class HeadlinesTests: XCTestCase {
 
         XCTAssertEqual(p.queue.items.map { $0.storyId }, ["C", "A", "B"], "queue order follows the reconciled order")
         XCTAssertEqual(p.queue.items.first { $0.storyId == "C" }?.isBuffering, true, "buffering marker follows C by identity")
+    }
+
+    // MARK: - PR L-D: events echo the selection_id (server 409s a stale one)
+
+    /// The flushed /summary payload must carry the play session's selection_id, so the server can
+    /// reject a stale-selection flush loudly instead of applying it to a different selection's rows.
+    @MainActor
+    func testFlushedSummaryCarriesSelectionId() throws {
+        let p = BulletinPlayer()
+        p._testSetSelectionId("7418:c7a5b5bdb9ee")
+        p._testSeedEvent(bulletinId: 241, profileId: 28, storyHash: "h", storyId: "240779", action: "skipped")
+
+        let data = try XCTUnwrap(p._testDetachedSummaryJSON(), "must flush the seeded event")
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["selection_id"] as? String, "7418:c7a5b5bdb9ee",
+                       "the flush must echo the selection so the server can 409 a stale one")
     }
 
     // MARK: - PR L-C: the client gate — never start audio whose opener != the board lead

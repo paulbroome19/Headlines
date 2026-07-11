@@ -37,11 +37,13 @@ struct ManifestSegment: Decodable, Identifiable {
 struct BulletinManifest: Decodable {
     let bulletinId: Int
     let rankingRunId: Int?    // optional — the streaming skeleton may omit it
+    let selectionId: String?  // L-D: the selection this bulletin was served as; echoed on events
     let segments: [ManifestSegment]
 
     enum CodingKeys: String, CodingKey {
         case bulletinId  = "bulletin_id"
         case rankingRunId = "ranking_run_id"
+        case selectionId = "selection_id"
         case segments
     }
 }
@@ -98,6 +100,7 @@ struct BulletinReadiness: Decodable {
     // backend still decodes (the client falls back to the shrink heuristic when absent).
     let storyOrder: [String]?
     let provisional: Bool?
+    let selectionId: String?   // L-D: the selection this bulletin belongs to
 
     var introReady: Bool {
         segments.first(where: { $0.type == "intro" })?.isReady ?? false
@@ -123,6 +126,7 @@ struct BulletinReadiness: Decodable {
         case allReady       = "all_ready"
         case storyOrder     = "story_order"
         case provisional
+        case selectionId    = "selection_id"
     }
 }
 
@@ -212,6 +216,8 @@ struct HomePreview: Decodable {
     let storyCount: Int
     let totalMinutes: Int
     let stories: [HomeStory]
+    let selectionId: String?    // L-D: the selection the board is committing to (pinned on tap)
+    let leadStoryId: String?
 
     enum CodingKeys: String, CodingKey {
         case profileId = "profile_id"
@@ -219,6 +225,8 @@ struct HomePreview: Decodable {
         case storyCount = "story_count"
         case totalMinutes = "total_minutes"
         case stories
+        case selectionId = "selection_id"
+        case leadStoryId = "lead_story_id"
     }
 }
 
