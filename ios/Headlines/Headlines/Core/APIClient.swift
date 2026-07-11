@@ -85,10 +85,29 @@ enum APIError: Error, LocalizedError {
 struct APIClient {
     let baseURL: URL
     private let decoder: JSONDecoder
+    private let session: URLSession
 
-    init(baseURL: URL) {
+    init(baseURL: URL, session: URLSession = .shared) {
         self.baseURL = baseURL
         self.decoder = APIClient.makeDecoder()
+        self.session = session
+    }
+
+    /// F1: a client whose requests run on a DEDICATED, isolated URLSession — its own
+    /// connection pool, structurally never queued behind the preview / manifest / event
+    /// traffic that all share `URLSession.shared` (default 6 conns/host). Used ONLY for
+    /// readiness polling, so a slow preview can never starve the gate's readiness GETs
+    /// (the "healthy server, unconsumed safe_to_start" hang — bulletin 257). Short request
+    /// timeout so a stuck poll fails fast and the next 0.5s tick fires clean; cache bypassed
+    /// so readiness is always live.
+    static func makeReadiness(baseURL: URL) -> APIClient {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.httpMaximumConnectionsPerHost = 2
+        cfg.timeoutIntervalForRequest = 8
+        cfg.waitsForConnectivity = false
+        cfg.networkServiceType = .responsiveData
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return APIClient(baseURL: baseURL, session: URLSession(configuration: cfg))
     }
 
     func get<T: Decodable>(

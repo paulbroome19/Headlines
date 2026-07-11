@@ -174,6 +174,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
     // MARK: Dependencies
 
     private let client: APIClient
+    /// F1: readiness polling runs on its OWN dedicated URLSession (isolated connection pool),
+    /// so a slow preview / manifest / event on the shared `URLSession.shared` can never queue
+    /// the gate's readiness GETs behind it — the "healthy server, unconsumed safe_to_start" hang
+    /// (bulletin 257). Same base URL as `client`.
+    private let readinessClient: APIClient
 
     // MARK: Private — context
 
@@ -277,6 +282,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     init(client: APIClient = APIClient(baseURL: AppConfig.apiBaseURL)) {
         self.client = client
+        self.readinessClient = APIClient.makeReadiness(baseURL: client.baseURL)
         super.init()
         setupAudioSession()
         setupRemoteCommands()
@@ -399,7 +405,13 @@ final class BulletinPlayer: NSObject, ObservableObject {
             if t % pollEveryTicks == 0 {
                 // L-C: pass profile_id so the SERVER gate can refuse safe_to_start if the opener
                 // isn't the edition's committed lead (never green-lights wrong audio server-side).
-                if let r: BulletinReadiness = try? await client.get("data/bulletins/\(bid)/readiness\(_readinessQuery)") {
+                // INSTRUMENTED (do/catch, not try?) so every poll logs its outcome to the `gate`
+                // subsystem — the next dead session convicts itself: was the GET sent, what status
+                // came back, and what safe_to_start value. Watch: subsystem com.headlines.flush, cat gate.
+                let pollT = t
+                do {
+                    let r: BulletinReadiness = try await readinessClient.get("data/bulletins/\(bid)/readiness\(_readinessQuery)")
+                    gateLog.log("readiness GET bulletin=\(bid, privacy: .public) t=\(pollT, privacy: .public) → 200 safe_to_start=\(r.safeToStart, privacy: .public) assembled=\(r.assembled, privacy: .public) ready=\(r.readySegments, privacy: .public)/\(r.totalSegments, privacy: .public) failed=\(r.failedSegments, privacy: .public) blocked=\(r.isBlocked, privacy: .public)")
                     // A critical segment failed → safe_to_start can never fire. Stop
                     // and surface an error instead of holding the loader at ~95%.
                     if r.isBlocked {
@@ -410,6 +422,9 @@ final class BulletinPlayer: NSObject, ObservableObject {
                     applyReadinessMilestones(&model, r)
                     loadProgress = model.progress
                     if r.safeToStart { reachedSafe = true; break }
+                } catch {
+                    let status: Int = { if case let APIError.badStatus(code, _) = error { return code } else { return -1 } }()
+                    gateLog.error("readiness GET bulletin=\(bid, privacy: .public) t=\(pollT, privacy: .public) → FAILED status=\(status, privacy: .public) error=\(String(describing: error), privacy: .public)")
                 }
                 // GATE VISIBILITY: a nil (failed) readiness poll is a TRANSIENT miss, NOT a green
                 // light. Never break to a silent best-effort start — the old `else if t == 0 { break }`
@@ -436,9 +451,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
         // slip through to a silent dead-play — the bulletin-256 regression. 100s > the 90s watchdog,
         // so a genuine stall has already tripped isBlocked above.
         if !reachedSafe {
+            gateLog.error("gate EXHAUSTED bulletin=\(bid, privacy: .public) after t=\(t, privacy: .public) (~\(Int(Double(t) * tickInterval), privacy: .public)s) — safe_to_start never reached → surfacing retry")
             playerState = .failed("This briefing is taking longer than usual. Pull to refresh.")
             return
         }
+        gateLog.log("gate PASSED bulletin=\(bid, privacy: .public) reachedSafe at t=\(t, privacy: .public) (~\(Int(Double(t) * tickInterval), privacy: .public)s) → proceeding to play")
 
         // Fast/cached-path floor: when a briefing is cached, safe_to_start fires on the
         // first poll and the loader would dismiss mid-stage-1. Keep it up until at least
@@ -726,7 +743,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
                 // state and must not drive a reconcile/merge over it (audit: unguarded reconcile race).
                 let gen = await MainActor.run { self.navGeneration }
                 let q = await MainActor.run { self._readinessQuery }
-                guard let r: BulletinReadiness = try? await self.client.get("data/bulletins/\(bid)/readiness\(q)")
+                guard let r: BulletinReadiness = try? await self.readinessClient.get("data/bulletins/\(bid)/readiness\(q)")
                 else { continue }
                 let done = await MainActor.run { self.applyReadinessIfCurrent(r, fetchGen: gen) }
                 if done { return }
