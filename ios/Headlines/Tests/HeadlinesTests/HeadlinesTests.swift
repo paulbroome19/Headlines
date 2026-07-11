@@ -400,6 +400,28 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(p.queue.items.first { $0.storyId == "C" }?.isBuffering, true, "buffering marker follows C by identity")
     }
 
+    // MARK: - URL construction: a query in the path must stay a real "?" (the %3F 404 regression)
+
+    /// Regression: `client.get("…/readiness?profile_id=28")` (L-C) put the "?query" into the path
+    /// string; `URLComponents.path` percent-encoded "?" → %3F, so the server received
+    /// "…/readiness%3Fprofile_id%3D28" → route miss → 404 on EVERY readiness poll → cold play hung
+    /// then errored. buildURL must split the "?" suffix into query items so it stays a real query.
+    func testBuildURLKeepsQueryAsRealQueryNotEncodedPath() throws {
+        let client = APIClient(baseURL: URL(string: "https://headlines.example.com")!)
+
+        let u = try client.buildURL(path: "data/bulletins/258/readiness?profile_id=28")
+        XCTAssertEqual(u.absoluteString, "https://headlines.example.com/data/bulletins/258/readiness?profile_id=28",
+                       "query must be a real '?' — not %3F baked into the path")
+        XCTAssertFalse(u.absoluteString.contains("%3F"), "no percent-encoded '?' in the URL")
+        XCTAssertEqual(URLComponents(url: u, resolvingAgainstBaseURL: false)?.queryItems,
+                       [URLQueryItem(name: "profile_id", value: "28")], "profile_id is a query item")
+
+        // Query-less paths and explicit queryItems still work.
+        let plain = try client.buildURL(path: "data/profiles/28/home-preview")
+        XCTAssertEqual(plain.absoluteString, "https://headlines.example.com/data/profiles/28/home-preview")
+        XCTAssertNil(URLComponents(url: plain, resolvingAgainstBaseURL: false)?.query)
+    }
+
     // MARK: - PR L-D: events echo the selection_id (server 409s a stale one)
 
     /// The flushed /summary payload must carry the play session's selection_id, so the server can
