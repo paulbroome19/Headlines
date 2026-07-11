@@ -1585,3 +1585,41 @@ without server `safe_to_start`. Build: `xcodebuild ... BUILD SUCCEEDED`. PR #203
 **Next step:** on-device retest of a from-scratch briefing (cold cache) to confirm the ~71s cold
 synth now plays through; consider a follow-up to trim the ~71s cold first-audio critical path
 (greeting Haiku + first-two summarise + intro/opener TTS are all serialised before the gate).
+
+## 2026-07-11 (later) — Gate visibility: kill the silent dead-play (bulletin 256 class)
+
+**Context:** after #203 raised the readiness cap 60s→100s, a from-scratch briefing (bulletin 256,
+profile 28) STILL went silent-0:00-grey with NO error message — the guard didn't fire.
+
+**Diagnosis (rider #1, gate width):** the playback gate never grew and is the narrowest it has
+ever been. Git history: gate was intro+story1 (#58 `7f73eb5`), briefly intro+2-stories for ~15h on
+2026-07-06 (`e60046e`→`e885045`), then intro+story1 (`_SAFE_START_GATE=1`), then intro+OPENER
+(`d38eb24`). #152 (`5a9d5b7`) did NOT change gate width — it cut pre-gate latency. So "Option 3 /
+restore the minimal gate" was already the live design; nothing to reverse. `_SAFE_START_STORIES=2`
+is the SYNTH pre-buffer (story 2 + bridge behind the gate), decoupled from the gate — the #152
+mid-briefing-race mitigation; left intact.
+
+**Root cause of the silent death:** in `BulletinPlayer.swift` the `else if t == 0 { break }`
+best-effort exit fires when the FIRST readiness GET throws, leaving `readinessSeen=false`, so the
+#203 `readinessSeen && !reachedSafe` guard was skipped → fell through to `player.play()` on
+URL-less gate segments → silent 0:00. (Bulletin 256's server was healthy: intro+opener audio ready
+at +6-8s, gate_opener_ok True — so this is purely the client not consuming a ready signal / a
+first-poll throw.)
+
+**Fix (gate visibility, all #203 guards kept):** removed the silent `t==0` best-effort break — a
+failed poll is now a transient miss and we keep polling; made the hold-not-play guard UNCONDITIONAL
+(`if !reachedSafe`) so playback is reachable ONLY on the server's safe_to_start verdict, else an
+honest "taking longer — pull to refresh". 100s cap + isBlocked exit unchanged. Build: BUILD
+SUCCEEDED. Also fixed the stale `_SAFE_START_STORIES` gate comment in `data.py:1803`.
+
+**Parallelise (rider):** the pre-gate path is ALREADY parallel — `ensure_story_summaries` runs LLM
+calls 6-way (`_MAX_PARALLEL_SUMMARIES=6`), greeting overlaps summaries, gate TTS fires intro+opener
+via `synthesize_parallel`. No serial bottleneck to parallelise; the opener is on the critical path
+through summary→assemble→TTS by data dependency (all parallel within each stage). The 73s on
+bulletin 255 was LLM/TTS TAIL-latency variance (256's normal cold path was ~8s). The real tail
+lever is a bounded per-call timeout+fallback (deferred — the "next week" cold-latency file), NOT
+parallelisation.
+
+**State:** client gate-visibility fix applied + compiles. Not yet device-retested.
+**Next step:** device retest a cold briefing; decide whether to add the pre-gate LLM/TTS
+timeout-cap to guarantee the ~20-30s p99.

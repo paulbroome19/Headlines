@@ -1800,9 +1800,10 @@ def get_bulletin_readiness(bulletin_id: int, profile_id: int | None = None):
     ready_count = sum(1 for x in out_segments if x["state"] == "ready")
     failed_count = sum(1 for x in out_segments if x["state"] == "failed")
 
-    # Safe to start once the first _SAFE_START_STORIES stories are ready: play gaplessly
-    # through them (intro + those stories + the transitions between) while the remaining
-    # stories keep synthesising in the background and stream into the queue.
+    # Safe to start once the first _SAFE_START_GATE story is ready — intro + the lead opener:
+    # play gaplessly from it while the start-pack's story 2 + the rest keep synthesising in the
+    # background and stream into the queue. NOTE: the gate waits on _SAFE_START_GATE (=1), which
+    # is DECOUPLED from _SAFE_START_STORIES (=2, the synth pre-buffer size) — see the constants.
     story_positions = [i for i, x in enumerate(out_segments) if x["type"] == "story"]
     if len(story_positions) >= _SAFE_START_GATE:
         lead = story_positions[_SAFE_START_GATE - 1] + 1       # through the gate-th story segment
