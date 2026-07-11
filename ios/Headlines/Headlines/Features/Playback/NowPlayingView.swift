@@ -195,12 +195,12 @@ struct NowPlayingView: View {
         let text = loaderLines.indices.contains(lineIndex) ? loaderLines[lineIndex] : "PREPARING"
         return VStack(spacing: 0) {
             // The flicker RESOLVES into the real first-story headline: on loaderComplete
-            // (set ~0.5s before playback starts) the status grid crossfades into the SAME
-            // `headlineFlapCells` the playback card uses — so by the time the state flips,
-            // the board content already matches its destination and the morph is seamless.
+            // (set ~0.5s before playback starts) the flap status grid crossfades into the SAME
+            // clean bold-sans `headlineText` the playback card uses — so by the time the state
+            // flips, the content already matches its destination and the crossfade is seamless.
             Group {
                 if player.loaderComplete {
-                    headlineFlapCells
+                    headlineText
                         .padding(.horizontal, 16)
                         .padding(.top, 20)
                         .padding(.bottom, 18)
@@ -300,8 +300,8 @@ struct NowPlayingView: View {
             .padding(.top, 16)
             .padding(.bottom, 14)
 
-            // Headline on flap cells, off-white, wrapping rows.
-            headlineFlapCells
+            // Headline in clean bold sans, off-white, wrapping rows.
+            headlineText
                 .padding(.horizontal, 16)
                 .padding(.bottom, 16)
 
@@ -359,80 +359,19 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: Headline flap cells (auto-sized + word-wrapped)
+    // MARK: Now-playing headline — clean bold sans (off the flap grid, per the mockup). The flap
+    // board is retained for the greeting / launch identity (SolariGreeting, SplitFlapLoadingView).
+    // Fixed reserved height so the card never jumps between headlines of different lengths.
 
-    private var headlineFlapCells: some View {
-        GeometryReader { geo in
-            let layout = headlineLayout(currentHeadline.uppercased(), width: geo.size.width, height: geo.size.height)
-            // Centre the headline block vertically with equal flexible spacers, so any leftover
-            // space (short/few-row headlines) splits EVENLY above and below rather than pooling at
-            // the bottom. `.frame(alignment:)` did not reliably centre the flap grid here.
-            VStack(alignment: .leading, spacing: 0) {
-                Spacer(minLength: 0)
-                VStack(alignment: .leading, spacing: layout.gap) {
-                    ForEach(Array(layout.rows.enumerated()), id: \.offset) { _, row in
-                        HStack(spacing: layout.gap) {
-                            ForEach(Array(row.enumerated()), id: \.offset) { _, ch in
-                                if ch == " " {
-                                    Color.clear.frame(width: layout.cell.width * 0.5, height: layout.cell.height)
-                                } else {
-                                    FlapCell(glyph: ch, size: layout.cell)
-                                }
-                            }
-                        }
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
-        }
-        .frame(height: headlineHeight)
-    }
-
-    /// Word-wrap the headline into flap-cell rows and auto-size the cell to FILL the board: the
-    /// largest cell that (a) fits the longest word across the width, (b) keeps rows within the cap,
-    /// and (c) fits the reserved height. So a SHORT headline scales up to fill the dark board
-    /// instead of leaving a void, while a LONG headline shrinks to fit — both stay graceful.
-    private func headlineLayout(_ text: String, width: CGFloat, height: CGFloat) -> (cell: CGSize, gap: CGFloat, rows: [[Character]]) {
-        let gap: CGFloat = 2.5
-        let absMaxCellW: CGFloat = 36   // ceiling so a 1–2 word headline stays bold, not cartoonish
-        let minCellW: CGFloat = 11
-        let maxRows = 4
-        let words = text.split(separator: " ").map(String.init)
-        let longest = words.map(\.count).max() ?? 0
-
-        func rowsAt(_ cellW: CGFloat) -> [[Character]] {
-            var rows: [[Character]] = []
-            var current = ""
-            for w in words {
-                let candidate = current.isEmpty ? w : current + " " + w
-                let cWidth = CGFloat(candidate.count) * cellW + CGFloat(max(0, candidate.count - 1)) * gap
-                if current.isEmpty || cWidth <= width { current = candidate }
-                else { rows.append(Array(current)); current = w }
-            }
-            if !current.isEmpty { rows.append(Array(current)) }
-            return rows
-        }
-
-        guard width > 0, height > 0, !words.isEmpty else {
-            return (CGSize(width: minCellW, height: minCellW * 1.5), gap, rowsAt(minCellW))
-        }
-
-        // Search down from the ceiling for the largest cell that satisfies width + row-cap + height
-        // — i.e. the cell size that fills the board without overflowing it.
-        var cellW = minCellW
-        var cw = absMaxCellW
-        while cw >= minCellW {
-            let rows = rowsAt(cw)
-            let longestFits = longest == 0 || (CGFloat(longest) * cw + CGFloat(max(0, longest - 1)) * gap) <= width
-            let contentH = CGFloat(rows.count) * cw * 1.5 + CGFloat(max(0, rows.count - 1)) * gap
-            if rows.count <= maxRows && longestFits && contentH <= height {
-                cellW = cw
-                break
-            }
-            cw -= 0.5
-        }
-        return (CGSize(width: cellW, height: cellW * 1.5), gap, rowsAt(cellW))
+    private var headlineText: some View {
+        Text(currentHeadline)
+            .font(.system(size: 30, weight: .bold))
+            .foregroundColor(BoardColors.character)
+            .lineLimit(4)
+            .minimumScaleFactor(0.55)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, minHeight: headlineHeight,
+                   maxHeight: headlineHeight, alignment: .leading)
     }
 
     private var headlineHeight: CGFloat {

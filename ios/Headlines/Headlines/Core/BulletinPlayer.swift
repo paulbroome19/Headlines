@@ -174,6 +174,11 @@ final class BulletinPlayer: NSObject, ObservableObject {
     // MARK: Dependencies
 
     private let client: APIClient
+    /// F1: readiness polling runs on its OWN dedicated URLSession (isolated connection pool),
+    /// so a slow preview / manifest / event on the shared `URLSession.shared` can never queue
+    /// the gate's readiness GETs behind it — the "healthy server, unconsumed safe_to_start" hang
+    /// (bulletin 257). Same base URL as `client`.
+    private let readinessClient: APIClient
 
     // MARK: Private — context
 
@@ -277,6 +282,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     init(client: APIClient = APIClient(baseURL: AppConfig.apiBaseURL)) {
         self.client = client
+        self.readinessClient = APIClient.makeReadiness(baseURL: client.baseURL)
         super.init()
         setupAudioSession()
         setupRemoteCommands()
@@ -399,7 +405,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
             if t % pollEveryTicks == 0 {
                 // L-C: pass profile_id so the SERVER gate can refuse safe_to_start if the opener
                 // isn't the edition's committed lead (never green-lights wrong audio server-side).
-                if let r: BulletinReadiness = try? await client.get("data/bulletins/\(bid)/readiness\(_readinessQuery)") {
+                if let r: BulletinReadiness = try? await readinessClient.get("data/bulletins/\(bid)/readiness\(_readinessQuery)") {
                     // A critical segment failed → safe_to_start can never fire. Stop
                     // and surface an error instead of holding the loader at ~95%.
                     if r.isBlocked {
@@ -726,7 +732,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
                 // state and must not drive a reconcile/merge over it (audit: unguarded reconcile race).
                 let gen = await MainActor.run { self.navGeneration }
                 let q = await MainActor.run { self._readinessQuery }
-                guard let r: BulletinReadiness = try? await self.client.get("data/bulletins/\(bid)/readiness\(q)")
+                guard let r: BulletinReadiness = try? await self.readinessClient.get("data/bulletins/\(bid)/readiness\(q)")
                 else { continue }
                 let done = await MainActor.run { self.applyReadinessIfCurrent(r, fetchGen: gen) }
                 if done { return }

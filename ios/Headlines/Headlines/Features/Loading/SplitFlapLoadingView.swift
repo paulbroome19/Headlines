@@ -155,6 +155,7 @@ struct SplitFlapLoadingView: View {
     @State private var started = false
     @State private var startDate: Date?
     @State private var audio: FlapAudio?
+    @State private var taglineShown = false   // "Personalised Audio News" — fades in as the word lands
 
     init(onComplete: @escaping () -> Void) {
         self.onComplete = onComplete
@@ -166,16 +167,30 @@ struct SplitFlapLoadingView: View {
 
             GeometryReader { geo in
                 let cell = cellSize(for: geo.size)
-                Group {
-                    if reduceMotion {
-                        board(cell: cell, t: .greatestFiniteMagnitude)
-                    } else {
-                        TimelineView(.animation) { ctx in
-                            board(cell: cell, t: elapsed(ctx.date))
+                let boardHeight = CGFloat(Config.rows) * cell.height + CGFloat(Config.rows - 1) * Config.gap
+                ZStack {
+                    Group {
+                        if reduceMotion {
+                            board(cell: cell, t: .greatestFiniteMagnitude)
+                        } else {
+                            TimelineView(.animation) { ctx in
+                                board(cell: cell, t: elapsed(ctx.date))
+                            }
                         }
                     }
+                    .frame(width: geo.size.width, height: geo.size.height)
+
+                    // Tagline directly under the resolved "HEADLINES" board — fades in as the
+                    // word lands (taglineShown flips at boomTime; immediate under reduce-motion).
+                    Text("Personalised Audio News")
+                        .font(.label(14))
+                        .tracking(2)
+                        .foregroundColor(BoardColors.character.opacity(0.55))
+                        .opacity(taglineShown ? 1 : 0)
+                        .animation(.easeIn(duration: 0.5), value: taglineShown)
+                        .position(x: geo.size.width / 2,
+                                  y: geo.size.height / 2 + boardHeight / 2 + 24)
                 }
-                .frame(width: geo.size.width, height: geo.size.height)
             }
 
             // Faint coated-material grain over the board.
@@ -263,6 +278,7 @@ struct SplitFlapLoadingView: View {
         Haptics.prepareBoard()
 
         if reduceMotion {
+            taglineShown = true                 // no spell-out to wait on → show the tagline at once
             Haptics.boardSettle()
             DispatchQueue.main.asyncAfter(deadline: .now() + Config.holdDuration, execute: onComplete)
             return
@@ -284,6 +300,7 @@ struct SplitFlapLoadingView: View {
         // Soft tick as the last centre flap clicks home — the word settling into place.
         DispatchQueue.main.asyncAfter(deadline: .now() + board.boomTime) {
             Haptics.boardSettle()
+            taglineShown = true                 // reveal the tagline as "HEADLINES" settles
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + board.totalDuration, execute: onComplete)
     }

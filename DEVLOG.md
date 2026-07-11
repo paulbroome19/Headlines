@@ -1623,3 +1623,38 @@ parallelisation.
 **State:** client gate-visibility fix applied + compiles. Not yet device-retested.
 **Next step:** device retest a cold briefing; decide whether to add the pre-gate LLM/TTS
 timeout-cap to guarantee the ~20-30s p99.
+
+## 2026-07-11 (late) — F1 dedicated readiness session + two cosmetics (client / archive)
+
+**F1 (readiness isolation).** Population trace (all 4 cold gens today) showed the backend delivers
+gate audio in ~8s (p50 7.7s; only bulletin 255 was slow at 72.7s, a pure TTS tail). Bulletins 256 &
+257 had healthy fast servers with safe_to_start=True at ~8s, yet the client hung — the readiness
+signal wasn't consumed. Cause on the client: `APIClient` funnels EVERY request through the single
+process-global `URLSession.shared` (APIClient.swift:146), so readiness GETs share one connection
+pool (default 6/host) with the preview GET, manifest POST and events — a slow preview can queue the
+readiness poll. Fix: `APIClient` now takes a per-instance `session` (defaults to `.shared`, so
+nothing else changes) + `APIClient.makeReadiness(baseURL:)` — a dedicated ephemeral URLSession
+(own pool, 8s request timeout, cache-bypass). `BulletinPlayer` polls readiness through a dedicated
+`readinessClient` at both sites (gate poll + playback poll). Keeps all #203/#204 guards.
+
+**Cosmetic 1:** 'Personalised Audio News' tagline under the launch spell-out
+(SplitFlapLoadingView) — a `.label(14)` sans line that fades in at `board.boomTime` (immediate under
+reduce-motion), positioned just below the resolved board.
+
+**Cosmetic 2:** now-playing headline moved off the flap grid to a clean bold sans
+(`Text(...).system(size:30,weight:.bold)`), replacing `headlineFlapCells` (renamed `headlineText`)
+and deleting the now-dead `headlineLayout`. Flap board retained for the greeting / launch identity
+(SolariGreeting, SplitFlapLoadingView). Fixed 104pt reserved height kept so the card never jumps.
+NOTE: headline rendered in NATURAL case (not the old ALL-CAPS flaps) — best guess vs the mockup;
+casing/size/alignment easy to tweak.
+
+Build: BUILD SUCCEEDED. UI item 2 (home auto-refresh) intentionally left out.
+
+**F2 (backend/deploy) NOT done — premise correction pending.** The `home-preview` GET is already
+LLM-free (summarises zero stories; blank standfirst when uncached). The synchronous 20-story
+summarise is on the MANIFEST path (data.py:856), not the preview. So "enrich visible N, background
+rest" is either (a) ADD bounded enrichment to the preview GET, or (b) REDUCE the manifest's
+summarise-20 to visible-N. Awaiting which. Membership rider already verified: selection is
+independent of summaries; briefing re-summarises the full set at 856/1413; reconcile is removal-only.
+
+**State:** client archive changeset complete + compiles. F2 backend awaiting path/N confirmation.
