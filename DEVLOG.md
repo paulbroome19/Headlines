@@ -9,6 +9,23 @@ kept for provenance and as a record of the reasoning behind the code,
 and reads newest-context-first within each session rather than top to
 bottom.
 
+## Changes Made This Session (2026-07-11 — LOAD-PATH PR L-C: the gate invariant, both sides)
+
+**PR L-C of the load series. Backend + iOS.** Never green-light audio whose opener isn't the committed lead.
+
+- Server (`data.py`): `/readiness` takes optional `profile_id`; `gate_opener_ok(opener, committed_lead)`
+  pure helper; when profile_id is present, `safe_to_start` is BLOCKED if the first story segment
+  (opener) != the edition's committed lead (story_ids[0]) — loud warning, never green-lights wrong
+  audio. Backward compatible (no profile_id → today). `test_gate_invariant.py` (4, incl. 240779≠415760).
+- Client (`BulletinPlayer.swift`): passes `?profile_id=` on both readiness polls (server can enforce);
+  before starting playback, `openerMatchesQueueLead()` asserts firstAudibleStoryId == queue.items[0];
+  mismatch → HOLD (don't play) + loud `gateLog` on the `com.headlines.flush` subsystem (category
+  "gate") + surface `.failed` rather than hang. `testGateHoldsWhenOpenerDoesNotMatchBoardLead`.
+- Tests: backend 123, iOS 24.
+
+L-D (client pins the tapped selection + events echo selection_id) is stacked next on the same iOS
+lineage so ONE archive covers L-C + L-D, verified in a single device session.
+
 ## Changes Made This Session (2026-07-11 — LOAD-PATH PR L-B: selection_id threaded + asserted)
 
 **PR L-B of the load series. Backend, deploy-gated.** One selection identity threaded through the

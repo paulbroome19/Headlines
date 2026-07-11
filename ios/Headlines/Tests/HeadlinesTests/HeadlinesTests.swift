@@ -400,6 +400,24 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(p.queue.items.first { $0.storyId == "C" }?.isBuffering, true, "buffering marker follows C by identity")
     }
 
+    // MARK: - PR L-C: the client gate — never start audio whose opener != the board lead
+
+    /// The player must refuse to start playback unless the first audible story (the opener) is the
+    /// board's lead (queue.items[0]). Both derive from the running order so they match by
+    /// construction — this is the last-resort hard stop for the 240779≠415760 class of incident.
+    @MainActor
+    func testGateHoldsWhenOpenerDoesNotMatchBoardLead() {
+        let p = BulletinPlayer()
+        p._testConfigureStories(ids: ["A", "B", "C"])
+        XCTAssertEqual(p.firstAudibleStoryId, p.queue.items.first?.storyId, "consistent: opener == board lead")
+        XCTAssertTrue(p.openerMatchesQueueLead(), "no hold when they match")
+
+        p._testForceQueueLeadMismatch()   // board lead now C, first audible segment still A
+
+        XCTAssertNotEqual(p.firstAudibleStoryId, p.queue.items.first?.storyId, "forced divergence")
+        XCTAssertFalse(p.openerMatchesQueueLead(), "gate must HOLD (never start wrong audio) when opener != board lead")
+    }
+
     // MARK: - Loader stage pacing (brisk ~4s stages over a ~16s window; last stage dwells)
 
     /// Paced stages advance one per `stageSeconds` purely from elapsed time — no backend
