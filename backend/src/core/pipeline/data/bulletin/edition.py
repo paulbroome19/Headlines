@@ -37,6 +37,18 @@ class UserDailyEditionRepo:
             ids = json.loads(ids)
         return [str(x) for x in ids]
 
+    def get_ranking_run(self, profile_id: int, edition_date: date, request_hash: str) -> int | None:
+        """The run this edition is PINNED to — the selection identity's run component (L-B). None
+        when no edition exists (e.g. the create-time warmer, before any preview materialised one)."""
+        row = self.db.execute(
+            text("""
+                SELECT ranking_run_id FROM data.user_daily_editions
+                WHERE profile_id = :pid AND edition_date = :d AND request_hash = :h
+            """),
+            {"pid": profile_id, "d": edition_date, "h": request_hash},
+        ).first()
+        return int(row[0]) if row is not None and row[0] is not None else None
+
     def reconcile_story_ids(
         self, profile_id: int, edition_date: date, request_hash: str, story_ids: list[str]
     ) -> int:

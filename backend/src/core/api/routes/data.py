@@ -49,6 +49,7 @@ from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
     selection_filters,
+    selection_token,
     validate_filter_categories,
     select_stories,
     select_stories_by_duration,
@@ -787,6 +788,15 @@ def _get_or_assemble_bulletin(
             is_first_bulletin = (prior_count == 0)
 
         if existing_bulletin is not None:
+            # L-B (rider): a cached/warm bulletin must belong to the user's PINNED edition selection.
+            # This branch found it by (get_latest(), request_hash) — so if a run has drifted since the
+            # warm/create, serving it would be a cross-selection serve. Fail loudly, never grandfather.
+            if profile_id is not None:
+                assert_same_selection(
+                    served_run=existing_bulletin["ranking_run_id"],
+                    pinned_run=UserDailyEditionRepo(db).get_ranking_run(profile_id, uk_now().date(), request_hash),
+                    request_hash=request_hash, where="warm/cached serve",
+                )
             # ── Cached bulletin: read metadata only, no LLM needed ───────────
             bulletin_cached = True
             bulletin_id = existing_bulletin["id"]
@@ -935,6 +945,7 @@ def _get_or_assemble_bulletin(
         "bulletin_id": bulletin_id,
         "ranking_run_id": ranking_run_id,
         "request_hash": request_hash,
+        "selection_id": selection_token(ranking_run_id, request_hash),
         "story_count": story_count,
         "script": bulletin_script,
         "segments": bulletin_segments,
@@ -1067,7 +1078,8 @@ def prepare_bulletin_for_manifest(
             if not isinstance(segs, list):
                 segs = _json.loads(segs)
             return {"mode": "skeleton", "dispatch": False,  # in-progress → join, don't re-run
-                    "bulletin_id": existing["id"], "ranking_run_id": ranking_run_id, "segments": segs}
+                    "bulletin_id": existing["id"], "ranking_run_id": ranking_run_id, "segments": segs,
+                    "selection_id": selection_token(ranking_run_id, request_hash)}
 
         is_first = False
         if name:
@@ -1102,6 +1114,7 @@ def prepare_bulletin_for_manifest(
     return {
         "mode": "skeleton", "dispatch": True, "bulletin_id": bulletin_id,
         "ranking_run_id": ranking_run_id, "segments": skeleton,
+        "selection_id": selection_token(ranking_run_id, request_hash),
         "bg": {
             "bulletin_id": bulletin_id, "ranking_run_id": ranking_run_id, "request_hash": request_hash,
             "name": name, "is_first_bulletin": is_first, "profile_id": profile_id,
@@ -1255,6 +1268,20 @@ def _synth_remaining(bulletin_id: int, segments: list[dict],
         if (seg.get("text") or "").strip():
             synthesize_segment(seg["text"], segment_type=seg.get("type", "story"),
                                voice=voice, model=model, audio_format=audio_fmt)
+
+
+def assert_same_selection(*, served_run: int, pinned_run: int | None, request_hash: str,
+                          where: str) -> None:
+    """L-B: an artifact SERVED to a user must belong to the edition's PINNED selection. `pinned_run`
+    is None when no edition exists yet (the create-time warmer, before any preview materialised one)
+    — nothing to cross-check, no-op. A run mismatch is a cross-selection serve (board≠audio) → RAISE
+    loudly. This covers the warmer/cached path per the rider: a warm bulletin whose run drifted from
+    the user's pinned edition fails loudly rather than being a silent grandfather clause."""
+    if pinned_run is not None and pinned_run != served_run:
+        raise RuntimeError(
+            f"selection mismatch [{where}]: served {selection_token(served_run, request_hash)} "
+            f"!= edition pinned {selection_token(pinned_run, request_hash)}"
+        )
 
 
 def assert_opener_is_final_lead(*, opener_story_id: str | None, final_order: list[dict],
@@ -1839,6 +1866,9 @@ def get_bulletin_readiness(bulletin_id: int):
         # it flips false once the assembled-final (deduped) segments have overwritten it.
         "story_order": authoritative_story_order(out_segments),
         "provisional": not assembled_final,
+        # ── L-B: the SELECTION identity this bulletin belongs to (run:hash). The client carries it
+        # and (L-D) echoes it on events; a mismatch anywhere is a cross-selection serve.
+        "selection_id": selection_token(bulletin["ranking_run_id"], bulletin["request_hash"]),
         # ── added: ordered milestones the loader advances against ──
         "stage": stage,                       # assembled → audio_generating → buffered → ready (| failed)
         "intro_ready": intro_ready,

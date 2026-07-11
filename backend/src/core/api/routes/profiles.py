@@ -366,6 +366,7 @@ def _build_full_manifest(
     return {
         "bulletin_id": plan["bulletin_id"],
         "ranking_run_id": plan["ranking_run_id"],
+        "selection_id": plan.get("selection_id"),   # L-B: selection identity the client carries + echoes
         "segments": manifest_segments,
     }
 
@@ -476,5 +477,6 @@ def get_manifest(
     return {
         "bulletin_id": prep["bulletin_id"],
         "ranking_run_id": prep["ranking_run_id"],
+        "selection_id": prep.get("selection_id"),   # L-B: selection identity the client carries + echoes
         "segments": skeleton_segments,
     }
