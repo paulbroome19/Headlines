@@ -482,6 +482,29 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertNil(URLComponents(url: plain, resolvingAgainstBaseURL: false)?.query)
     }
 
+    // MARK: - APIClient uses ITS OWN session, not URLSession.shared (the dead readiness-session bug)
+
+    /// Regression: `send()` hardcoded `URLSession.shared.data(for:)`, so the dedicated readiness session
+    /// (`makeReadiness` — its own 2-conn pool / 8s fail-fast / cache-bypass, #205) was DEAD CODE. Every
+    /// request, readiness included, queued on shared's 6-conn/host pool, so a cold load could stall the
+    /// readiness poll client-side with the server already ready. `send` must use the INSTANCE session, so
+    /// a request on a client built with a custom session is intercepted by THAT session's URLProtocol —
+    /// if it fell back to `.shared`, this stub would never fire and the call would error/hang.
+    func testSendUsesInstanceSessionNotShared() async throws {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [StubURLProtocol.self]
+        StubURLProtocol.reset()
+        StubURLProtocol.body = Data(#"{"value":"from-instance-session"}"#.utf8)
+
+        let client = APIClient(baseURL: URL(string: "https://stub.example.com")!,
+                               session: URLSession(configuration: cfg))
+        let resp: StubResponse = try await client.get("data/ping")
+
+        XCTAssertTrue(StubURLProtocol.didHandle,
+                      "send must route through the instance session — its URLProtocol stub must fire (not URLSession.shared)")
+        XCTAssertEqual(resp.value, "from-instance-session")
+    }
+
     // MARK: - PR L-D: events echo the selection_id (server 409s a stale one)
 
     /// The flushed /summary payload must carry the play session's selection_id, so the server can
@@ -559,4 +582,32 @@ final class HeadlinesTests: XCTestCase {
         XCTAssertEqual(icon.size.width, 1024, accuracy: 1)
         XCTAssertEqual(icon.size.height, 1024, accuracy: 1)
     }
+}
+
+// MARK: - Test doubles
+
+private struct StubResponse: Decodable { let value: String }
+
+/// A URLProtocol that answers any request with a canned 200 + JSON body, and records that it fired.
+/// Registered ONLY on a specific session's configuration — so it proves which session actually ran
+/// the request (it can't intercept URLSession.shared).
+final class StubURLProtocol: URLProtocol {
+    static var didHandle = false
+    static var body = Data("{}".utf8)
+
+    static func reset() { didHandle = false; body = Data("{}".utf8) }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.didHandle = true
+        let resp = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                   headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
