@@ -87,13 +87,56 @@ def parse_selection_run(selection_id: str | None) -> int | None:
     L-D: the client sends the tapped selection_id on the manifest POST; the server probes the cache
     with THIS run so it serves exactly the selection the board committed to — a newer run landing
     between render and tap can't swap it. None → server behaves as today (backward compatible)."""
+    pin = parse_selection_token(selection_id)
+    return pin[0] if pin is not None else None
+
+
+def parse_selection_token(selection_id: str | None) -> tuple[int, str] | None:
+    """The FULL (run, hash) identity of a `selection_id` token (`"{run}:{hash}"`), or None if
+    absent/malformed.
+
+    L-D completed: the client sends the tapped selection_id on the manifest POST and the server
+    serves EXACTLY that materialised edition — the run pins the ranking, and the HASH pins the
+    edition's membership + order. Parsing the run ALONE (the old `parse_selection_run`) was the
+    L-D hole: the manifest recomputed the request_hash from the live profile, so any hash drift
+    between render and tap (a filter change, or the UK day rolling at 23:00 UTC — the hash folds in
+    the day) served a DIFFERENT edition under the client's pin → home order ≠ briefing order. Return
+    both so the manifest never recomputes the hash over a pinned selection. None → the server behaves
+    as today (backward compatible: no pin → recompute from the profile)."""
     if not selection_id or ":" not in selection_id:
         return None
-    run_part = selection_id.split(":", 1)[0]
+    run_part, hash_part = selection_id.split(":", 1)
+    if not hash_part:
+        return None
     try:
-        return int(run_part)
+        return int(run_part), hash_part
     except ValueError:
         return None
+
+
+def resolve_selection_pin(
+    client_pin: tuple[int, str] | None,
+    current_hash: str,
+    *,
+    pinned_edition_exists: bool,
+) -> tuple[str, bool, bool]:
+    """Pure L-D decision (no IO): given the client's tapped (run, hash) pin and today's recomputed
+    request_hash, decide WHICH edition hash to serve and whether this is a deliberate refresh.
+
+    Returns (request_hash, honor_pin, selection_refreshed):
+      - honor_pin True  → the pinned edition exists → serve EXACTLY the pinned hash (the client's run
+        also wins the run probe). Home order == briefing order, guaranteed.
+      - honor_pin False → serve the current hash. `selection_refreshed` is True iff the client sent a
+        pin we could NOT honor whose hash differs from current — i.e. the pinned edition is gone (the
+        UK day rolled at 23:00 UTC, or filters changed and no edition exists for that hash). That is a
+        DELIBERATE refresh to the current edition, flagged so the client re-syncs to a fresh preview
+        state — never a silent serve of a different order under the client's stale pin.
+      - No pin, or a pin whose hash already equals current → honor_pin False, selection_refreshed
+        False → unchanged behaviour (recompute from the profile; cold play-first / warmer path)."""
+    if client_pin is not None and pinned_edition_exists:
+        return client_pin[1], True, False
+    stale = client_pin is not None and client_pin[1] != current_hash
+    return current_hash, False, stale
 
 
 def validate_filter_categories(cats: list[str]) -> list[str]:

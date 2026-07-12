@@ -286,6 +286,7 @@ def _build_full_manifest(
     audio_fmt: str,
     ext: str,
     background_tasks: BackgroundTasks,
+    selection_refreshed: bool = False,
 ) -> dict:
     """Build the COMPLETE manifest (all segment urls + durations) from a fully-assembled
     bulletin plan, enqueueing background TTS for any cache misses. This is the unchanged
@@ -369,6 +370,7 @@ def _build_full_manifest(
         "bulletin_id": plan["bulletin_id"],
         "ranking_run_id": plan["ranking_run_id"],
         "selection_id": plan.get("selection_id"),   # L-B: selection identity the client carries + echoes
+        "selection_refreshed": selection_refreshed,  # L-D: server refreshed a stale pin → client re-syncs
         "segments": manifest_segments,
     }
 
@@ -438,7 +440,9 @@ def get_manifest(
     )
 
     if prep["mode"] == "cached":
-        # Fully-assembled bulletin already exists → return the complete manifest (unchanged).
+        # Fully-assembled bulletin already exists → return the complete manifest. L-D: carry the
+        # run+hash the manifest resolved from the tapped selection_id so the cached assembler serves
+        # EXACTLY that pinned selection (never recomputes the hash / takes get_latest()).
         plan = _get_or_assemble_bulletin(
             profile_id=profile_id,
             include_categories=profile["include_categories"],
@@ -446,10 +450,13 @@ def get_manifest(
             max_duration_minutes=profile.get("max_duration_minutes", 5),
             name=profile["name"],
             include_top_stories=include_top_stories,
+            pinned_run=prep.get("ranking_run_id"),
+            pinned_hash=prep.get("request_hash"),
         )
         return _build_full_manifest(
             plan, profile_id=profile_id, voice=voice, model=model,
             audio_fmt=audio_fmt, ext=ext, background_tasks=background_tasks,
+            selection_refreshed=prep.get("selection_refreshed", False),
         )
 
     # Streaming path: kick off the background assembly (new skeleton only — an in-progress
@@ -481,5 +488,6 @@ def get_manifest(
         "bulletin_id": prep["bulletin_id"],
         "ranking_run_id": prep["ranking_run_id"],
         "selection_id": prep.get("selection_id"),   # L-B: selection identity the client carries + echoes
+        "selection_refreshed": prep.get("selection_refreshed", False),  # L-D: stale pin → client re-syncs
         "segments": skeleton_segments,
     }
