@@ -49,6 +49,12 @@ private enum Config {
     static let settleDur = 0.14         // landing settle (scale nudge) duration
     static let settleAmp: CGFloat = 0.05
 
+    // Tagline reveal — a mechanical LEFT→RIGHT wipe as the word spells out, then a held beat
+    // (not a crossfade). The launch moment is allowed to cost `taglineHold` even if load is ready.
+    static let taglineWipeLead = 1.0    // wipe begins this long before the word fully lands
+    static let taglineWipeDur  = 1.0    // left→right reveal duration
+    static let taglineHold     = 0.50   // min fully-visible hold before handing off to Home
+
     // ── Look ──────────────────────────────────────────────────────
     static let perspective: CGFloat = 0.42  // 3D foreshortening of the flaps
     static let foldSign: Double = -1        // flip to +1 if the fold looks inverted
@@ -155,7 +161,7 @@ struct SplitFlapLoadingView: View {
     @State private var started = false
     @State private var startDate: Date?
     @State private var audio: FlapAudio?
-    @State private var taglineShown = false   // "Personalised Audio News" — fades in as the word lands
+    @State private var taglineReveal: CGFloat = 0   // "Personalised Audio News" — 0→1 left→right wipe
 
     init(onComplete: @escaping () -> Void) {
         self.onComplete = onComplete
@@ -180,14 +186,18 @@ struct SplitFlapLoadingView: View {
                     }
                     .frame(width: geo.size.width, height: geo.size.height)
 
-                    // Tagline directly under the resolved "HEADLINES" board — fades in as the
-                    // word lands (taglineShown flips at boomTime; immediate under reduce-motion).
+                    // Tagline directly under the resolved "HEADLINES" board, revealed by a mechanical
+                    // LEFT→RIGHT wipe (a leading-anchored rectangle mask grown 0→full width) that
+                    // tracks the spell-out, then held. Not a crossfade.
                     Text("Personalised Audio News")
                         .font(.label(14))
                         .tracking(2)
                         .foregroundColor(BoardColors.character.opacity(0.55))
-                        .opacity(taglineShown ? 1 : 0)
-                        .animation(.easeIn(duration: 0.5), value: taglineShown)
+                        .mask(alignment: .leading) {
+                            GeometryReader { g in
+                                Rectangle().frame(width: g.size.width * taglineReveal)
+                            }
+                        }
                         .position(x: geo.size.width / 2,
                                   y: geo.size.height / 2 + boardHeight / 2 + 24)
                 }
@@ -278,7 +288,7 @@ struct SplitFlapLoadingView: View {
         Haptics.prepareBoard()
 
         if reduceMotion {
-            taglineShown = true                 // no spell-out to wait on → show the tagline at once
+            taglineReveal = 1                   // instant reveal — no wipe under reduce-motion — then hold
             Haptics.boardSettle()
             DispatchQueue.main.asyncAfter(deadline: .now() + Config.holdDuration, execute: onComplete)
             return
@@ -297,12 +307,22 @@ struct SplitFlapLoadingView: View {
             }
         }
 
+        // Tagline: a mechanical LEFT→RIGHT wipe that tracks the spell-out — begins ~taglineWipeLead
+        // before the word fully lands and completes as it settles (linear = mechanical, no ease).
+        let wipeStart = max(0, board.boomTime - Config.taglineWipeLead)
+        DispatchQueue.main.asyncAfter(deadline: .now() + wipeStart) {
+            withAnimation(.linear(duration: Config.taglineWipeDur)) { taglineReveal = 1 }
+        }
+
         // Soft tick as the last centre flap clicks home — the word settling into place.
         DispatchQueue.main.asyncAfter(deadline: .now() + board.boomTime) {
             Haptics.boardSettle()
-            taglineShown = true                 // reveal the tagline as "HEADLINES" settles
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + board.totalDuration, execute: onComplete)
+
+        // Hand off to Home only after the tagline is fully revealed AND held for taglineHold — the
+        // launch moment is allowed to cost that half-second even if the app finished loading early.
+        let doneAt = max(board.totalDuration, wipeStart + Config.taglineWipeDur + Config.taglineHold)
+        DispatchQueue.main.asyncAfter(deadline: .now() + doneAt, execute: onComplete)
     }
 }
 

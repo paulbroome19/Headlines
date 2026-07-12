@@ -222,6 +222,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
     // MARK: Private — seek state
 
     private var lastSkipBackTime: Date?
+    private static let prevDoublePressWindow: TimeInterval = 3.0   // a 2nd PREV within this → previous story
 
     // MARK: Private — queue player
 
@@ -1171,6 +1172,17 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     /// Test seam: record a pending tap by identity (as the pending branch does) with no queue rebuild.
     func _testSetPendingTap(id: String) { pendingTapStoryId = id }
+
+    /// Test seam: the (resolved segment, seek seconds) a navigation to `unitIndex` at `offsetSeconds`
+    /// resolves to — exposes the pure bridge-vs-body landing decision so tests can assert
+    /// "body start = 0%" (offset = bridge length → the STORY segment at seek 0) without touching
+    /// the private `segments` array.
+    func _testResolvedStart(unitIndex: Int, offsetSeconds: Double) -> (segment: ManifestSegment, seekSeconds: Double)? {
+        guard unitIndex >= 0, unitIndex < storyUnits.count,
+              let (arrayIndex, seekSeconds) = startSegment(for: storyUnits[unitIndex], offsetSeconds: offsetSeconds)
+        else { return nil }
+        return (segments[arrayIndex], seekSeconds)
+    }
     var _testPendingStoryId: String? { pendingTapStoryId }
     func _testFulfilPendingTapIfReady() { fulfilPendingTapIfReady() }
 
@@ -1956,19 +1968,22 @@ final class BulletinPlayer: NSObject, ObservableObject {
         seekToStoryUnit(at: unitIndex, offsetSeconds: max(0, offsetInUnit))
     }
 
-    /// Skip backward: restart current unit, or go to previous unit if near the start
-    /// or called again within 2 s (standard podcast double-tap-back pattern).
+    /// PREV — two-mode (podcast standard), landing on the story BODY, never the bridge: the first
+    /// press restarts the CURRENT story at its body start; a second press within
+    /// `prevDoublePressWindow` (~3s) jumps to the PREVIOUS story's body start (repeated quick
+    /// presses keep walking backward). Backward-only, so seekToStoryUnit fires no "skipped" events —
+    /// consumption/heard semantics are preserved. Mirrors skip() (NEXT); lock-screen prev delegates
+    /// here so it mirrors automatically.
     func skipBack() {
+        guard !storyUnits.isEmpty, currentUnitIndex < storyUnits.count else { return }
         let now = Date()
-        let nearStart    = positionSeconds < 2.0
-        let recentBack   = lastSkipBackTime.map { now.timeIntervalSince($0) < 2.0 } ?? false
-
-        if nearStart || recentBack {
-            seekToStoryUnit(at: max(0, currentUnitIndex - 1))
-        } else {
-            seekToStoryUnit(at: currentUnitIndex)
-        }
+        let recentBack = lastSkipBackTime.map { now.timeIntervalSince($0) < Self.prevDoublePressWindow } ?? false
         lastSkipBackTime = now
+
+        let target = recentBack ? max(0, currentUnitIndex - 1) : currentUnitIndex
+        // offset = the unit's bridge length ⇒ the playhead lands at the STORY body start (0% of the
+        // story), skipping the connective bridge — exactly as skip() (NEXT) does.
+        seekToStoryUnit(at: target, offsetSeconds: storyUnits[target].transitionDurationSeconds)
     }
 
     // MARK: - Stall detection

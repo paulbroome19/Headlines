@@ -127,6 +127,42 @@ final class HeadlinesTests: XCTestCase {
                       "both cleared stories (s0, s1) must be recorded skipped; got \(events)")
     }
 
+    // MARK: - Next/Prev land on story BODY, never connective tissue (final-polish item 3)
+
+    /// A navigation at offset = the unit's bridge length must resolve to the STORY segment at
+    /// seek 0 (body start = 0% of the story); offset 0 resolves to the preceding BRIDGE. This is the
+    /// landing contract both NEXT (skip) and PREV (skipBack) rely on.
+    @MainActor
+    func testNavAtBridgeLengthLandsOnBodyNotBridge() throws {
+        let player = BulletinPlayer()
+        player._testConfigureStories(ids: ["s0", "s1"])            // all ready, bridge=0.5s + body=1.0s
+        let unit = player.storyUnits[1]
+
+        let body = try XCTUnwrap(player._testResolvedStart(unitIndex: 1,
+                                                           offsetSeconds: unit.transitionDurationSeconds))
+        XCTAssertTrue(body.segment.isStory, "body offset must land on the STORY segment")
+        XCTAssertEqual(body.seekSeconds, 0, accuracy: 0.001, "body start = 0% of the story")
+
+        let bridge = try XCTUnwrap(player._testResolvedStart(unitIndex: 1, offsetSeconds: 0))
+        XCTAssertFalse(bridge.segment.isStory, "offset 0 must land on the bridge")
+    }
+
+    /// PREV two-mode: the first press restarts the CURRENT story (body); a second press within the
+    /// ~3s window jumps to the PREVIOUS story (body). Landing point is the story body in both modes.
+    @MainActor
+    func testPrevTwoModeCurrentThenPrevious() {
+        let player = BulletinPlayer()
+        player._testConfigureStories(ids: ["s0", "s1", "s2"])      // all ready
+        player.seekToStoryUnit(at: 2, offsetSeconds: player.storyUnits[2].transitionDurationSeconds)
+        XCTAssertEqual(player.currentUnitIndex, 2)
+
+        player.skipBack()                                          // 1st press → restart current (s2)
+        XCTAssertEqual(player.currentUnitIndex, 2, "first PREV restarts the current story")
+
+        player.skipBack()                                          // 2nd press within window → previous (s1)
+        XCTAssertEqual(player.currentUnitIndex, 1, "second PREV within the window goes to the previous story")
+    }
+
     /// Closing the player while a BRIDGE is the live item must still record the in-progress story as
     /// abandoned — the exit-path counterpart to the skip fix (same `currentSegment.isStory` gate).
     @MainActor
