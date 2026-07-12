@@ -4,6 +4,7 @@ import json as _json
 import logging
 import os
 import random
+import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -981,6 +982,11 @@ def _get_or_assemble_bulletin(
 
 _STREAM_PRIORITY_TTL = 3600   # seconds a skip-priority hint lives
 
+# Bounded ElevenLabs (TTS) concurrency for the post-gate tail synthesis (_synth_remaining). Matches
+# the start-pack's proven 4-way (synthesize_parallel); the tail runs AFTER the gate, so per-bulletin
+# peak provider concurrency is unchanged. NOT an Anthropic bound — summaries use _MAX_PARALLEL_SUMMARIES.
+_MAX_PARALLEL_TAIL_SYNTH = 4
+
 
 def _stream_redis():
     try:
@@ -1301,23 +1307,60 @@ def _reprioritise_order(remaining: list[int], pidx: int | None) -> list[int]:
 def _synth_remaining(bulletin_id: int, segments: list[dict],
                      voice: str, model: str, audio_fmt: str) -> None:
     """Synthesise every segment after the start-pack, honouring a tap/skip priority hint with the
-    forward-then-backfill rule (see _reprioritise_order). The hint is re-read from Redis on EVERY
-    iteration and synthesis is strictly SEQUENTIAL (one segment at a time), so a bumped story jumps
-    the queue after only the current in-flight call — nothing else competes for it."""
+    forward-then-backfill rule (see _reprioritise_order).
+
+    Runs a BOUNDED pool of `_MAX_PARALLEL_TAIL_SYNTH` workers. It used to be strictly SEQUENTIAL —
+    one segment at a time — which for a 20-story briefing meant ~150s of tail synth against ~150s of
+    audio, so background synthesis barely stayed ahead of the listener and long briefings hit
+    mid-briefing buffering holds. Parallelising the tail keeps synthesis comfortably ahead of
+    playback (the release-window bridge; the real throughput fix is Tuesday's worker split).
+
+    Skip-priority is PRESERVED: each worker re-reads the LIVE Redis hint under a lock and pops the
+    front of the continuously-reprioritised queue, so a bumped story is taken by the NEXT free worker
+    — responsiveness is ~one in-flight call as before (with several workers, if anything shorter, not
+    longer). One shared list under one lock → each segment is taken exactly once (no drop, no dup).
+
+    Rate limits: TTS is ElevenLabs, NOT Anthropic. The start-pack already synthesises 4-way
+    (`synthesize_parallel`, proven headroom) and the tail runs AFTER the gate, so peak provider
+    concurrency PER BULLETIN is unchanged by this. Summaries (Anthropic) are untouched — already
+    parallel at `_MAX_PARALLEL_SUMMARIES` — so this adds no Anthropic concurrent-request pressure."""
     # The start-pack synthesised intro + the first _SAFE_START_STORIES stories (the lead's
     # opener+remainder count as ONE story) + their transitions — skip exactly those, derived
     # from the structure rather than a hardcoded count (the lead split makes it 5, not 4).
     already = set(range(_start_pack_boundary(segments, _SAFE_START_STORIES)))
     remaining = [i for i in range(len(segments)) if i not in already]
     story_idx = _unit_start_index(segments)
-    while remaining:
-        prio = _get_synth_priority(bulletin_id)                       # re-read every loop (live)
-        remaining = _reprioritise_order(remaining, story_idx.get(prio) if prio else None)
-        nxt = remaining.pop(0)
-        seg = segments[nxt]
-        if (seg.get("text") or "").strip():
-            synthesize_segment(seg["text"], segment_type=seg.get("type", "story"),
-                               voice=voice, model=model, audio_format=audio_fmt)
+    lock = threading.Lock()
+
+    def _take_next() -> int | None:
+        # Pop the next segment index, honouring the LIVE skip/tap priority hint (re-read per pull,
+        # under the lock so concurrent workers can't take the same index or race the reprioritise).
+        nonlocal remaining
+        with lock:
+            if not remaining:
+                return None
+            prio = _get_synth_priority(bulletin_id)
+            remaining = _reprioritise_order(remaining, story_idx.get(prio) if prio else None)
+            return remaining.pop(0)
+
+    def _worker() -> None:
+        while True:
+            nxt = _take_next()
+            if nxt is None:
+                return
+            seg = segments[nxt]
+            if (seg.get("text") or "").strip():
+                synthesize_segment(seg["text"], segment_type=seg.get("type", "story"),
+                                   voice=voice, model=model, audio_format=audio_fmt)
+
+    n_workers = min(len(remaining), _MAX_PARALLEL_TAIL_SYNTH)
+    if n_workers <= 1:
+        _worker()
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_worker) for _ in range(n_workers)]
+        for f in futures:
+            f.result()   # surface any truly-exceptional worker error (synthesize_segment logs its own)
 
 
 def assert_event_selection(event_selection_id: str | None, bulletin_selection_id: str) -> None:
