@@ -1658,3 +1658,29 @@ summarise-20 to visible-N. Awaiting which. Membership rider already verified: se
 independent of summaries; briefing re-summarises the full set at 856/1413; reconcile is removal-only.
 
 **State:** client archive changeset complete + compiles. F2 backend awaiting path/N confirmation.
+
+## 2026-07-12 — Final polish (iOS, one archive): launch tagline wipe, playback header, next/prev→body
+
+Branch feat/polish-launch-header-skip. Base main (has the %3F readiness fix #206, F1 #205).
+
+1. **Launch tagline pacing** (SplitFlapLoadingView): replaced the crossfade with a mechanical
+   LEFT→RIGHT wipe (leading-anchored rectangle mask grown 0→full, `.linear`), beginning
+   ~taglineWipeLead(1s) before boomTime and completing as the word lands; then a guaranteed
+   ≥taglineHold(0.5s) hold before handoff (`onComplete` deadline = max(totalDuration, wipeEnd+hold)),
+   so the launch costs the half-second even if load finished early. Reduce-motion = instant reveal + hold.
+
+2. **Playback header** (NowPlayingView): removed the "MORNING/…/NIGHT BRIEFING" top-left label.
+   The lone date looked orphaned on its own row → per pick, merged the date onto the back-chevron
+   row (right-aligned) and dropped the empty row.
+
+3. **Next/prev land on story BODY, never bridge** (BulletinPlayer): NEXT (`skip()`) already landed
+   on body (offset = bridge length) — unchanged. PREV (`skipBack()`) rewritten to the two-mode
+   podcast standard landing on BODY: 1st press restarts current story body; 2nd press within
+   prevDoublePressWindow(3.0s, was 2.0) → previous story body; repeated presses walk back. Dropped
+   the old `nearStart` clause (per spec — press-count only). Lock-screen prev delegates to skipBack →
+   mirrors automatically. Backward-only nav fires no "skipped" events → consumption semantics hold.
+   Tests: added `testNavAtBridgeLengthLandsOnBodyNotBridge` (body offset → story seg @ seek 0; offset
+   0 → bridge) and `testPrevTwoModeCurrentThenPrevious` (index 2→2→1). New `_testResolvedStart` seam.
+   Full HeadlinesTests suite: TEST SUCCEEDED.
+
+Build: BUILD SUCCEEDED. No parked skip PR existed (built fresh).

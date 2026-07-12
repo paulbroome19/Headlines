@@ -86,6 +86,9 @@ struct NowPlayingView: View {
 
     private var topBar: some View {
         VStack(spacing: 12) {
+            // Back chevron + date share ONE row (final-polish item 2): the
+            // "MORNING/…/NIGHT BRIEFING" label was removed and the date moved up here, so it's not
+            // orphaned on its own row above the divider.
             HStack {
                 Button(action: onClose) {
                     Image(systemName: "chevron.left")
@@ -95,13 +98,6 @@ struct NowPlayingView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Spacer()
-            }
-
-            HStack(alignment: .firstTextBaseline) {
-                Text(TimeOfDay.current(now).briefingEdition)
-                    .font(.label(12)).tracking(2)
-                    .foregroundColor(ink)
                 Spacer()
                 Text(dateText)
                     .font(.label(12)).tracking(2)
