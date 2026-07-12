@@ -48,7 +48,8 @@ from core.pipeline.data.bulletin.edition import UserDailyEditionRepo
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
     compute_request_hash,
-    parse_selection_run,
+    parse_selection_token,
+    resolve_selection_pin,
     selection_filters,
     selection_token,
     validate_filter_categories,
@@ -747,6 +748,8 @@ def _get_or_assemble_bulletin(
     max_duration_minutes: int = 5,
     name: str | None = None,
     include_top_stories: bool = True,
+    pinned_run: int | None = None,
+    pinned_hash: str | None = None,
 ) -> dict[str, Any]:
     """
     Get an existing cached bulletin or assemble a new one.
@@ -754,6 +757,10 @@ def _get_or_assemble_bulletin(
 
     profile_id: when set, excludes stories already in user_story_state for this
                 profile (consumed/rejected/active-queued).
+
+    pinned_run / pinned_hash: L-D — the run+hash the manifest already resolved from the client's
+                tapped selection_id. When set, serve EXACTLY that selection instead of recomputing
+                the hash / taking get_latest() (else the honored pin would leak on the cached path).
 
     Returns: bulletin_id, ranking_run_id, request_hash, story_count, script,
              segments, stories_list, bulletin_cached, is_first_bulletin.
@@ -763,7 +770,7 @@ def _get_or_assemble_bulletin(
         preset=preset, include_top_stories=include_top_stories,
         include_categories=include_categories, exclude_categories=exclude_categories, name=name,
     )
-    request_hash = compute_request_hash(filters, day=uk_now().date())
+    request_hash = pinned_hash or compute_request_hash(filters, day=uk_now().date())
 
     bulletin_cached = False
     stories_list: list[dict] = []
@@ -781,7 +788,10 @@ def _get_or_assemble_bulletin(
 
     # ── Session 1: ranking run lookup + cache check + candidate extraction ────
     with SessionLocal() as db:
-        run = RankingRunRepo(db).get_latest()
+        # L-D: honor the manifest's already-resolved pinned run (serve the board's exact selection);
+        # fall back to latest only when unpinned or the pinned run has since been pruned.
+        run = (RankingRunRepo(db).get_by_id(pinned_run) if pinned_run is not None else None) \
+            or RankingRunRepo(db).get_latest()
         if run is None:
             raise HTTPException(status_code=404, detail="No ranking runs found")
 
@@ -1052,7 +1062,8 @@ def prepare_bulletin_for_manifest(
         preset=preset, include_top_stories=include_top_stories,
         include_categories=include_categories, exclude_categories=exclude_categories, name=name,
     )
-    request_hash = compute_request_hash(filters, day=uk_now().date())
+    current_hash = compute_request_hash(filters, day=uk_now().date())
+    client_pin = parse_selection_token(selection_id)   # (run, hash) | None
 
     with SessionLocal() as db:
         latest = RankingRunRepo(db).get_latest()
@@ -1066,33 +1077,58 @@ def prepare_bulletin_for_manifest(
         # do we fall back to the fast PRE-DEDUP order (build_selection(dedup=False)); the background
         # then materialises the deduped final.
         #
-        # L-A (run pin): the bulletin belongs to the EDITION's PINNED run (what the preview committed
-        # to), NOT get_latest() — resolve it BEFORE the cache probe so the bulletin, edition and
-        # preview share ONE run. A ranking run landing between preview and manifest can no longer make
-        # the served bulletin a different run than the board. Cold play-first (no edition) → latest.
-        # L-D: if the client sent the tapped selection_id, its run WINS the cache probe — serve
-        # exactly the selection the board committed to, even if a newer run landed (and the edition
-        # would otherwise refresh) between render and tap. None → L-A behaviour (edition pin / latest).
-        client_run = parse_selection_run(selection_id)
-        mat = (get_materialised_selection(db, profile_id=profile_id, request_hash=request_hash)
-               if profile_id is not None else None)
-        if mat is not None:
-            ordered, depths, pinned = mat
-            ranking_run_id = client_run or pinned or latest["id"]
+        # L-D (completed): the client sends the tapped selection_id = "{run}:{hash}". We serve EXACTLY
+        # that materialised edition — the run pins the ranking AND the hash pins the edition. The old
+        # code pinned only the run and RECOMPUTED the hash from the live profile, so any hash drift
+        # between render and tap (a filter change, or the UK day rolling at 23:00 UTC — the hash folds
+        # the day in) silently served a different edition under the client's pin → home order ≠
+        # briefing order. `resolve_selection_pin` is the pure decision; here we do only the IO.
+        pinned_mat = (
+            get_materialised_selection(db, profile_id=profile_id, request_hash=client_pin[1])
+            if (profile_id is not None and client_pin is not None) else None
+        )
+        request_hash, honor_pin, selection_refreshed = resolve_selection_pin(
+            client_pin, current_hash, pinned_edition_exists=pinned_mat is not None,
+        )
+
+        if honor_pin:
+            # HONOR the full pin: this is the exact edition the board committed to.
+            ordered, depths, pinned = pinned_mat
+            ranking_run_id = client_pin[0] or pinned or latest["id"]
         else:
-            ranking_run_id = client_run or latest["id"]
-            ordered, depths = None, None
+            # No pin, OR a pin whose edition is GONE → serve the CURRENT edition. A stale pin's run is
+            # stale too, so it's dropped WITH the hash; client_run is kept only when the pin is absent
+            # or already matches current (unchanged behaviour + the cold play-first / warmer path).
+            if selection_refreshed:
+                logging.getLogger(__name__).warning(
+                    "L-D refresh: pinned selection %s has no edition for profile %s today — serving "
+                    "the current edition (hash %s) and flagging the client to re-sync",
+                    selection_id, profile_id, current_hash,
+                )
+            effective_run = None if selection_refreshed else (client_pin[0] if client_pin else None)
+            mat = (get_materialised_selection(db, profile_id=profile_id, request_hash=current_hash)
+                   if profile_id is not None else None)
+            if mat is not None:
+                ordered, depths, pinned = mat
+                ranking_run_id = effective_run or pinned or latest["id"]
+            else:
+                ordered, depths = None, None
+                ranking_run_id = effective_run or latest["id"]
 
         existing = BulletinRepo(db).get_by_run_and_hash(ranking_run_id, request_hash)
         if existing is not None and (existing.get("script") or "").strip():
-            return {"mode": "cached"}                      # fully assembled → normal path
+            # Fully assembled → normal path. Carry the RESOLVED run+hash so the cached assembler
+            # honors the SAME pin instead of recomputing (else the honor would leak on a 2nd play).
+            return {"mode": "cached", "ranking_run_id": ranking_run_id, "request_hash": request_hash,
+                    "selection_refreshed": selection_refreshed}
         if existing is not None:
             segs = existing["segments"]
             if not isinstance(segs, list):
                 segs = _json.loads(segs)
             return {"mode": "skeleton", "dispatch": False,  # in-progress → join, don't re-run
                     "bulletin_id": existing["id"], "ranking_run_id": ranking_run_id, "segments": segs,
-                    "selection_id": selection_token(ranking_run_id, request_hash)}
+                    "selection_id": selection_token(ranking_run_id, request_hash),
+                    "selection_refreshed": selection_refreshed}
 
         is_first = False
         if name:
@@ -1128,6 +1164,7 @@ def prepare_bulletin_for_manifest(
         "mode": "skeleton", "dispatch": True, "bulletin_id": bulletin_id,
         "ranking_run_id": ranking_run_id, "segments": skeleton,
         "selection_id": selection_token(ranking_run_id, request_hash),
+        "selection_refreshed": selection_refreshed,
         "bg": {
             "bulletin_id": bulletin_id, "ranking_run_id": ranking_run_id, "request_hash": request_hash,
             "name": name, "is_first_bulletin": is_first, "profile_id": profile_id,

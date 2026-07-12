@@ -50,6 +50,25 @@ command, shared env, migration-on-one) + verification that the web stopped runni
 worker runs them without double-scheduling. A few careful hours + a deploy dance. Do it unhurried —
 a rushed split risks double-ingest or a silently-dead worker (the §9 supervision gap).
 
+## Standing design smell — day-keyed cache identity rolls at 23:00 UTC (fold into the split's review)
+`request_hash` (selector.py) folds `day = uk_now().date()` into the cache key, and the UK date rolls
+at **00:00 BST = 23:00 UTC** — mid-evening, while people are actively using the app. Every artifact
+keyed on that hash (materialised editions in `data.user_daily_editions`, the bulletin cache) gets a
+NEW identity at 23:00 UTC, so any flow that straddles that instant sees two different keys for what
+the user experiences as one session. That is exactly what produced the home≠briefing order divergence
+(home preview computes the hash on day D, the manifest 90s later on day D+1 → different edition). The
+L-D full-pin fix (PR: honor `run:hash`, refresh loudly on a missing pinned edition) handles THIS edge,
+but the root shape — a cache identity that rolls at a high-traffic hour — will keep manufacturing
+edge cases (a briefing assembled at 22:59 cached under D, re-requested at 23:01 recomputes D+1 and
+misses; warm-up done pre-roll invalidated post-roll; readiness pinned to a D edition while the manifest
+moved to D+1). Options to weigh during the split (do NOT silently change the key — it invalidates every
+cached bulletin): (a) roll the "briefing day" at a genuine low-traffic local hour (e.g. 03:00–04:00
+UK) instead of midnight; (b) make the day boundary explicit state carried on the selection identity
+rather than recomputed independently at each hop; (c) accept it and rely on L-D's loud-refresh as the
+single sanctioned path across the boundary. Whichever — the boundary must fail LOUD (refresh + client
+re-sync), never silently serve a stale-day edition. Track alongside the in-memory rate-limiter as a
+"single-process / single-clock assumption" to revisit when the topology changes.
+
 ## Prerequisite hygiene (fold in)
 Give the generate-path background assembly its **own** ThreadPoolExecutor, separate from FastAPI's
 request-serving threadpool, so an assembly burst can't saturate the pool serving HTTP (incl.
