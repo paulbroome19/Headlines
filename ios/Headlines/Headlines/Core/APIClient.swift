@@ -147,15 +147,30 @@ struct APIClient {
         return try await send(req)
     }
 
-    private func buildURL(path: String, queryItems: [URLQueryItem] = []) throws -> URL {
+    func buildURL(path: String, queryItems: [URLQueryItem] = []) throws -> URL {
         // URLComponents-based construction avoids %2F encoding from appendingPathComponent.
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw APIError.invalidURL
         }
-        let cleaned = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        // A `path` may carry a "?query" suffix (e.g. "bulletins/258/readiness?profile_id=28").
+        // It MUST be split off before assigning to `components.path`: setting `.path` to a string
+        // containing "?" percent-encodes it to %3F (illegal in a path), so the query becomes a
+        // literal path segment ("…/readiness%3Fprofile_id%3D28") → route miss → 404 on every poll.
+        // (This shipped in L-C, which was the first GET to carry a query; it 404'd all readiness
+        // polls since.) Split the suffix into query items so the "?" stays a real query separator.
+        let head = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        let cleaned = head[0].trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         components.path = basePath.isEmpty ? "/\(cleaned)" : "/\(basePath)/\(cleaned)"
-        if !queryItems.isEmpty { components.queryItems = queryItems }
+        var items = queryItems
+        if head.count > 1 {
+            items += head[1].split(separator: "&").compactMap { pair in
+                let kv = pair.split(separator: "=", maxSplits: 1)
+                guard let name = kv.first else { return nil }
+                return URLQueryItem(name: String(name), value: kv.count > 1 ? String(kv[1]) : nil)
+            }
+        }
+        if !items.isEmpty { components.queryItems = items }
         guard let url = components.url else { throw APIError.invalidURL }
         return url
     }
