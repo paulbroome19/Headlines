@@ -39,7 +39,7 @@ final class HeadlinesTests: XCTestCase {
 
     // MARK: - Play-event flush exit-path (the recurring regression hole)
 
-    /// The exit-path capture (detachSummary — what closePlayer calls on Home/back navigation) must
+    /// The exit-path capture (detachSummary — what leavePlayer calls on the cover's teardown) must
     /// grab accumulated events AND the wire must carry story_id (consumption is keyed on story_id,
     /// not story_hash, which drifts across bulletins). Draining is one-shot.
     @MainActor
@@ -170,7 +170,7 @@ final class HeadlinesTests: XCTestCase {
         let player = BulletinPlayer()
         player._testConfigureForwardSkip(storyCount: 2, liveIsBridge: true)   // playing story 0, bridge live
 
-        // No skip — straight to close (detachSummary is what closePlayer calls).
+        // No skip — straight to close (detachSummary is what leavePlayer calls on teardown).
         let data = try XCTUnwrap(player._testDetachedSummaryJSON(),
                                  "closing mid-story while a bridge plays must still capture the in-progress story")
         let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -184,6 +184,30 @@ final class HeadlinesTests: XCTestCase {
         // ≥ 0.5 would false-consume a story the user closed on during its lead-in bridge.
         XCTAssertEqual(abandoned["position_pct"] as? Double, 0,
                        "abandoned during a bridge must send position 0 (→ stays queued), not the stale 0.95")
+    }
+
+    /// Exit-path at `.ended` — the completion-screen HOME disc. It routes through the SAME shared exit
+    /// (onClose → requestLeave → the cover's onDismiss → leavePlayer: detach → post → reload Home) as
+    /// the chevron and the background flush. The regression to guard: a finished briefing must STILL
+    /// flush its consumed stories on exit — the `.ended` state must not swallow the completed events —
+    /// so Home drops them on reload and the just-finished stories don't linger (the reported bug).
+    @MainActor
+    func testCompletionExitFlushesEveryConsumedStory() throws {
+        let player = BulletinPlayer()
+        player._testConfigureCompletedBriefing(bulletinId: 260, profileId: 28,
+                                               storyIds: ["469309", "476357", "527346"])
+
+        let data = try XCTUnwrap(player._testDetachedSummaryJSON(),
+                                 "the completion (.ended) exit must still flush the finished stories")
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let events = try XCTUnwrap(obj["events"] as? [[String: Any]])
+        let consumed = Set(events.compactMap { $0["story_id"] as? String })
+        XCTAssertEqual(consumed, ["469309", "476357", "527346"],
+                       "every finished story must be in the flush so Home drops them; got \(events)")
+        XCTAssertTrue(events.allSatisfy { ($0["action"] as? String) == "completed" },
+                      "a fully-played briefing flushes 'completed' (→ consumed server-side)")
+        XCTAssertEqual(obj["profile_id"] as? Int, 28)
+        XCTAssertNil(player._testDetachedSummaryJSON(), "drain is one-shot — no double-send on exit")
     }
 
     // MARK: - PR-A: identity across the tap boundary (audit §1.4 seams #1, #2)
