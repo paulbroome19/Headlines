@@ -177,7 +177,14 @@ struct APIClient {
 
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            // Use THIS client's session — not URLSession.shared. The readiness client (makeReadiness)
+            // is a DEDICATED ephemeral session (its own 2-conn pool, 8s fail-fast timeout, cache-bypass)
+            // whose whole purpose is to keep the gate's readiness GETs off the pool the preview/manifest/
+            // events share. Hardcoding `.shared` here silently defeated that (#205 was dead code): every
+            // request, readiness included, queued on shared's 6-conn/host pool → a cold load could stall
+            // the readiness poll CLIENT-SIDE with the server already ready (the bulletin-257 hang). The
+            // default APIClient still uses .shared (init's default), so non-readiness callers are unchanged.
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw APIError.badStatus(-1, "")
             }
