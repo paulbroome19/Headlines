@@ -1047,7 +1047,7 @@ final class BulletinPlayer: NSObject, ObservableObject {
 
     #if DEBUG
     /// Test seam: seed a play event + the ids the flush needs, so a unit test can drive the real
-    /// exit-path capture (detachSummary — what closePlayer calls on Home navigation).
+    /// exit-path capture (detachSummary — what leavePlayer calls on the cover's teardown).
     func _testSeedEvent(bulletinId: Int, profileId: Int, storyHash: String, storyId: String?, action: String) {
         _bulletinId = bulletinId
         _profileId = profileId
@@ -1058,6 +1058,21 @@ final class BulletinPlayer: NSObject, ObservableObject {
     func _testDetachedSummaryJSON() -> Data? {
         guard let payload = detachSummary() else { return nil }
         return try? JSONEncoder().encode(payload.request)
+    }
+
+    /// Test seam: a briefing played to its natural END — every story fired "completed" (accumulated the
+    /// same way handleCurrentItemChanged does) and playerState is .ended. Drives the completion-screen
+    /// HOME exit: the .ended state must NOT swallow the flush — detachSummary must still capture every
+    /// consumed story so Home drops them on reload (the recurring exit-path regression, now at .ended).
+    func _testConfigureCompletedBriefing(bulletinId: Int, profileId: Int, storyIds: [String]) {
+        _bulletinId = bulletinId
+        _profileId = profileId
+        for (i, sid) in storyIds.enumerated() {
+            let hash = "done\(i)"
+            accumulatedEvents.append(StoryEvent(storyHash: hash, storyId: sid, action: "completed", positionPct: 1.0))
+            consumedStoryHashes.insert(hash)
+        }
+        playerState = .ended
     }
 
     /// Test seam: a 2-story briefing whose SECOND story is still synthesising (url == nil), currently

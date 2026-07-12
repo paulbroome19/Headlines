@@ -55,12 +55,11 @@ struct NowPlayingView: View {
                     case .ended:
                         // FEATURE — end-of-briefing completion (also bug 3's clean destination:
                         // audio ends → this, zero dead air). Replay = play() at .ended restarts
-                        // from the top (restartFromBeginning); Home = the shared onClose.
-                        // Home tap → onClose → closePlayer snapshots + POSTs the play events, then
-                        // reloads Home (see HomeContainerView.closePlayer). We deliberately do NOT
-                        // flush from a .task here: dismissing the player cancels this view's tasks,
-                        // which would abort the POST mid-flight. Backgrounding is covered by the
-                        // scenePhase flush.
+                        // from the top (restartFromBeginning) and does NOT leave — so it must NOT
+                        // flush/refresh. Home = the shared onClose (→ requestLeave → the cover's
+                        // onDismiss → leavePlayer: snapshot + POST the play events, then reload Home).
+                        // The flush lives on the cover's TEARDOWN, not here, so this exit can't slip
+                        // the chain; backgrounding is separately covered by the scenePhase flush.
                         CompletionView(onHome: onClose, onReplay: { player.play() })
                     default:
                         playerBody
@@ -119,7 +118,8 @@ struct NowPlayingView: View {
 
     /// Graceful empty state (fix 4): the filters matched no stories right now — a
     /// normal result, not an error. On-brand, calm, no raw JSON. Both the top-bar
-    /// chevron and the HOME machined disc return Home (`onClose` → `closePlayer`).
+    /// chevron and the HOME machined disc return Home (`onClose` → requestLeave →
+    /// the cover's onDismiss → leavePlayer, the single shared exit teardown).
     private var emptyState: some View {
         VStack(spacing: 20) {
             Spacer()

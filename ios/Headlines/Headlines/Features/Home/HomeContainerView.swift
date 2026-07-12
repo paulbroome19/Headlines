@@ -45,8 +45,15 @@ struct HomeContainerView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { player.sendSummary() }
         }
-        .fullScreenCover(isPresented: $showPlayer) {
-            NowPlayingView(player: player, onClose: closePlayer, onRetry: startBriefing)
+        // The flush+refresh is hooked to the cover's TEARDOWN (onDismiss → leavePlayer), NOT to each
+        // exit button. Every exit — the chevron, the completion-screen HOME disc, the empty-state HOME
+        // disc, a future new exit, or a programmatic dismissal — lowers `showPlayer` and therefore runs
+        // the SAME detach → post → refresh exactly once. Buttons only REQUEST leaving (requestLeave);
+        // they can't bypass or half-run the sequence. (Before: each button called closePlayer directly,
+        // and the completion-screen Home — the exit added after the #181/#183 flush fixes — was the one
+        // that didn't reliably reload Home, so the just-finished stories lingered.)
+        .fullScreenCover(isPresented: $showPlayer, onDismiss: leavePlayer) {
+            NowPlayingView(player: player, onClose: requestLeave, onRetry: startBriefing)
         }
         .fullScreenCover(isPresented: $showProfile) {
             ProfileFiltersView()
@@ -93,16 +100,24 @@ struct HomeContainerView: View {
         }
     }
 
-    private func closePlayer() {
-        // Capture the play events BEFORE tearing the player down — stopSilently() nils the bulletin/
-        // profile ids and clears the event buffer, so draining after stop (the old bug) posted
-        // nothing. Snapshot first, then stop + dismiss immediately (never block Home on the network),
-        // then POST the snapshot and refetch — the POST runs in THIS view's Task (not the dismissed
-        // player screen's), so it can't be cancelled mid-flight. Home reloads only AFTER the POST so
-        // the just-finished briefing's consumed stories are gone.
+    /// A player-screen exit button (chevron / completion HOME / empty-state HOME). Buttons ONLY request
+    /// dismissal: stop the audio instantly (a finished `.ended` briefing is already silent, so this is a
+    /// no-op there) and lower the flag. Lowering the flag drives the cover's onDismiss → leavePlayer,
+    /// where the single flush+refresh actually runs — so no button carries (or can forget) that logic.
+    private func requestLeave() {
+        player.pause()
+        showPlayer = false
+    }
+
+    /// The ONE teardown for the player screen — runs on the cover's dismissal for EVERY exit (button,
+    /// programmatic, or system). Capture the play events BEFORE tearing the player down — stopSilently()
+    /// nils the bulletin/profile ids and clears the event buffer, so draining after stop (the old #181
+    /// bug) posted nothing. Snapshot first, stop, then POST + refetch in a Task the dismissed screen
+    /// doesn't own (so it can't be cancelled mid-flight — the #183 fix). Home reloads only AFTER the POST
+    /// so the just-finished briefing's consumed stories are gone.
+    private func leavePlayer() {
         let summary = player.detachSummary()
         player.stopSilently()
-        showPlayer = false
         Task {
             await player.postSummary(summary)
             await loadPreview()
