@@ -47,6 +47,7 @@ from core.pipeline.data.bulletin.selection import (
 from core.pipeline.data.bulletin.edition import UserDailyEditionRepo
 from core.pipeline.data.bulletin.event_dedup import dedup_same_event  # TACTICAL #35 — remove when #36 lands
 from core.pipeline.data.bulletin.selector import (
+    cached_bulletin_is_spent,
     compute_request_hash,
     parse_selection_token,
     resolve_selection_pin,
@@ -1013,6 +1014,18 @@ def _get_synth_priority(bulletin_id: int) -> str | None:
         return None
 
 
+def _bulletin_opener(bulletin: dict) -> str | None:
+    """The first story segment's story_id in a cached bulletin's segments (its audible opener), or
+    None. Used by the spent-opener guard to detect a bulletin whose lead the user has consumed."""
+    segs = bulletin.get("segments")
+    if not isinstance(segs, list):
+        segs = _json.loads(segs) if segs else []
+    for s in segs:
+        if s.get("type") == "story" and s.get("story_id"):
+            return str(s["story_id"])
+    return None
+
+
 def _skeleton_segments(db, ordered: list[dict]) -> list[dict]:
     """Provisional segment list mirroring assemble()'s structure (intro, story, [transition,
     story]..., outro) with EMPTY texts. Story segments carry story_id + title (from
@@ -1116,6 +1129,28 @@ def prepare_bulletin_for_manifest(
                 ranking_run_id = effective_run or latest["id"]
 
         existing = BulletinRepo(db).get_by_run_and_hash(ranking_run_id, request_hash)
+
+        # SPENT-OPENER GUARD (the living-edition deadlock, bulletin 267): if the user consumed this
+        # bulletin's LEAD, the edition reconciled the lead to a new story, but the cached bulletin is
+        # immutable and still opens on the now-consumed one. Serving it hangs the L-C readiness gate
+        # forever (opener != committed lead → safe_to_start never flips → the 100s loader error). A
+        # newer ranking run is almost always available (runs fire ~every 6 min), so escape to it: a
+        # FRESH bulletin builds at the new (run, hash) from `ordered` — which already dropped the
+        # consumed lead — and we flag the refresh. Bounded: only fires on the cached re-entry path,
+        # and only when a newer run exists (else falls through to today's behaviour — the rare
+        # same-run case is the documented follow-up; no worse than now).
+        if (existing is not None and profile_id is not None and latest["id"] > ranking_run_id):
+            dropped = {str(x) for x in UserStoryStateRepo(db).get_dropped_story_ids(profile_id)}
+            if cached_bulletin_is_spent(_bulletin_opener(existing), dropped):
+                logging.getLogger(__name__).warning(
+                    "L-C deadlock averted: cached bulletin %s opener %s is spent (consumed lead) — "
+                    "regenerating at run %s instead of serving into the safe_to_start gate hang",
+                    existing["id"], _bulletin_opener(existing), latest["id"],
+                )
+                selection_refreshed = True
+                ranking_run_id = latest["id"]
+                existing = BulletinRepo(db).get_by_run_and_hash(ranking_run_id, request_hash)
+
         if existing is not None and (existing.get("script") or "").strip():
             # Fully assembled → normal path. Carry the RESOLVED run+hash so the cached assembler
             # honors the SAME pin instead of recomputing (else the honor would leak on a 2nd play).
