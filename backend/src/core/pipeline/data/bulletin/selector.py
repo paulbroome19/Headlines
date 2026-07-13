@@ -139,6 +139,20 @@ def resolve_selection_pin(
     return current_hash, False, stale
 
 
+def cached_bulletin_is_spent(cached_opener: str | None, dropped_story_ids: set[str]) -> bool:
+    """Pure: is a CACHED bulletin un-serveable because its opener has been CONSUMED/REJECTED?
+
+    The living-edition deadlock (bulletin 267): a user plays a briefing and consumes (or skips) its
+    LEAD story, so the edition reconciles the lead to a new story — but the cached bulletin is
+    immutable and still opens on the now-consumed old lead. Re-serving it (the L-D pin re-finds the
+    same cached row) hangs the L-C readiness gate forever: the gate refuses `safe_to_start` because
+    the opener isn't the edition's committed lead, so the loader spins to its 100s ceiling and errors.
+    A consumed/rejected opener can NEVER be a valid lead, so the manifest must treat such a bulletin
+    as spent and regenerate rather than serve it into the deadlock. None opener → not spent (nothing
+    to check)."""
+    return cached_opener is not None and cached_opener in dropped_story_ids
+
+
 def validate_filter_categories(cats: list[str]) -> list[str]:
     """
     Return error messages for categories that are neither a valid leaf slug

@@ -11,8 +11,9 @@ from core.pipeline.data.bulletin.selector import (
     parse_selection_run,
     parse_selection_token,
     resolve_selection_pin,
+    cached_bulletin_is_spent,
 )
-from core.api.routes.data import assert_same_selection, assert_event_selection
+from core.api.routes.data import assert_same_selection, assert_event_selection, _bulletin_opener
 
 
 def test_selection_token_is_run_and_hash():
@@ -137,3 +138,29 @@ def test_stale_event_selection_raises_409():
     with pytest.raises(HTTPException) as ei:
         assert_event_selection("7418:h", "7448:h")
     assert ei.value.status_code == 409
+
+
+# ── The living-edition deadlock: a cached bulletin whose opener was CONSUMED (bulletin 267) ──
+
+def test_spent_when_opener_is_consumed():
+    # She played the briefing and consumed its lead 436806; the edition reconciled past it. The cached
+    # bulletin still opens on 436806 → spent → must NOT be re-served (it would hang the L-C gate).
+    assert cached_bulletin_is_spent("436806", {"436806", "573621"}) is True
+
+
+def test_not_spent_when_opener_is_still_live():
+    # A fresh bulletin whose opener (570710) is the current lead and not consumed → serve it.
+    assert cached_bulletin_is_spent("570710", {"436806", "573621"}) is False
+
+
+def test_not_spent_when_no_opener_or_empty_dropped():
+    assert cached_bulletin_is_spent(None, {"436806"}) is False   # nothing to check
+    assert cached_bulletin_is_spent("436806", set()) is False    # nothing consumed yet
+
+
+def test_bulletin_opener_is_first_story_segment_id():
+    # The audible opener is the FIRST story segment's id — intro/transition segments are skipped.
+    b = {"segments": [{"type": "intro"}, {"type": "transition"},
+                      {"type": "story", "story_id": "570710"}, {"type": "story", "story_id": "x"}]}
+    assert _bulletin_opener(b) == "570710"
+    assert _bulletin_opener({"segments": [{"type": "intro"}, {"type": "outro"}]}) is None
